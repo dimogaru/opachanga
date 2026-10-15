@@ -76,9 +76,45 @@ db.exec(`
     sent_at TEXT,
     UNIQUE (match_id, type)
   );
+
+  CREATE TABLE IF NOT EXISTS app_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS match_finances (
+    match_id INTEGER PRIMARY KEY REFERENCES matches(id) ON DELETE CASCADE,
+    pitch_cost REAL NOT NULL,
+    fee_per_player REAL NOT NULL,
+    participants INTEGER NOT NULL,
+    total_collected REAL NOT NULL,
+    pot_added REAL NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE TABLE IF NOT EXISTS match_points (
+    match_id INTEGER NOT NULL REFERENCES matches(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    points INTEGER NOT NULL,
+    result TEXT NOT NULL CHECK (result IN ('win', 'draw', 'loss')),
+    PRIMARY KEY (match_id, user_id)
+  );
+
+  CREATE TABLE IF NOT EXISTS balance_alert_campaigns (
+    match_id INTEGER PRIMARY KEY REFERENCES matches(id) ON DELETE CASCADE,
+    status TEXT NOT NULL DEFAULT 'sending' CHECK (status IN ('sending', 'sent', 'failed')),
+    delivered_count INTEGER NOT NULL DEFAULT 0,
+    error TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    sent_at TEXT
+  );
 `);
 db.exec(`
   UPDATE push_campaigns
+  SET status = 'failed', error = 'Reintento disponible tras reiniciar el servidor'
+  WHERE status = 'sending' AND created_at < datetime('now', '-15 minutes')
+  ;
+  UPDATE balance_alert_campaigns
   SET status = 'failed', error = 'Reintento disponible tras reiniciar el servidor'
   WHERE status = 'sending' AND created_at < datetime('now', '-15 minutes')
 `);
@@ -234,6 +270,95 @@ function getConvocationData(match, userId) {
   };
 }
 
+function moneyCents(value) {
+  return Math.round(Number(value) * 100);
+}
+
+function roundMoney(value) {
+  return Math.round(value * 100) / 100;
+}
+
+function readJson(value, fallback) {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return fallback;
+  }
+}
+
+function matchDetails(match) {
+  if (!match) return null;
+  const teamAIds = readJson(match.team_a, []);
+  const teamBIds = readJson(match.team_b, []);
+  const getTeam = (ids) => ids.length
+    ? db.prepare(`SELECT id, name, ranking_position FROM users WHERE id IN (${ids.map(() => "?").join(",")})`).all(...ids)
+      .sort((left, right) => ids.indexOf(left.id) - ids.indexOf(right.id))
+    : [];
+  const finance = db.prepare("SELECT * FROM match_finances WHERE match_id = ?").get(match.id) || null;
+  return {
+    ...match,
+    draft: readJson(match.draft_state, {}),
+    teamA: getTeam(teamAIds),
+    teamB: getTeam(teamBIds),
+    finance,
+  };
+}
+
+function currentPot() {
+  const setting = db.prepare("SELECT value FROM app_settings WHERE key = 'pot_cents'").get();
+  return Number(setting?.value || 0) / 100;
+}
+
+async function sendNegativeBalanceAlert(match) {
+  if (!pushConfigured) return { skipped: true, reason: "push_not_configured" };
+  const claim = db.transaction(() => {
+    db.prepare("INSERT OR IGNORE INTO balance_alert_campaigns (match_id, status) VALUES (?, 'sending')")
+      .run(match.id);
+    const campaign = db.prepare("SELECT * FROM balance_alert_campaigns WHERE match_id = ?").get(match.id);
+    if (campaign.status === "sent" || campaign.status === "sending") return { claimed: false, campaign };
+    db.prepare("UPDATE balance_alert_campaigns SET status = 'sending', error = NULL WHERE match_id = ?").run(match.id);
+    return { claimed: true, campaign };
+  })();
+  if (!claim.claimed) {
+    return { alreadySent: claim.campaign.status === "sent", inProgress: claim.campaign.status === "sending" };
+  }
+  const recipients = db.prepare(`
+    SELECT s.endpoint, s.p256dh, s.auth
+    FROM push_subscriptions s
+    JOIN users u ON u.id = s.user_id
+    WHERE u.balance < 0
+  `).all();
+  const payload = JSON.stringify({
+    title: "Saldo pendiente · O Pachanga",
+    body: "Tienes saldo negativo. Revisa tu cuenta antes del partido de mañana.",
+    url: "/",
+  });
+  const results = await Promise.allSettled(recipients.map((subscription) =>
+    webPush.sendNotification({
+      endpoint: subscription.endpoint,
+      keys: { p256dh: subscription.p256dh, auth: subscription.auth },
+    }, payload, { TTL: 60 * 60 * 24 }),
+  ));
+  const expired = [];
+  let delivered = 0;
+  let failed = 0;
+  results.forEach((result, index) => {
+    if (result.status === "fulfilled") delivered += 1;
+    else {
+      failed += 1;
+      if ([404, 410].includes(result.reason?.statusCode)) expired.push(recipients[index].endpoint);
+    }
+  });
+  const removeExpired = db.prepare("DELETE FROM push_subscriptions WHERE endpoint = ?");
+  expired.forEach((endpoint) => removeExpired.run(endpoint));
+  db.prepare(`
+    UPDATE balance_alert_campaigns
+    SET status = ?, delivered_count = ?, error = ?, sent_at = CURRENT_TIMESTAMP
+    WHERE match_id = ?
+  `).run(failed ? "failed" : "sent", delivered, failed ? `${failed} entregas fallidas` : null, match.id);
+  return { delivered, failed, status: failed ? "failed" : "sent" };
+}
+
 async function sendCampaign(match, type) {
   if (!pushConfigured) {
     const error = new Error("Las notificaciones push no están configuradas. Define las variables VAPID.");
@@ -344,6 +469,195 @@ app.get("/api/convocations/current", requireUser, (_req, res) => {
   res.json(getConvocationData(match, _req.session.user.id));
 });
 
+app.get("/api/matches", requireUser, (_req, res) => {
+  ensureCurrentMatch();
+  const matches = db.prepare("SELECT * FROM matches ORDER BY start_date DESC, id DESC LIMIT 12").all()
+    .map(matchDetails);
+  res.json({ matches, pot: currentPot() });
+});
+
+app.get("/api/standings", requireUser, (_req, res) => {
+  const rows = db.prepare(`
+    SELECT u.id, u.name, u.base_role, u.ranking_position,
+      COALESCE(SUM(mp.points), 0) AS points,
+      COALESCE(SUM(CASE WHEN mp.result = 'win' THEN 1 ELSE 0 END), 0) AS wins,
+      COALESCE(SUM(CASE WHEN mp.result = 'draw' THEN 1 ELSE 0 END), 0) AS draws,
+      COALESCE(SUM(CASE WHEN mp.result = 'loss' THEN 1 ELSE 0 END), 0) AS losses,
+      COUNT(mp.match_id) AS matches_played
+    FROM users u
+    LEFT JOIN match_points mp ON mp.user_id = u.id
+    GROUP BY u.id
+    ORDER BY points DESC, wins DESC, u.name COLLATE NOCASE
+  `).all();
+  res.json({ standings: rows, pot: currentPot() });
+});
+
+app.post("/api/admin/matches/:id/draft/start", requireAdmin, (req, res) => {
+  const matchId = Number(req.params.id);
+  const match = db.prepare("SELECT * FROM matches WHERE id = ?").get(matchId);
+  if (!match) return res.status(404).json({ error: "No se encontró el partido." });
+  if (match.status !== "closed") return res.status(409).json({ error: "El draft solo se puede iniciar con la convocatoria cerrada." });
+  if (readJson(match.draft_state, {}).status) return res.status(409).json({ error: "El draft de este partido ya se inició." });
+  const participants = db.prepare(`
+    SELECT u.id, u.name, u.ranking_position
+    FROM convocations c JOIN users u ON u.id = c.user_id
+    WHERE c.match_id = ? AND c.status = 'principal'
+    ORDER BY u.ranking_position IS NULL, u.ranking_position, u.name COLLATE NOCASE
+  `).all(matchId);
+  if (participants.length < 14 || participants.length > 16) {
+    return res.status(409).json({ error: "El draft requiere entre 14 y 16 jugadores confirmados en la lista principal." });
+  }
+  const captainA = participants.find((player) => player.ranking_position === 1);
+  const captainB = participants.find((player) => player.ranking_position === 2);
+  if (!captainA || !captainB || captainA.id === captainB.id) {
+    return res.status(409).json({ error: "Asigna las posiciones de ranking 1 y 2 a dos jugadores confirmados para iniciar el draft." });
+  }
+  const remaining = participants.filter((player) => player.id !== captainA.id && player.id !== captainB.id).map((player) => player.id);
+  const draft = {
+    status: "in_progress",
+    captainA: captainA.id,
+    captainB: captainB.id,
+    currentTurn: "B",
+    remaining,
+    picks: [],
+  };
+  db.prepare("UPDATE matches SET draft_state = ?, team_a = ?, team_b = ? WHERE id = ?")
+    .run(JSON.stringify(draft), JSON.stringify([captainA.id]), JSON.stringify([captainB.id]), matchId);
+  res.json(matchDetails(db.prepare("SELECT * FROM matches WHERE id = ?").get(matchId)));
+});
+
+app.post("/api/admin/matches/:id/draft/pick", requireAdmin, (req, res) => {
+  const matchId = Number(req.params.id);
+  const playerId = Number(req.body?.userId);
+  const match = db.prepare("SELECT * FROM matches WHERE id = ?").get(matchId);
+  if (!match) return res.status(404).json({ error: "No se encontró el partido." });
+  const draft = readJson(match.draft_state, {});
+  if (match.status !== "closed" || draft.status !== "in_progress") {
+    return res.status(409).json({ error: "No hay un draft abierto para este partido." });
+  }
+  const remaining = draft.remaining || [];
+  if (!Number.isInteger(playerId) || !remaining.includes(playerId)) {
+    return res.status(400).json({ error: "Selecciona un jugador disponible en el draft." });
+  }
+  const teamA = readJson(match.team_a, []);
+  const teamB = readJson(match.team_b, []);
+  const team = draft.currentTurn === "A" ? teamA : teamB;
+  team.push(playerId);
+  remaining.splice(remaining.indexOf(playerId), 1);
+  draft.picks.push({ userId: playerId, team: draft.currentTurn });
+  if (remaining.length === 0) {
+    draft.status = "complete";
+    draft.currentTurn = null;
+  } else if (remaining.length === 1 && draft.currentTurn === "A") {
+    teamA.push(remaining[0]);
+    draft.picks.push({ userId: remaining[0], team: "A", automatic: true });
+    remaining.length = 0;
+    draft.status = "complete";
+    draft.currentTurn = null;
+  } else if (remaining.length === 3) {
+    draft.currentTurn = "A";
+  } else if (remaining.length > 3) {
+    draft.currentTurn = draft.currentTurn === "A" ? "B" : "A";
+  }
+  db.prepare("UPDATE matches SET draft_state = ?, team_a = ?, team_b = ? WHERE id = ?")
+    .run(JSON.stringify(draft), JSON.stringify(teamA), JSON.stringify(teamB), matchId);
+  res.json(matchDetails(db.prepare("SELECT * FROM matches WHERE id = ?").get(matchId)));
+});
+
+app.post("/api/admin/matches/:id/finance", requireAdmin, (req, res) => {
+  const matchId = Number(req.params.id);
+  const pitchCost = Number(req.body?.pitch_cost);
+  const feePerPlayer = Number(req.body?.fee_per_player);
+  const match = db.prepare("SELECT * FROM matches WHERE id = ?").get(matchId);
+  if (!match) return res.status(404).json({ error: "No se encontró el partido." });
+  if (readJson(match.draft_state, {}).status !== "complete") {
+    return res.status(409).json({ error: "Completa primero el draft para registrar el cobro." });
+  }
+  if (!Number.isFinite(pitchCost) || !Number.isFinite(feePerPlayer) || pitchCost < 0 || feePerPlayer < 0) {
+    return res.status(400).json({ error: "Introduce importes válidos, iguales o superiores a cero." });
+  }
+  if (db.prepare("SELECT 1 FROM match_finances WHERE match_id = ?").get(matchId)) {
+    return res.status(409).json({ error: "El cobro de este partido ya está registrado." });
+  }
+  const teamA = readJson(match.team_a, []);
+  const teamB = readJson(match.team_b, []);
+  const participantIds = [...new Set([...teamA, ...teamB])];
+  const costCents = moneyCents(pitchCost);
+  const feeCents = moneyCents(feePerPlayer);
+  const collectedCents = participantIds.length * feeCents;
+  if (!participantIds.length) return res.status(409).json({ error: "No hay participantes en los equipos." });
+  if (collectedCents < costCents) {
+    return res.status(400).json({ error: "El total cobrado debe cubrir el coste de la pista para que el bote no quede en negativo." });
+  }
+  const addedPotCents = collectedCents - costCents;
+  try {
+    db.transaction(() => {
+      const insertTransaction = db.prepare("INSERT INTO transactions (user_id, amount, concept) VALUES (?, ?, ?)");
+      const debitPlayer = db.prepare("UPDATE users SET balance = ROUND((balance - ?) * 100) / 100 WHERE id = ?");
+      for (const userId of participantIds) {
+        debitPlayer.run(feeCents / 100, userId);
+        insertTransaction.run(userId, -(feeCents / 100), `Partido #${matchId}: cobro por jugador`);
+      }
+      const currentPotCents = moneyCents(currentPot());
+      db.prepare(`
+        INSERT INTO app_settings (key, value) VALUES ('pot_cents', ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+      `).run(String(currentPotCents + addedPotCents));
+      db.prepare(`
+        INSERT INTO match_finances (match_id, pitch_cost, fee_per_player, participants, total_collected, pot_added)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(matchId, costCents / 100, feeCents / 100, participantIds.length, collectedCents / 100, addedPotCents / 100);
+    })();
+  } catch (error) {
+    console.error("No se pudo registrar el cobro:", error.message);
+    return res.status(500).json({ error: "No se pudo completar el cobro; no se aplicaron los cambios." });
+  }
+  res.json({ match: matchDetails(db.prepare("SELECT * FROM matches WHERE id = ?").get(matchId)), pot: currentPot() });
+});
+
+app.post("/api/admin/matches/:id/result", requireAdmin, (req, res) => {
+  const matchId = Number(req.params.id);
+  const result = req.body?.result;
+  const match = db.prepare("SELECT * FROM matches WHERE id = ?").get(matchId);
+  if (!match) return res.status(404).json({ error: "No se encontró el partido." });
+  if (!["A", "B", "draw"].includes(result)) return res.status(400).json({ error: "El resultado debe ser A, B o empate." });
+  if (match.status !== "closed" || readJson(match.draft_state, {}).status !== "complete") {
+    return res.status(409).json({ error: "Cierra la convocatoria y completa el draft antes de guardar el resultado." });
+  }
+  const teamA = readJson(match.team_a, []);
+  const teamB = readJson(match.team_b, []);
+  const saveResult = db.transaction(() => {
+    db.prepare("UPDATE matches SET status = 'played', result = ? WHERE id = ?").run(result, matchId);
+    const insertPoints = db.prepare("INSERT INTO match_points (match_id, user_id, points, result) VALUES (?, ?, ?, ?)");
+    for (const userId of teamA) {
+      const outcome = result === "draw" ? "draw" : result === "A" ? "win" : "loss";
+      insertPoints.run(matchId, userId, 1 + (outcome === "win" ? 3 : outcome === "draw" ? 1 : 0), outcome);
+    }
+    for (const userId of teamB) {
+      const outcome = result === "draw" ? "draw" : result === "B" ? "win" : "loss";
+      insertPoints.run(matchId, userId, 1 + (outcome === "win" ? 3 : outcome === "draw" ? 1 : 0), outcome);
+    }
+  });
+  try {
+    saveResult();
+  } catch (error) {
+    console.error("No se pudo guardar el resultado:", error.message);
+    return res.status(500).json({ error: "No se pudo guardar el resultado." });
+  }
+  res.json(matchDetails(db.prepare("SELECT * FROM matches WHERE id = ?").get(matchId)));
+});
+
+app.post("/api/admin/matches/:id/notify-negative-balances", requireAdmin, async (req, res) => {
+  const matchId = Number(req.params.id);
+  const match = db.prepare("SELECT * FROM matches WHERE id = ?").get(matchId);
+  if (!match) return res.status(404).json({ error: "No se encontró el partido." });
+  try {
+    res.json(await sendNegativeBalanceAlert(match));
+  } catch (error) {
+    res.status(500).json({ error: "No se pudieron enviar las alertas de saldo." });
+  }
+});
+
 app.post("/api/convocations/me", requireUser, (req, res) => {
   const response = req.body?.response;
   if (!["yes", "no"].includes(response)) {
@@ -387,10 +701,19 @@ app.patch("/api/admin/profile", requireAdmin, (req, res) => {
   if (!["principal", "suplente"].includes(baseRole)) {
     return res.status(400).json({ error: "El rol base debe ser principal o suplente." });
   }
-  db.prepare("UPDATE users SET base_role = ? WHERE id = ?")
-    .run(baseRole, req.session.user.id);
+  const rawRank = req.body?.ranking_position;
+  const rank = rawRank === undefined ? undefined : rawRank === "" || rawRank == null ? null : Number(rawRank);
+  if (rank !== undefined && rank !== null && (!Number.isInteger(rank) || rank < 1)) {
+    return res.status(400).json({ error: "La posición del ranking debe ser un entero positivo." });
+  }
+  if (rank === undefined) {
+    db.prepare("UPDATE users SET base_role = ? WHERE id = ?").run(baseRole, req.session.user.id);
+  } else {
+    db.prepare("UPDATE users SET base_role = ?, ranking_position = ? WHERE id = ?")
+      .run(baseRole, rank, req.session.user.id);
+  }
   req.session.user.base_role = baseRole;
-  const user = db.prepare("SELECT id, name, role, base_role FROM users WHERE id = ?")
+  const user = db.prepare("SELECT id, name, role, base_role, ranking_position FROM users WHERE id = ?")
     .get(req.session.user.id);
   res.json({ user });
 });
@@ -531,6 +854,16 @@ cron.schedule("0 10 * * 5", async () => {
     await sendCampaign(match, "friday_reminder");
   } catch (error) {
     console.error("No se pudo enviar el recordatorio del viernes:", error.message);
+  }
+}, { timezone: timeZone });
+
+cron.schedule("0 10 * * 1", async () => {
+  const match = ensureCurrentMatch();
+  try {
+    const result = await sendNegativeBalanceAlert(match);
+    if (!result.skipped) console.log(`Alertas de saldo del partido #${match.id}: ${result.delivered || 0} enviadas.`);
+  } catch (error) {
+    console.error("No se pudieron enviar las alertas de saldo del lunes:", error.message);
   }
 }, { timezone: timeZone });
 
