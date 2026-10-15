@@ -4,6 +4,8 @@ let users = [];
 let currentUser = null;
 let installPrompt = null;
 let toastTimer;
+let convocationData = null;
+let pushConfig = { enabled: false, publicKey: null };
 
 async function api(url, options = {}) {
   const response = await fetch(url, {
@@ -49,6 +51,142 @@ function attachInstallButton() {
   });
 }
 
+function urlBase64ToUint8Array(base64String) {
+  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const raw = atob(base64);
+  return Uint8Array.from(raw, (character) => character.charCodeAt(0));
+}
+
+async function syncPushButton() {
+  const button = document.querySelector("#push-toggle");
+  if (!button) return;
+  if (!pushConfig.enabled || !("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) {
+    button.disabled = true;
+    button.textContent = "Avisos no configurados";
+    button.title = "El servidor debe configurar Web Push y el navegador debe admitirlo.";
+    button.classList.add("cursor-not-allowed", "opacity-60");
+    return;
+  }
+  try {
+    const registration = await navigator.serviceWorker.ready;
+    const subscription = await registration.pushManager.getSubscription();
+    button.disabled = false;
+    button.textContent = subscription ? "Avisos activados" : "Activar avisos";
+    button.dataset.active = subscription ? "true" : "false";
+  } catch {
+    button.disabled = true;
+    button.textContent = "Avisos no disponibles";
+  }
+}
+
+async function togglePushSubscription() {
+  const button = document.querySelector("#push-toggle");
+  if (!button) return;
+  button.disabled = true;
+  try {
+    const active = button.dataset.active === "true";
+    if (!active && Notification.permission !== "granted") {
+      const permission = await Notification.requestPermission();
+      if (permission !== "granted") throw new Error("Necesitas permitir las notificaciones en el navegador.");
+    }
+    const registration = await navigator.serviceWorker.ready;
+    const existing = await registration.pushManager.getSubscription();
+    if (existing) {
+      await api("/api/push/subscriptions", {
+        method: "DELETE",
+        body: JSON.stringify({ endpoint: existing.endpoint }),
+      });
+      await existing.unsubscribe();
+      showToast("Avisos desactivados en este dispositivo.");
+    } else {
+      const subscription = await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(pushConfig.publicKey),
+      });
+      await api("/api/push/subscriptions", {
+        method: "POST",
+        body: JSON.stringify(subscription),
+      });
+      showToast("Avisos activados en este dispositivo.");
+    }
+  } catch (error) {
+    showToast(error.message || "No se pudo cambiar la suscripción push.");
+  } finally {
+    await syncPushButton();
+    button.disabled = false;
+  }
+}
+
+function formatConvocationDate(match) {
+  const start = new Date(`${match.start_date}T12:00:00Z`);
+  const end = new Date(`${match.end_date.slice(0, 10)}T12:00:00Z`);
+  const fmt = (date) => date.toLocaleDateString("es-ES", { day: "numeric", month: "short", timeZone: "UTC" });
+  return `${fmt(start)} — ${fmt(end)}, 20:00`;
+}
+
+function listPanel(title, usersInList, colorClass, icon, isAdmin = false) {
+  const list = usersInList || [];
+  const rows = list.length
+    ? list.map((user) => `<li class="flex items-center gap-3 px-4 py-3 ${isAdmin && title === "Lista de suplentes" ? "pr-2" : ""}">
+        <span class="grid h-8 w-8 shrink-0 place-items-center rounded-xl ${colorClass} text-[11px] font-bold">${escapeHtml(user.name.split(/\s+/).slice(0, 2).map((part) => part[0]).join("").toUpperCase())}</span>
+        <span class="min-w-0 flex-1 truncate text-sm font-semibold">${escapeHtml(user.name)}</span>
+        <span class="hidden text-[11px] text-ink/40 sm:inline">${user.base_role === "principal" ? "Principal" : "Suplente"}${user.base_role === "suplente" && user.response === "principal" ? " · promovido" : ""}</span>
+        ${isAdmin && title === "Lista de suplentes" ? `<button class="promote-player shrink-0 rounded-lg border border-pitch-700/20 px-2.5 py-1.5 text-[11px] font-bold text-pitch-800 transition hover:bg-pitch-100" data-user-id="${user.id}" aria-label="Promover a ${escapeHtml(user.name)} a principal">↑ Principal</button>` : ""}
+      </li>`).join("")
+    : `<li class="px-4 py-7 text-center text-sm text-ink/40">La lista está vacía.</li>`;
+  return `<section class="overflow-hidden rounded-2xl border border-ink/[.07] bg-white shadow-sm">
+    <header class="flex items-center justify-between gap-3 border-b border-ink/[.07] px-4 py-3.5">
+      <h3 class="flex items-center gap-2 text-sm font-bold"><span class="grid h-7 w-7 place-items-center rounded-lg ${colorClass}">${icon}</span>${title}</h3>
+      <span class="rounded-full bg-paper px-2.5 py-1 text-xs font-bold text-ink/60">${list.length}</span>
+    </header>
+    <ul class="divide-y divide-ink/[.05]">${rows}</ul>
+  </section>`;
+}
+
+function renderConvocationBoard(data, isAdmin = false) {
+  const open = data.match.status === "open";
+  const readinessText = data.validForMatch
+    ? "Plantilla válida para jugar"
+    : data.principalCount < 14
+      ? `Faltan ${14 - data.principalCount} para llegar a 14`
+      : "Hay más de 16 principales";
+  return `
+    <section class="mb-7 overflow-hidden rounded-3xl bg-pitch-900 text-white shadow-card">
+      <div class="flex flex-col gap-6 p-5 sm:p-7 lg:flex-row lg:items-center lg:justify-between">
+        <div class="max-w-xl">
+          <div class="flex flex-wrap items-center gap-2"><span class="rounded-full ${open ? "bg-lime/15 text-lime" : "bg-white/15 text-white/70"} px-3 py-1.5 text-[10px] font-bold tracking-[.12em]">${open ? "CONVOCATORIA ABIERTA" : "CONVOCATORIA CERRADA"}</span><span class="text-xs text-white/50">Martes ${formatConvocationDate(data.match)}</span></div>
+          <h2 class="display mt-4 text-2xl font-extrabold tracking-tight sm:text-3xl">¿Cuentas con nosotros?</h2>
+          <p class="mt-1 text-sm text-white/60">Responde antes del lunes a las 20:00. El admin también participa como jugador.</p>
+          <div class="mt-4 flex items-center gap-2 text-sm font-semibold ${data.validForMatch ? "text-lime" : "text-white/80"}"><span class="grid h-6 w-6 place-items-center rounded-full ${data.validForMatch ? "bg-lime/15 text-lime" : "bg-white/10"}">${data.validForMatch ? "✓" : "!"}</span>${readinessText}</div>
+        </div>
+        <div class="flex min-w-[210px] flex-col gap-3 rounded-2xl border border-white/10 bg-white/[.06] p-4">
+          <div class="flex items-end justify-between"><span class="text-xs font-semibold text-white/60">Lista principal</span><span class="display text-3xl font-extrabold ${data.validForMatch ? "text-lime" : "text-white"}">${data.principalCount}<span class="text-base font-semibold text-white/40"> / 14–16</span></span></div>
+          <div class="h-2 overflow-hidden rounded-full bg-white/10"><div class="h-full rounded-full ${data.validForMatch ? "bg-lime" : "bg-white/70"} transition-all" style="width:${Math.min(100, Math.round((data.principalCount / 16) * 100))}%"></div></div>
+          <span class="text-[11px] text-white/45">${data.responseCount} respuestas · ${data.totalPlayers - data.responseCount} sin responder</span>
+        </div>
+      </div>
+      <div class="flex flex-col gap-3 border-t border-white/10 bg-white/[.03] p-4 sm:flex-row sm:items-center sm:justify-between sm:px-7">
+        <span class="text-xs font-semibold text-white/60">${data.currentResponse ? `Tu respuesta: ${data.currentResponse === "no_va" ? "NO VOY" : "SÍ VOY"}` : "Todavía no has respondido"}</span>
+        <div class="flex gap-2">
+          <button id="response-yes" ${!open ? "disabled" : ""} class="flex-1 rounded-xl ${data.currentResponse === "principal" || data.currentResponse === "suplente" ? "bg-lime text-pitch-950" : "bg-white text-pitch-950"} px-4 py-2.5 text-xs font-extrabold tracking-wide transition hover:bg-lime disabled:cursor-not-allowed disabled:opacity-40 sm:flex-none">SÍ VOY</button>
+          <button id="response-no" ${!open ? "disabled" : ""} class="flex-1 rounded-xl ${data.currentResponse === "no_va" ? "bg-red-300 text-pitch-950" : "border border-white/20 bg-white/5 text-white"} px-4 py-2.5 text-xs font-extrabold tracking-wide transition hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-40 sm:flex-none">NO VOY</button>
+        </div>
+      </div>
+    </section>
+    <div class="mb-3 flex flex-wrap items-end justify-between gap-2"><div><h2 class="display text-xl font-extrabold tracking-tight">Respuestas del grupo</h2><p class="mt-1 text-xs text-ink/50">La lista se actualiza para todo el equipo.</p></div>${isAdmin ? `<label class="flex items-center gap-2 rounded-xl border border-ink/10 bg-white px-3 py-2 text-xs font-semibold">Mi rol base<select id="admin-base-role" class="rounded-lg border-0 bg-transparent text-xs font-bold text-pitch-800 outline-none"><option value="principal" ${currentUser.base_role === "principal" ? "selected" : ""}>Principal</option><option value="suplente" ${currentUser.base_role === "suplente" ? "selected" : ""}>Suplente</option></select></label>` : ""}</div>
+    ${isAdmin ? `<div class="mb-4 grid gap-3 rounded-2xl border border-pitch-900/10 bg-white p-4 sm:grid-cols-[1fr_auto_auto] sm:items-center"><div><p class="text-sm font-bold">Avisos de esta convocatoria</p><p id="push-status-copy" class="mt-1 text-xs text-ink/50">${pushConfig.enabled ? "Apertura automática el martes · recordatorio el viernes a las 10:00." : "Configura las claves VAPID del servidor para activar los avisos push."}</p></div><button id="send-opening" class="rounded-xl border border-ink/10 px-3 py-2 text-xs font-bold transition hover:bg-paper disabled:cursor-not-allowed disabled:opacity-40">Enviar apertura</button><button id="send-reminder" class="rounded-xl bg-pitch-900 px-3 py-2 text-xs font-bold text-white transition hover:bg-pitch-800 disabled:cursor-not-allowed disabled:opacity-40">Enviar recordatorio</button></div>` : ""}
+    <div class="grid gap-4 lg:grid-cols-3">
+      ${listPanel("Lista principal", data.lists.principal, "bg-pitch-100 text-pitch-800", "✓", isAdmin)}
+      ${listPanel("Lista de suplentes", data.lists.suplentes, "bg-amber-50 text-amber-700", "↗", isAdmin)}
+      ${listPanel("Lista NO VAN", data.lists.no_va, "bg-stone-100 text-stone-500", "—", isAdmin)}
+    </div>
+    <details class="mt-4 rounded-2xl border border-ink/[.07] bg-white px-4 py-3">
+      <summary class="cursor-pointer list-none text-sm font-semibold">Sin responder <span class="ml-1 rounded-full bg-paper px-2 py-0.5 text-xs text-ink/55">${data.lists.pending.length}</span></summary>
+      <p class="mt-2 text-xs text-ink/50">${data.lists.pending.length ? data.lists.pending.map((user) => escapeHtml(user.name)).join(" · ") : "Todo el grupo ha respondido."}</p>
+    </details>`;
+}
+
 function shell(content, active = "Inicio") {
   const initials = currentUser?.name?.split(/\s+/).slice(0, 2).map((part) => part[0]).join("").toUpperCase() || "OP";
   app.innerHTML = `
@@ -63,6 +201,7 @@ function shell(content, active = "Inicio") {
           </a>
           <div class="flex items-center gap-2 sm:gap-4">
             ${installButton()}
+            <button id="push-toggle" disabled class="rounded-xl border border-white/20 bg-white/10 px-3 py-2.5 text-xs font-bold text-white transition hover:bg-white/20 disabled:cursor-not-allowed disabled:opacity-60 sm:px-4" title="Activa avisos de convocatoria en este dispositivo">Activar avisos</button>
             <div class="hidden items-center gap-2 sm:flex"><span class="grid h-9 w-9 place-items-center rounded-full bg-white/15 text-xs font-bold">${escapeHtml(initials)}</span><span class="max-w-32 truncate text-sm font-medium">${escapeHtml(currentUser?.name || "")}</span></div>
             <button id="logout" class="rounded-lg px-2 py-2 text-sm text-white/70 transition hover:bg-white/10 hover:text-white" aria-label="Cerrar sesión">Salir</button>
           </div>
@@ -73,6 +212,8 @@ function shell(content, active = "Inicio") {
     </div>`;
   attachInstallButton();
   document.querySelector("#logout")?.addEventListener("click", logout);
+  document.querySelector("#push-toggle")?.addEventListener("click", togglePushSubscription);
+  syncPushButton();
 }
 
 function renderLogin() {
@@ -117,27 +258,126 @@ function renderLogin() {
   );
 }
 
-function renderAdmin() {
+async function renderAdmin() {
+  await loadUsers();
+  convocationData = await api("/api/convocations/current");
+  pushConfig = await api("/api/push/config").catch(() => ({ enabled: false, publicKey: null }));
+  const players = users.filter((user) => user.role !== "admin");
   const adminContent = `
     <div class="mb-8 flex flex-col justify-between gap-5 sm:flex-row sm:items-end">
-      <div><div class="mb-3 flex items-center gap-2 text-xs font-bold uppercase tracking-[.14em] text-pitch-700"><span class="h-2 w-2 rounded-full bg-pitch-700"></span>ADMINISTRACIÓN <span class="text-ink/25">/</span> EQUIPO</div><h1 class="display text-3xl font-extrabold tracking-tight sm:text-4xl">Gestiona el equipo</h1><p class="mt-2 text-sm text-ink/55">Altas, posiciones y saldo de la plantilla.</p></div>
+      <div><div class="mb-3 flex items-center gap-2 text-xs font-bold uppercase tracking-[.14em] text-pitch-700"><span class="h-2 w-2 rounded-full bg-pitch-700"></span>ADMINISTRACIÓN <span class="text-ink/25">/</span> EQUIPO</div><h1 class="display text-3xl font-extrabold tracking-tight sm:text-4xl">Gestiona la pachanga</h1><p class="mt-2 text-sm text-ink/55">La convocatoria, el equipo y la organización semanal.</p></div>
       <button id="new-player" class="inline-flex items-center justify-center gap-2 rounded-xl bg-pitch-900 px-5 py-3 text-sm font-bold text-white shadow-sm transition hover:bg-pitch-800"><span class="text-lg leading-none">+</span> Añadir jugador</button>
     </div>
+    ${renderConvocationBoard(convocationData, true)}
     <div class="mb-6 grid gap-3 sm:grid-cols-3">
-      <div class="rounded-2xl border border-ink/[.07] bg-white p-5 shadow-sm"><p class="text-xs font-semibold text-ink/45">PLANTILLA TOTAL</p><div class="mt-2 flex items-end justify-between"><span class="display text-3xl font-extrabold">${users.length}</span><span class="pb-1 text-xs text-ink/40">jugadores</span></div></div>
-      <div class="rounded-2xl border border-ink/[.07] bg-white p-5 shadow-sm"><p class="text-xs font-semibold text-ink/45">PRINCIPALES</p><div class="mt-2 flex items-end justify-between"><span class="display text-3xl font-extrabold">${users.filter((user) => user.role === "principal").length}</span><span class="mb-1 h-2 w-2 rounded-full bg-pitch-700"></span></div></div>
-      <div class="rounded-2xl border border-ink/[.07] bg-white p-5 shadow-sm"><p class="text-xs font-semibold text-ink/45">SUPLENTES</p><div class="mt-2 flex items-end justify-between"><span class="display text-3xl font-extrabold">${users.filter((user) => user.role === "suplente").length}</span><span class="mb-1 h-2 w-2 rounded-full bg-amber-400"></span></div></div>
+      <div class="rounded-2xl border border-ink/[.07] bg-white p-5 shadow-sm"><p class="text-xs font-semibold text-ink/45">PLANTILLA TOTAL</p><div class="mt-2 flex items-end justify-between"><span class="display text-3xl font-extrabold">${players.length + 1}</span><span class="pb-1 text-xs text-ink/40">incluye admin</span></div></div>
+      <div class="rounded-2xl border border-ink/[.07] bg-white p-5 shadow-sm"><p class="text-xs font-semibold text-ink/45">PRINCIPALES</p><div class="mt-2 flex items-end justify-between"><span class="display text-3xl font-extrabold">${players.filter((user) => user.base_role === "principal").length + (currentUser.base_role === "principal" ? 1 : 0)}</span><span class="mb-1 h-2 w-2 rounded-full bg-pitch-700"></span></div></div>
+      <div class="rounded-2xl border border-ink/[.07] bg-white p-5 shadow-sm"><p class="text-xs font-semibold text-ink/45">SUPLENTES</p><div class="mt-2 flex items-end justify-between"><span class="display text-3xl font-extrabold">${players.filter((user) => user.base_role === "suplente").length + (currentUser.base_role === "suplente" ? 1 : 0)}</span><span class="mb-1 h-2 w-2 rounded-full bg-amber-400"></span></div></div>
     </div>
     <section class="overflow-hidden rounded-2xl border border-ink/[.07] bg-white shadow-sm">
-      <div class="flex items-center justify-between border-b border-ink/[.07] px-5 py-4 sm:px-6"><div><h2 class="font-bold">Jugadores</h2><p class="mt-0.5 text-xs text-ink/45">Posición de ranking y saldo actual</p></div><span class="rounded-full bg-pitch-100 px-3 py-1 text-xs font-bold text-pitch-800">${users.length} activos</span></div>
-      ${users.length ? `<div class="overflow-x-auto"><table class="w-full min-w-[650px] text-left"><thead class="bg-paper/70 text-[10px] font-bold uppercase tracking-[.12em] text-ink/45"><tr><th class="px-5 py-3 sm:px-6">Jugador</th><th class="px-4 py-3">Rol</th><th class="px-4 py-3">Ranking</th><th class="px-4 py-3">Saldo</th><th class="px-5 py-3 text-right sm:px-6">Acción</th></tr></thead><tbody class="divide-y divide-ink/[.06]">${users.map((user) => `<tr class="hover:bg-paper/50"><td class="px-5 py-4 sm:px-6"><div class="flex items-center gap-3"><span class="grid h-9 w-9 place-items-center rounded-xl ${user.role === "principal" ? "bg-pitch-100 text-pitch-800" : "bg-amber-50 text-amber-700"} text-xs font-bold">${escapeHtml(user.name.split(/\s+/).slice(0, 2).map((part) => part[0]).join("").toUpperCase())}</span><span class="font-semibold">${escapeHtml(user.name)}</span></div></td><td class="px-4 py-4"><span class="rounded-full ${user.role === "principal" ? "bg-pitch-100 text-pitch-800" : "bg-amber-50 text-amber-700"} px-2.5 py-1 text-xs font-semibold">${user.role === "principal" ? "Principal" : "Suplente"}</span></td><td class="px-4 py-4 text-sm text-ink/65">${user.ranking_position ? `#${user.ranking_position}` : "—"}</td><td class="px-4 py-4 text-sm font-semibold">${formatMoney(user.balance)}</td><td class="px-5 py-4 text-right sm:px-6"><button class="edit-player rounded-lg border border-ink/10 px-3 py-1.5 text-xs font-bold transition hover:border-pitch-700 hover:text-pitch-700" data-id="${user.id}">Editar</button></td></tr>`).join("")}</tbody></table></div>` : `<div class="px-6 py-14 text-center"><div class="mx-auto grid h-12 w-12 place-items-center rounded-2xl bg-pitch-100 text-pitch-800 text-xl">＋</div><p class="mt-4 font-bold">Aún no hay jugadores</p><p class="mt-1 text-sm text-ink/50">Añade a los amigos que forman el equipo.</p></div>`}
+      <div class="flex items-center justify-between border-b border-ink/[.07] px-5 py-4 sm:px-6"><div><h2 class="font-bold">Jugadores</h2><p class="mt-0.5 text-xs text-ink/45">Posición de ranking y saldo actual</p></div><span class="rounded-full bg-pitch-100 px-3 py-1 text-xs font-bold text-pitch-800">${players.length} activos</span></div>
+      ${players.length ? `<div class="overflow-x-auto"><table class="w-full min-w-[650px] text-left"><thead class="bg-paper/70 text-[10px] font-bold uppercase tracking-[.12em] text-ink/45"><tr><th class="px-5 py-3 sm:px-6">Jugador</th><th class="px-4 py-3">Rol base</th><th class="px-4 py-3">Ranking</th><th class="px-4 py-3">Saldo</th><th class="px-5 py-3 text-right sm:px-6">Acción</th></tr></thead><tbody class="divide-y divide-ink/[.06]">${players.map((user) => `<tr class="hover:bg-paper/50"><td class="px-5 py-4 sm:px-6"><div class="flex items-center gap-3"><span class="grid h-9 w-9 place-items-center rounded-xl ${user.base_role === "principal" ? "bg-pitch-100 text-pitch-800" : "bg-amber-50 text-amber-700"} text-xs font-bold">${escapeHtml(user.name.split(/\s+/).slice(0, 2).map((part) => part[0]).join("").toUpperCase())}</span><span class="font-semibold">${escapeHtml(user.name)}</span></div></td><td class="px-4 py-4"><span class="rounded-full ${user.base_role === "principal" ? "bg-pitch-100 text-pitch-800" : "bg-amber-50 text-amber-700"} px-2.5 py-1 text-xs font-semibold">${user.base_role === "principal" ? "Principal" : "Suplente"}</span></td><td class="px-4 py-4 text-sm text-ink/65">${user.ranking_position ? `#${user.ranking_position}` : "—"}</td><td class="px-4 py-4 text-sm font-semibold">${formatMoney(user.balance)}</td><td class="px-5 py-4 text-right sm:px-6"><button class="edit-player rounded-lg border border-ink/10 px-3 py-1.5 text-xs font-bold transition hover:border-pitch-700 hover:text-pitch-700" data-id="${user.id}">Editar</button></td></tr>`).join("")}</tbody></table></div>` : `<div class="px-6 py-14 text-center"><div class="mx-auto grid h-12 w-12 place-items-center rounded-2xl bg-pitch-100 text-pitch-800 text-xl">＋</div><p class="mt-4 font-bold">Aún no hay jugadores</p><p class="mt-1 text-sm text-ink/50">Añade a los amigos que forman el equipo.</p></div>`}
     </section>`;
   shell(adminContent, "Equipo");
   document.querySelector("#new-player")?.addEventListener("click", () => openPlayerModal());
   document.querySelectorAll(".edit-player").forEach((button) => {
-    const player = users.find((user) => user.id === Number(button.dataset.id));
+    const player = players.find((user) => user.id === Number(button.dataset.id));
     button.addEventListener("click", () => openPlayerModal(player));
   });
+  bindConvocationActions(true);
+  document.querySelector("#admin-base-role")?.addEventListener("change", async (event) => {
+    try {
+      const result = await api("/api/admin/profile", { method: "PATCH", body: JSON.stringify({ base_role: event.target.value }) });
+      currentUser = result.user;
+      showToast("Tu rol base de jugador se ha actualizado.");
+      renderAdmin();
+    } catch (error) {
+      showToast(error.message);
+    }
+  });
+  for (const [id, type] of [["send-opening", "opening"], ["send-reminder", "friday_reminder"]]) {
+    const button = document.querySelector(`#${id}`);
+    button.disabled = !pushConfig.enabled || convocationData.match.status !== "open";
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      try {
+        const result = await api(`/api/admin/notifications/${type}`, { method: "POST", body: "{}" });
+        const message = result.alreadySent
+          ? "Este aviso ya se había enviado."
+          : result.inProgress
+            ? "El envío de este aviso está en curso."
+            : `${result.delivered} notificación(es) enviadas.`;
+        showToast(message);
+        await renderAdmin();
+      } catch (error) {
+        showToast(error.message);
+        button.disabled = false;
+      }
+    });
+  }
+  if (pushConfig.enabled) {
+    api("/api/admin/notifications/status").then((status) => {
+      const opening = status.campaigns.opening;
+      const reminder = status.campaigns.friday_reminder;
+      const notes = [];
+      if (opening?.status === "sent") notes.push(`Apertura: ${opening.delivered_count} enviada(s)`);
+      if (reminder?.status === "sent") notes.push(`Recordatorio: ${reminder.delivered_count} enviada(s)`);
+      if (opening?.status === "sent" || opening?.status === "sending") document.querySelector("#send-opening").disabled = true;
+      if (reminder?.status === "sent" || reminder?.status === "sending") document.querySelector("#send-reminder").disabled = true;
+      if (notes.length) document.querySelector("#push-status-copy").textContent = notes.join(" · ");
+    }).catch(() => {});
+  }
+}
+
+function bindConvocationActions(isAdmin = false) {
+  for (const [id, response] of [["response-yes", "yes"], ["response-no", "no"]]) {
+    document.querySelector(`#${id}`)?.addEventListener("click", async () => {
+      try {
+        convocationData = await api("/api/convocations/me", {
+          method: "POST",
+          body: JSON.stringify({ response }),
+        });
+        showToast(response === "yes" ? "Respuesta guardada. ¡Nos vemos en el campo!" : "Respuesta guardada.");
+        await renderHome();
+      } catch (error) {
+        showToast(error.message);
+      }
+    });
+  }
+  if (isAdmin) {
+    document.querySelectorAll(".promote-player").forEach((button) => {
+      button.addEventListener("click", async () => {
+        button.disabled = true;
+        try {
+          convocationData = await api(`/api/admin/convocations/${button.dataset.userId}/promote`, {
+            method: "POST",
+            body: "{}",
+          });
+          showToast("Jugador promovido a la lista principal.");
+          await renderAdmin();
+        } catch (error) {
+          showToast(error.message);
+          button.disabled = false;
+        }
+      });
+    });
+  }
+}
+
+async function renderPlayer() {
+  await loadUsers();
+  convocationData = await api("/api/convocations/current");
+  pushConfig = await api("/api/push/config").catch(() => ({ enabled: false, publicKey: null }));
+  const player = users.find((user) => user.id === currentUser?.id);
+  const content = `
+    <div class="mb-7"><div class="mb-3 flex items-center gap-2 text-xs font-bold uppercase tracking-[.14em] text-pitch-700"><span class="h-2 w-2 rounded-full bg-pitch-700"></span>VESTUARIO</div><h1 class="display text-3xl font-extrabold tracking-tight sm:text-4xl">¡Hola, ${escapeHtml(currentUser?.name?.split(" ")[0] || "jugador")}!</h1><p class="mt-2 text-sm text-ink/55">Responde a la convocatoria y consulta las listas del equipo.</p></div>
+    ${renderConvocationBoard(convocationData, false)}
+    <div class="mt-5 grid gap-4 sm:grid-cols-2">
+      <section class="rounded-2xl border border-ink/[.07] bg-white p-6 shadow-sm"><p class="text-xs font-bold uppercase tracking-[.12em] text-ink/45">Tu rol base</p><p class="display mt-3 text-2xl font-extrabold">${player?.base_role === "principal" ? "Principal" : "Suplente"}</p></section>
+      <section class="rounded-2xl border border-ink/[.07] bg-white p-6 shadow-sm"><p class="text-xs font-bold uppercase tracking-[.12em] text-ink/45">Saldo</p><p class="display mt-3 text-2xl font-extrabold">${formatMoney(player?.balance)}</p></section>
+    </div>`;
+  shell(content);
+  bindConvocationActions();
 }
 
 function formatMoney(amount) {
@@ -193,32 +433,58 @@ async function login(userId) {
     const result = await api("/api/session", { method: "POST", body: JSON.stringify({ userId }) });
     currentUser = result.user;
     await loadUsers();
-    renderHome();
+    await renderHome();
   } catch (error) {
     showToast(error.message);
   }
 }
 
 async function logout() {
+  try {
+    const registration = await navigator.serviceWorker?.ready;
+    const subscription = await registration?.pushManager?.getSubscription();
+    if (subscription) {
+      await api("/api/push/subscriptions", {
+        method: "DELETE",
+        body: JSON.stringify({ endpoint: subscription.endpoint }),
+      });
+      await subscription.unsubscribe();
+    }
+  } catch {
+    // The server session still closes even if push unsubscribe fails.
+  }
   await api("/api/session", { method: "DELETE" }).catch(() => {});
   currentUser = null;
   renderLogin();
 }
 
-function renderHome() {
+async function renderHome() {
   if (currentUser?.role === "admin") return renderAdmin();
-  const player = users.find((user) => user.id === currentUser?.id);
-  const content = `
-    <div class="mb-8"><div class="mb-3 flex items-center gap-2 text-xs font-bold uppercase tracking-[.14em] text-pitch-700"><span class="h-2 w-2 rounded-full bg-pitch-700"></span>VESTUARIO</div><h1 class="display text-3xl font-extrabold tracking-tight sm:text-4xl">¡Hola, ${escapeHtml(currentUser?.name?.split(" ")[0] || "jugador")}!</h1><p class="mt-2 text-sm text-ink/55">Tu sitio en el equipo está listo. Nos vemos en el campo.</p></div>
-    <section class="relative overflow-hidden rounded-3xl bg-pitch-900 p-6 text-white shadow-card sm:p-9"><div class="absolute -right-14 -top-24 h-72 w-72 rounded-full border border-white/10"></div><div class="absolute -right-1 -top-10 h-48 w-48 rounded-full border border-white/10"></div><div class="relative max-w-xl"><span class="rounded-full bg-lime/15 px-3 py-1.5 text-xs font-bold text-lime">${player?.role === "principal" ? "JUGADOR PRINCIPAL" : "SUPLENTE"}</span><h2 class="display mt-6 text-3xl font-extrabold tracking-tight">Próximo partido</h2><p class="mt-2 text-sm text-white/60">La convocatoria del martes aparecerá aquí.</p><div class="mt-7 flex flex-wrap gap-3"><span class="rounded-xl border border-white/15 bg-white/5 px-4 py-3 text-sm font-semibold">📅 &nbsp;Martes</span><span class="rounded-xl border border-white/15 bg-white/5 px-4 py-3 text-sm font-semibold">⚽ &nbsp;Partido pendiente de convocar</span></div></div></section>
-    <div class="mt-5 grid gap-4 sm:grid-cols-2"><section class="rounded-2xl border border-ink/[.07] bg-white p-6 shadow-sm"><p class="text-xs font-bold uppercase tracking-[.12em] text-ink/45">Posición en el ranking</p><p class="display mt-3 text-3xl font-extrabold">${player?.ranking_position ? `#${player.ranking_position}` : "—"}</p></section><section class="rounded-2xl border border-ink/[.07] bg-white p-6 shadow-sm"><p class="text-xs font-bold uppercase tracking-[.12em] text-ink/45">Saldo</p><p class="display mt-3 text-3xl font-extrabold">${formatMoney(player?.balance)}</p></section></div>
-    <p class="mt-8 rounded-xl border border-dashed border-ink/15 px-5 py-4 text-sm text-ink/50">La convocatoria, los equipos y los resultados se podrán añadir como siguiente paso.</p>`;
-  shell(content);
+  return renderPlayer();
 }
 
 async function loadUsers() {
   users = await api("/api/users");
 }
+
+let pollingConvocation = false;
+async function refreshConvocationIfChanged() {
+  if (!currentUser || document.visibilityState !== "visible" || pollingConvocation || document.querySelector('[role="dialog"]')) return;
+  pollingConvocation = true;
+  try {
+    const latest = await api("/api/convocations/current");
+    if (JSON.stringify(latest) !== JSON.stringify(convocationData)) {
+      convocationData = latest;
+      await renderHome();
+    }
+  } catch {
+    // Keep the last visible response while temporarily offline.
+  } finally {
+    pollingConvocation = false;
+  }
+}
+
+setInterval(refreshConvocationIfChanged, 30000);
 
 async function start() {
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch((error) => console.warn("No se pudo registrar el service worker:", error));
@@ -226,8 +492,11 @@ async function start() {
     await loadUsers();
     const session = await api("/api/session");
     currentUser = session.user;
-    if (currentUser) await loadUsers();
-    currentUser ? renderHome() : renderLogin();
+    if (currentUser) await renderHome();
+    else {
+      await loadUsers();
+      renderLogin();
+    }
   } catch (error) {
     app.innerHTML = `<main class="grid min-h-screen place-items-center p-6"><div class="max-w-sm text-center"><div class="text-4xl">⚽</div><h1 class="display mt-4 text-2xl font-extrabold">No hay conexión con el servidor</h1><p class="mt-2 text-sm text-ink/55">Comprueba la conexión e inténtalo de nuevo.</p><button onclick="location.reload()" class="mt-5 rounded-xl bg-pitch-900 px-5 py-3 text-sm font-bold text-white">Reintentar</button></div></main>`;
     console.error(error);

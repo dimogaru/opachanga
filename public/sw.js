@@ -1,4 +1,4 @@
-const CACHE_NAME = "o-pachanga-v1";
+const CACHE_NAME = "o-pachanga-v2";
 const APP_SHELL = [
   "/",
   "/index.html",
@@ -53,5 +53,36 @@ self.addEventListener("fetch", (event) => {
           return response;
         }),
     ),
+  );
+});
+
+self.addEventListener("push", (event) => {
+  let payload = {};
+  try {
+    payload = event.data?.json() || {};
+  } catch {
+    payload = { body: event.data?.text() || "Tienes novedades de la pachanga." };
+  }
+  event.waitUntil(
+    self.registration.showNotification(payload.title || "O Pachanga", {
+      body: payload.body || "Tienes novedades de la convocatoria.",
+      icon: "/icons/icon-192.png",
+      badge: "/icons/icon-192.png",
+      data: { url: payload.url || "/" },
+      tag: payload.tag || "o-pachanga-convocatoria",
+      renotify: false,
+    }),
+  );
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const targetUrl = new URL(event.notification.data?.url || "/", self.location.origin).href;
+  event.waitUntil(
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clients) => {
+      const existing = clients.find((client) => client.url === targetUrl);
+      if (existing) return existing.focus();
+      return self.clients.openWindow(targetUrl);
+    }),
   );
 });
