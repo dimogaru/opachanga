@@ -159,7 +159,7 @@ if (!defaultAdmin) {
   const createdAdmin = db.prepare(`
     INSERT INTO users (name, first_name, last_name, alias, password_hash, account_status,
       must_change_password, role, base_role, ranking_position, balance)
-    VALUES ('DIEGO GAY DAVILA', 'DIEGO', 'GAY DAVILA', 'DIEGO', ?, 'active', 1, 'admin', 'principal', 1, 0)
+    VALUES ('DIEGO GAY DAVILA', 'DIEGO', 'GAY DAVILA', 'DIEGO', ?, 'active', 1, 'admin', 'principal', NULL, 0)
   `).run(defaultAdminPasswordHash);
   defaultAdmin = db.prepare("SELECT * FROM users WHERE id = ?").get(createdAdmin.lastInsertRowid);
 } else if (!defaultAdmin.alias || !defaultAdmin.password_hash) {
@@ -168,10 +168,11 @@ if (!defaultAdmin) {
       alias = COALESCE(NULLIF(alias, ''), 'DIEGO'),
       password_hash = COALESCE(password_hash, ?), account_status = 'active',
       must_change_password = CASE WHEN password_hash IS NULL THEN 1 ELSE must_change_password END,
-      base_role = 'principal', ranking_position = 1
+      base_role = 'principal', ranking_position = NULL
     WHERE id = ?
   `).run(defaultAdminPasswordHash, defaultAdmin.id);
 }
+db.prepare("UPDATE users SET ranking_position = NULL WHERE role = 'admin'").run();
 
 const vapidPublicKey = process.env.VAPID_PUBLIC_KEY || "";
 const vapidPrivateKey = process.env.VAPID_PRIVATE_KEY || "";
@@ -307,16 +308,17 @@ function getConvocationData(match, userId) {
   const principal = roster.filter((user) => user.response === "principal");
   const suplentes = roster.filter((user) => user.response === "suplente");
   const noVan = roster.filter((user) => user.response === "no_va");
-  const pending = roster.filter((user) => user.response === null);
-  const principalCount = principal.length;
+  const activePlayers = roster.filter((user) => user.role !== "admin");
+  const pending = activePlayers.filter((user) => user.response === null);
+  const principalCount = principal.filter((user) => user.role !== "admin").length;
   return {
     match,
     lists: { principal, suplentes, no_va: noVan, pending },
     currentResponse: roster.find((user) => user.id === userId)?.response || null,
     principalCount,
     validForMatch: principalCount >= 14 && principalCount <= 16,
-    responseCount: principalCount + suplentes.length + noVan.length,
-    totalPlayers: roster.length,
+    responseCount: activePlayers.filter((user) => user.response !== null).length,
+    totalPlayers: activePlayers.length,
   };
 }
 
@@ -326,6 +328,18 @@ function moneyCents(value) {
 
 function roundMoney(value) {
   return Math.round(value * 100) / 100;
+}
+
+function activeNonAdminIds(ids) {
+  const uniqueIds = [...new Set((ids || []).map(Number).filter(Number.isInteger))];
+  if (!uniqueIds.length) return [];
+  const users = db.prepare(`
+    SELECT id FROM users
+    WHERE id IN (${uniqueIds.map(() => "?").join(",")})
+      AND role != 'admin' AND account_status = 'active'
+  `).all(...uniqueIds);
+  const eligible = new Set(users.map((user) => user.id));
+  return uniqueIds.filter((id) => eligible.has(id));
 }
 
 function readJson(value, fallback) {
@@ -342,12 +356,17 @@ function matchDetails(match) {
   const teamBIds = readJson(match.team_b, []);
   const draft = readJson(match.draft_state, {});
   const getTeam = (ids) => ids.length
-    ? db.prepare(`SELECT id, name, ranking_position FROM users WHERE id IN (${ids.map(() => "?").join(",")})`).all(...ids)
+    ? db.prepare(`SELECT id, name, ranking_position FROM users WHERE id IN (${ids.map(() => "?").join(",")}) AND role != 'admin' AND account_status = 'active'`).all(...ids)
       .sort((left, right) => ids.indexOf(left.id) - ids.indexOf(right.id))
     : [];
   const available = draft.remaining?.length ? getTeam(draft.remaining) : [];
   const finance = db.prepare("SELECT * FROM match_finances WHERE match_id = ?").get(match.id) || null;
-  const principalCount = db.prepare("SELECT COUNT(*) AS count FROM convocations WHERE match_id = ? AND status = 'principal'")
+  const principalCount = db.prepare(`
+    SELECT COUNT(*) AS count FROM convocations c
+    JOIN users u ON u.id = c.user_id
+    WHERE c.match_id = ? AND c.status = 'principal'
+      AND u.role != 'admin' AND u.account_status = 'active'
+  `)
     .get(match.id).count;
   return {
     ...match,
@@ -384,7 +403,7 @@ async function sendNegativeBalanceAlert(match) {
     JOIN users u ON u.id = s.user_id
     JOIN convocations c ON c.user_id = u.id AND c.match_id = ?
       AND c.status IN ('principal', 'suplente')
-    WHERE u.account_status = 'active' AND u.balance < 0
+    WHERE u.account_status = 'active' AND u.role != 'admin' AND u.balance < 0
   `).all(match.id);
   const payload = JSON.stringify({
     title: "Saldo negativo antes de jugar",
@@ -450,7 +469,7 @@ async function sendCampaign(match, type) {
     : db.prepare(`
         SELECT s.endpoint, s.p256dh, s.auth
         FROM push_subscriptions s
-        JOIN users u ON u.id = s.user_id AND u.account_status = 'active'
+        JOIN users u ON u.id = s.user_id AND u.account_status = 'active' AND u.role != 'admin'
         LEFT JOIN convocations c ON c.user_id = s.user_id AND c.match_id = ?
         WHERE c.user_id IS NULL
       `).all(match.id);
@@ -597,11 +616,11 @@ app.post("/api/admin/pending-users/:id/approve", requireAdmin, (req, res) => {
   if (!["principal", "suplente"].includes(baseRole)) {
     return res.status(400).json({ error: "El rol base debe ser principal o suplente." });
   }
-  if (!Number.isInteger(rankingPosition) || rankingPosition < 2) {
-    return res.status(400).json({ error: "Asigna una posición fija del ranking; la posición 1 pertenece al administrador." });
+  if (!Number.isInteger(rankingPosition) || rankingPosition < 1) {
+    return res.status(400).json({ error: "La posición del ranking debe ser un entero positivo." });
   }
   if (!Number.isFinite(balance)) return res.status(400).json({ error: "El saldo inicial debe ser válido." });
-  if (db.prepare("SELECT id FROM users WHERE account_status = 'active' AND ranking_position = ? AND id != ?").get(rankingPosition, id)) {
+  if (db.prepare("SELECT id FROM users WHERE account_status = 'active' AND role != 'admin' AND ranking_position = ? AND id != ?").get(rankingPosition, id)) {
     return res.status(409).json({ error: "Esa posición ya está asignada a otro jugador activo." });
   }
   db.prepare(`
@@ -694,7 +713,7 @@ app.get("/api/standings", requireUser, (_req, res) => {
       COUNT(mp.match_id) AS matches_played
     FROM users u
     LEFT JOIN match_points mp ON mp.user_id = u.id
-    WHERE u.account_status = 'active'
+    WHERE u.account_status = 'active' AND u.role != 'admin'
     GROUP BY u.id
     ORDER BY points DESC, wins DESC, u.name COLLATE NOCASE
   `).all();
@@ -711,16 +730,14 @@ app.post("/api/admin/matches/:id/draft/start", requireAdmin, (req, res) => {
     SELECT u.id, u.name, u.ranking_position
     FROM convocations c JOIN users u ON u.id = c.user_id
     WHERE c.match_id = ? AND c.status = 'principal'
+      AND u.role != 'admin' AND u.account_status = 'active'
     ORDER BY u.ranking_position IS NULL, u.ranking_position, u.name COLLATE NOCASE
   `).all(matchId);
   if (participants.length < 14 || participants.length > 16) {
     return res.status(409).json({ error: "El draft requiere entre 14 y 16 jugadores confirmados en la lista principal." });
   }
-  const captainA = participants.find((player) => player.ranking_position === 1);
-  const captainB = participants.find((player) => player.ranking_position === 2);
-  if (!captainA || !captainB || captainA.id === captainB.id) {
-    return res.status(409).json({ error: "Asigna las posiciones de ranking 1 y 2 a dos jugadores confirmados para iniciar el draft." });
-  }
+  const captainA = participants[0];
+  const captainB = participants[1];
   const remaining = participants.filter((player) => player.id !== captainA.id && player.id !== captainB.id).map((player) => player.id);
   const draft = {
     status: "in_progress",
@@ -747,6 +764,9 @@ app.post("/api/admin/matches/:id/draft/pick", requireAdmin, (req, res) => {
   const remaining = draft.remaining || [];
   if (!Number.isInteger(playerId) || !remaining.includes(playerId)) {
     return res.status(400).json({ error: "Selecciona un jugador disponible en el draft." });
+  }
+  if (!db.prepare("SELECT 1 FROM users WHERE id = ? AND role != 'admin' AND account_status = 'active'").get(playerId)) {
+    return res.status(400).json({ error: "El administrador no puede formar parte de los equipos." });
   }
   const teamA = readJson(match.team_a, []);
   const teamB = readJson(match.team_b, []);
@@ -790,7 +810,7 @@ app.post("/api/admin/matches/:id/finance", requireAdmin, (req, res) => {
   }
   const teamA = readJson(match.team_a, []);
   const teamB = readJson(match.team_b, []);
-  const participantIds = [...new Set([...teamA, ...teamB])];
+  const participantIds = activeNonAdminIds([...teamA, ...teamB]);
   const costCents = moneyCents(pitchCost);
   const feeCents = moneyCents(feePerPlayer);
   const collectedCents = participantIds.length * feeCents;
@@ -833,8 +853,8 @@ app.post("/api/admin/matches/:id/result", requireAdmin, (req, res) => {
   if (match.status !== "closed" || readJson(match.draft_state, {}).status !== "complete") {
     return res.status(409).json({ error: "Cierra la convocatoria y completa el draft antes de guardar el resultado." });
   }
-  const teamA = readJson(match.team_a, []);
-  const teamB = readJson(match.team_b, []);
+  const teamA = activeNonAdminIds(readJson(match.team_a, []));
+  const teamB = activeNonAdminIds(readJson(match.team_b, []));
   const saveResult = db.transaction(() => {
     db.prepare("UPDATE matches SET status = 'played', result = ? WHERE id = ?").run(result, matchId);
     const insertPoints = db.prepare("INSERT INTO match_points (match_id, user_id, points, result) VALUES (?, ?, ?, ?)");
@@ -895,9 +915,14 @@ app.post("/api/admin/convocations/:userId/promote", requireAdmin, async (req, re
     return res.status(409).json({ error: "La convocatoria está cerrada; ya no se pueden mover jugadores." });
   }
   const userId = Number(req.params.userId);
-  const response = db.prepare("SELECT status FROM convocations WHERE match_id = ? AND user_id = ?")
+  const response = db.prepare(`
+    SELECT c.status FROM convocations c
+    JOIN users u ON u.id = c.user_id
+    WHERE c.match_id = ? AND c.user_id = ? AND c.status = 'suplente'
+      AND u.role != 'admin' AND u.account_status = 'active'
+  `)
     .get(match.id, userId);
-  if (!response || response.status !== "suplente") {
+  if (!response) {
     return res.status(409).json({ error: "Solo se puede promover a alguien de la lista de suplentes." });
   }
   db.prepare("UPDATE convocations SET status = 'principal', updated_at = CURRENT_TIMESTAMP WHERE match_id = ? AND user_id = ?")
@@ -916,20 +941,8 @@ app.patch("/api/admin/profile", requireAdmin, (req, res) => {
   if (!["principal", "suplente"].includes(baseRole)) {
     return res.status(400).json({ error: "El rol base debe ser principal o suplente." });
   }
-  const rawRank = req.body?.ranking_position;
-  const rank = rawRank === undefined ? undefined : rawRank === "" || rawRank == null ? null : Number(rawRank);
-  if (rank !== undefined && rank !== null && (!Number.isInteger(rank) || rank < 1)) {
-    return res.status(400).json({ error: "La posición del ranking debe ser un entero positivo." });
-  }
-  if (rank !== undefined && rank !== null && db.prepare("SELECT id FROM users WHERE account_status = 'active' AND ranking_position = ? AND id != ?").get(rank, req.session.user.id)) {
-    return res.status(409).json({ error: "Esa posición ya está asignada a otro jugador activo." });
-  }
-  if (rank === undefined) {
-    db.prepare("UPDATE users SET base_role = ? WHERE id = ?").run(baseRole, req.session.user.id);
-  } else {
-    db.prepare("UPDATE users SET base_role = ?, ranking_position = ? WHERE id = ?")
-      .run(baseRole, rank, req.session.user.id);
-  }
+  db.prepare("UPDATE users SET base_role = ?, ranking_position = NULL WHERE id = ?")
+    .run(baseRole, req.session.user.id);
   req.session.user.base_role = baseRole;
   const user = db.prepare("SELECT id, name, role, base_role, ranking_position FROM users WHERE id = ?")
     .get(req.session.user.id);
@@ -1030,7 +1043,7 @@ app.post("/api/admin/users", requireAdmin, async (req, res) => {
   if (!Number.isFinite(amount)) {
     return res.status(400).json({ error: "El saldo debe ser un importe válido." });
   }
-  if (rank !== null && db.prepare("SELECT id FROM users WHERE account_status = 'active' AND ranking_position = ?").get(rank)) {
+  if (rank !== null && db.prepare("SELECT id FROM users WHERE account_status = 'active' AND role != 'admin' AND ranking_position = ?").get(rank)) {
     return res.status(409).json({ error: "Esa posición ya está asignada a otro jugador activo." });
   }
   try {
@@ -1084,7 +1097,7 @@ app.patch("/api/admin/users/:id", requireAdmin, async (req, res) => {
   if (db.prepare("SELECT id FROM users WHERE alias = ? COLLATE NOCASE AND id != ?").get(alias, id)) {
     return res.status(409).json({ error: "Ese alias ya está en uso." });
   }
-  if (rank !== null && db.prepare("SELECT id FROM users WHERE account_status = 'active' AND ranking_position = ? AND id != ?").get(rank, id)) {
+  if (rank !== null && db.prepare("SELECT id FROM users WHERE account_status = 'active' AND role != 'admin' AND ranking_position = ? AND id != ?").get(rank, id)) {
     return res.status(409).json({ error: "Esa posición ya está asignada a otro jugador activo." });
   }
   const [firstName, ...lastParts] = name.split(/\s+/);

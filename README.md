@@ -15,7 +15,7 @@ npm install
 SESSION_SECRET="cambia-este-valor" npm start
 ```
 
-Abre `http://localhost:5000`. En el primer inicio se crea el usuario administrador DIEGO, con rol de jugador principal y posición de ranking 1. El acceso inicial obliga a cambiar la contraseña. Para usar una contraseña inicial propia, configura `INITIAL_ADMIN_PASSWORD` antes del primer arranque. La base se guarda en `data/o-pachanga.sqlite` (o en `DATA_DIR`).
+Abre `http://localhost:5000`. En el primer inicio se crea el usuario administrador DIEGO con rol base principal, pero sin posición de ranking porque no participa en la competición. El acceso inicial obliga a cambiar la contraseña. Para usar una contraseña inicial propia, configura `INITIAL_ADMIN_PASSWORD` antes del primer arranque. La base se guarda en `data/o-pachanga.sqlite` (o en `DATA_DIR`).
 
 ## Docker
 
@@ -48,7 +48,7 @@ La pantalla de entrada usa alias y contraseña con hashes bcrypt y sesiones prot
 ## Convocatorias y avisos
 
 - El servidor crea una convocatoria semanal para el martes actual y la cierra el lunes siguiente a las 20:00, usando la zona horaria `Europe/Madrid`.
-- Los jugadores pueden responder «Sí voy» o «No voy». Los principales que confirman entran en Lista principal; los suplentes, en Lista de suplentes; y las bajas, en Lista NO VAN. El administrador tiene también rol base configurable (principal/suplente), vota y aparece como participante.
+- Los jugadores pueden responder «Sí voy» o «No voy». Los principales que confirman entran en Lista principal; los suplentes, en Lista de suplentes; y las bajas, en Lista NO VAN. El administrador conserva un rol base configurable y puede responder, pero no cuenta como jugador activo en convocatorias, draft, cobros, puntos ni clasificación.
 - El administrador puede promover a principal a una persona de la lista de suplentes mientras la convocatoria siga abierta. La interfaz indica como válida una lista principal de 14 a 16 personas.
 - Con VAPID configurado, se envía automáticamente el aviso de apertura el martes a las 00:05 y un recordatorio el viernes a las 10:00, hora de Madrid. El recordatorio se limita a las suscripciones cuyos usuarios aún no han respondido. El admin también puede disparar manualmente cada campaña.
 - Al promocionar a un suplente, el servidor envía una notificación individual a sus dispositivos suscritos. Las campañas de apertura se limitan a cuentas activas; las alertas de saldo negativo se envían a jugadores activos con saldo negativo que hayan confirmado asistencia.

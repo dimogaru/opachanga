@@ -131,18 +131,19 @@ function formatConvocationDate(match) {
 
 function listPanel(title, usersInList, colorClass, icon, isAdmin = false) {
   const list = usersInList || [];
+  const playerCount = list.filter((user) => user.role !== "admin").length;
   const rows = list.length
     ? list.map((user) => `<li class="flex items-center gap-3 px-4 py-3 ${isAdmin && title === "Lista de suplentes" ? "pr-2" : ""}">
         <span class="grid h-8 w-8 shrink-0 place-items-center rounded-xl ${colorClass} text-[11px] font-bold">${escapeHtml(user.name.split(/\s+/).slice(0, 2).map((part) => part[0]).join("").toUpperCase())}</span>
         <span class="min-w-0 flex-1 truncate text-sm font-semibold">${escapeHtml(user.name)}</span>
-        <span class="hidden text-[11px] text-ink/40 sm:inline">${user.base_role === "principal" ? "Principal" : "Suplente"}${user.base_role === "suplente" && user.response === "principal" ? " · promovido" : ""}</span>
-        ${isAdmin && title === "Lista de suplentes" ? `<button class="promote-player shrink-0 rounded-lg border border-pitch-700/20 px-2.5 py-1.5 text-[11px] font-bold text-pitch-800 transition hover:bg-pitch-100" data-user-id="${user.id}" aria-label="Promover a ${escapeHtml(user.name)} a principal">↑ Principal</button>` : ""}
+        <span class="${user.role === "admin" ? "text-[10px] font-semibold text-amber-700" : "hidden text-[11px] text-ink/40 sm:inline"}">${user.role === "admin" ? "Admin · no cuenta" : `${user.base_role === "principal" ? "Principal" : "Suplente"}${user.base_role === "suplente" && user.response === "principal" ? " · promovido" : ""}`}</span>
+        ${isAdmin && title === "Lista de suplentes" && user.role !== "admin" ? `<button class="promote-player shrink-0 rounded-lg border border-pitch-700/20 px-2.5 py-1.5 text-[11px] font-bold text-pitch-800 transition hover:bg-pitch-100" data-user-id="${user.id}" aria-label="Promover a ${escapeHtml(user.name)} a principal">↑ Principal</button>` : ""}
       </li>`).join("")
     : `<li class="px-4 py-7 text-center text-sm text-ink/40">La lista está vacía.</li>`;
   return `<section class="overflow-hidden rounded-2xl border border-ink/[.07] bg-white shadow-sm">
     <header class="flex items-center justify-between gap-3 border-b border-ink/[.07] px-4 py-3.5">
       <h3 class="flex items-center gap-2 text-sm font-bold"><span class="grid h-7 w-7 place-items-center rounded-lg ${colorClass}">${icon}</span>${title}</h3>
-      <span class="rounded-full bg-paper px-2.5 py-1 text-xs font-bold text-ink/60">${list.length}</span>
+       <span class="rounded-full bg-paper px-2.5 py-1 text-xs font-bold text-ink/60">${playerCount}</span>
     </header>
     <ul class="divide-y divide-ink/[.05]">${rows}</ul>
   </section>`;
@@ -161,7 +162,7 @@ function renderConvocationBoard(data, isAdmin = false) {
         <div class="max-w-xl">
           <div class="flex flex-wrap items-center gap-2"><span class="rounded-full ${open ? "bg-lime/15 text-lime" : "bg-white/15 text-white/70"} px-3 py-1.5 text-[10px] font-bold tracking-[.12em]">${open ? "CONVOCATORIA ABIERTA" : "CONVOCATORIA CERRADA"}</span><span class="text-xs text-white/50">Martes ${formatConvocationDate(data.match)}</span></div>
           <h2 class="display mt-4 text-2xl font-extrabold tracking-tight sm:text-3xl">¿Cuentas con nosotros?</h2>
-          <p class="mt-1 text-sm text-white/60">Responde antes del lunes a las 20:00. El admin también participa como jugador.</p>
+          <p class="mt-1 text-sm text-white/60">Responde antes del lunes a las 20:00. El admin puede apuntarse, pero no cuenta como jugador.</p>
           <div class="mt-4 flex items-center gap-2 text-sm font-semibold ${data.validForMatch ? "text-lime" : "text-white/80"}"><span class="grid h-6 w-6 place-items-center rounded-full ${data.validForMatch ? "bg-lime/15 text-lime" : "bg-white/10"}">${data.validForMatch ? "✓" : "!"}</span>${readinessText}</div>
         </div>
         <div class="flex min-w-[210px] flex-col gap-3 rounded-2xl border border-white/10 bg-white/[.06] p-4">
@@ -178,7 +179,7 @@ function renderConvocationBoard(data, isAdmin = false) {
         </div>
       </div>
     </section>
-    <div class="mb-3 flex flex-wrap items-end justify-between gap-2"><div><h2 class="display text-xl font-extrabold tracking-tight">Respuestas del grupo</h2><p class="mt-1 text-xs text-ink/50">La lista se actualiza para todo el equipo.</p></div>${isAdmin ? `<div class="flex flex-wrap items-center gap-2 rounded-xl border border-ink/10 bg-white px-3 py-2 text-xs font-semibold"><label>Mi rol<select id="admin-base-role" class="ml-2 rounded-lg border-0 bg-transparent text-xs font-bold text-pitch-800 outline-none"><option value="principal" ${currentUser.base_role === "principal" ? "selected" : ""}>Principal</option><option value="suplente" ${currentUser.base_role === "suplente" ? "selected" : ""}>Suplente</option></select></label><label>Ranking #<input id="admin-profile-rank" type="number" min="1" step="1" value="${currentUser.ranking_position ?? ""}" class="ml-1 w-14 rounded-md border border-ink/10 px-1.5 py-1 text-xs font-bold outline-none focus:border-pitch-700" aria-label="Tu posición de ranking"/></label><button id="save-admin-profile" class="rounded-lg bg-pitch-900 px-2.5 py-1.5 text-xs font-bold text-white">Guardar</button></div>` : ""}</div>
+     <div class="mb-3 flex flex-wrap items-end justify-between gap-2"><div><h2 class="display text-xl font-extrabold tracking-tight">Respuestas del grupo</h2><p class="mt-1 text-xs text-ink/50">La lista se actualiza para todo el equipo.</p></div>${isAdmin ? `<div class="flex flex-wrap items-center gap-2 rounded-xl border border-ink/10 bg-white px-3 py-2 text-xs font-semibold"><label>Mi rol<select id="admin-base-role" class="ml-2 rounded-lg border-0 bg-transparent text-xs font-bold text-pitch-800 outline-none"><option value="principal" ${currentUser.base_role === "principal" ? "selected" : ""}>Principal</option><option value="suplente" ${currentUser.base_role === "suplente" ? "selected" : ""}>Suplente</option></select></label><button id="save-admin-profile" class="rounded-lg bg-pitch-900 px-2.5 py-1.5 text-xs font-bold text-white">Guardar</button></div>` : ""}</div>
     ${isAdmin ? `<div class="mb-4 grid gap-3 rounded-2xl border border-pitch-900/10 bg-white p-4 sm:grid-cols-[1fr_auto_auto] sm:items-center"><div><p class="text-sm font-bold">Avisos de esta convocatoria</p><p id="push-status-copy" class="mt-1 text-xs text-ink/50">${pushConfig.enabled ? "Apertura automática el martes · recordatorio el viernes a las 10:00." : "Configura las claves VAPID del servidor para activar los avisos push."}</p></div><button id="send-opening" class="rounded-xl border border-ink/10 px-3 py-2 text-xs font-bold transition hover:bg-paper disabled:cursor-not-allowed disabled:opacity-40">Enviar apertura</button><button id="send-reminder" class="rounded-xl bg-pitch-900 px-3 py-2 text-xs font-bold text-white transition hover:bg-pitch-800 disabled:cursor-not-allowed disabled:opacity-40">Enviar recordatorio</button></div>` : ""}
     <div class="grid gap-4 lg:grid-cols-3">
       ${listPanel("Lista principal", data.lists.principal, "bg-pitch-100 text-pitch-800", "✓", isAdmin)}
@@ -217,14 +218,14 @@ function renderMatchPanel(matchesData, isAdmin = false) {
   const completed = draft.status === "complete";
   const available = selected.available || [];
   const turnName = draft.currentTurn === "A"
-    ? users.find((player) => player.id === draft.captainA)?.name || "Jugador #1"
-    : users.find((player) => player.id === draft.captainB)?.name || "Jugador #2";
+    ? users.find((player) => player.id === draft.captainA)?.name || "Capitán 1"
+    : users.find((player) => player.id === draft.captainB)?.name || "Capitán 2";
   const selection = `<label class="block"><span class="mb-1.5 block text-xs font-semibold text-ink/55">Seleccionar partido</span><select id="match-picker" class="w-full rounded-xl border border-ink/10 bg-white px-3 py-2.5 text-sm font-semibold outline-none focus:border-pitch-700">${matches.map((match) => `<option value="${match.id}" ${match.id === selected.id ? "selected" : ""}>${escapeHtml(matchLabel(match))} · ${match.status === "played" ? "jugado" : match.status === "closed" ? "convocatoria cerrada" : "convocatoria abierta"}</option>`).join("")}</select></label>`;
   let adminControls = "";
   if (isAdmin && selected.status === "closed" && !draft.status) {
     const count = selected.principalCount ?? convocationData?.principalCount ?? 0;
     adminControls = count >= 14 && count <= 16
-      ? `<div class="mt-4 rounded-xl bg-paper p-4"><p class="text-sm font-bold">Convocatoria cerrada · ${count} principales</p><p class="mt-1 text-xs text-ink/50">El jugador #2 elige primero. Luego se alterna hasta dejar tres; el #1 elige dos y recibe automáticamente al último.</p><button id="start-draft" data-match-id="${selected.id}" class="mt-3 rounded-xl bg-pitch-900 px-4 py-2.5 text-sm font-bold text-white">Iniciar draft</button></div>`
+      ? `<div class="mt-4 rounded-xl bg-paper p-4"><p class="text-sm font-bold">Convocatoria cerrada · ${count} principales</p><p class="mt-1 text-xs text-ink/50">El segundo jugador mejor clasificado elige primero. Se alterna hasta dejar tres; el primero elige dos y recibe automáticamente al último.</p><button id="start-draft" data-match-id="${selected.id}" class="mt-3 rounded-xl bg-pitch-900 px-4 py-2.5 text-sm font-bold text-white">Iniciar draft</button></div>`
       : `<p class="mt-4 rounded-xl bg-amber-50 p-4 text-sm text-amber-800">No se puede iniciar el draft: hacen falta entre 14 y 16 confirmados principales; hay ${count}.</p>`;
   } else if (isAdmin && draft.status === "in_progress") {
     adminControls = `<div class="mt-4 rounded-xl bg-paper p-4"><p class="text-sm font-bold">Turno de ${escapeHtml(turnName)} · Equipo ${draft.currentTurn}</p><p class="mt-1 text-xs text-ink/50">${available.length} jugadores disponibles</p><div class="mt-3 flex flex-col gap-2 sm:flex-row"><select id="draft-player" class="min-w-0 flex-1 rounded-xl border border-ink/10 bg-white px-3 py-2.5 text-sm">${available.map((player) => `<option value="${player.id}">${escapeHtml(player.name)}${player.ranking_position ? ` · #${player.ranking_position}` : ""}</option>`).join("")}</select><button id="draft-pick" data-match-id="${selected.id}" ${available.length ? "" : "disabled"} class="rounded-xl bg-pitch-900 px-4 py-2.5 text-sm font-bold text-white disabled:opacity-40">Elegir jugador</button></div></div>`;
@@ -253,7 +254,7 @@ function renderStandingsBoard(data) {
 
 function renderApprovalPanel(pending) {
   const cards = pending.length
-    ? pending.map((user) => `<form class="pending-approval-card grid gap-3 border-t border-ink/[.06] p-4 sm:grid-cols-[1fr_1fr_1fr_1fr_auto] sm:items-end" data-user-id="${user.id}"><div><p class="font-bold">${escapeHtml(`${user.first_name} ${user.last_name}`)}</p><p class="mt-0.5 text-xs text-ink/45">@${escapeHtml(user.alias)}</p></div><label><span class="mb-1 block text-[11px] font-semibold text-ink/55">Rol base</span><select name="base_role" class="w-full rounded-lg border border-ink/10 bg-white px-2.5 py-2 text-sm"><option value="principal">Principal</option><option value="suplente">Suplente</option></select></label><label><span class="mb-1 block text-[11px] font-semibold text-ink/55">Posición fija</span><input name="ranking_position" type="number" min="2" step="1" required placeholder="2" class="w-full rounded-lg border border-ink/10 px-2.5 py-2 text-sm"/></label><label><span class="mb-1 block text-[11px] font-semibold text-ink/55">Saldo inicial (€)</span><input name="balance" type="number" step="0.01" required value="0" class="w-full rounded-lg border border-ink/10 px-2.5 py-2 text-sm"/></label><button class="rounded-xl bg-pitch-900 px-4 py-2.5 text-xs font-bold text-white">Aprobar</button></form>`).join("")
+    ? pending.map((user) => `<form class="pending-approval-card grid gap-3 border-t border-ink/[.06] p-4 sm:grid-cols-[1fr_1fr_1fr_1fr_auto] sm:items-end" data-user-id="${user.id}"><div><p class="font-bold">${escapeHtml(`${user.first_name} ${user.last_name}`)}</p><p class="mt-0.5 text-xs text-ink/45">@${escapeHtml(user.alias)}</p></div><label><span class="mb-1 block text-[11px] font-semibold text-ink/55">Rol base</span><select name="base_role" class="w-full rounded-lg border border-ink/10 bg-white px-2.5 py-2 text-sm"><option value="principal">Principal</option><option value="suplente">Suplente</option></select></label><label><span class="mb-1 block text-[11px] font-semibold text-ink/55">Posición fija</span><input name="ranking_position" type="number" min="1" step="1" required placeholder="1" class="w-full rounded-lg border border-ink/10 px-2.5 py-2 text-sm"/></label><label><span class="mb-1 block text-[11px] font-semibold text-ink/55">Saldo inicial (€)</span><input name="balance" type="number" step="0.01" required value="0" class="w-full rounded-lg border border-ink/10 px-2.5 py-2 text-sm"/></label><button class="rounded-xl bg-pitch-900 px-4 py-2.5 text-xs font-bold text-white">Aprobar</button></form>`).join("")
     : `<p class="px-5 py-7 text-center text-sm text-ink/45">No hay solicitudes pendientes de revisión.</p>`;
   return `<section class="mb-7 overflow-hidden rounded-2xl border border-ink/[.07] bg-white shadow-sm"><header class="flex items-center justify-between px-5 py-4"><div><h2 class="font-bold">Aprobaciones pendientes</h2><p class="mt-1 text-xs text-ink/45">Asigna rol base, posición fija y saldo inicial para activar la cuenta.</p></div><span class="rounded-full bg-amber-50 px-3 py-1 text-xs font-bold text-amber-800">${pending.length}</span></header>${cards}</section>`;
 }
@@ -350,7 +351,7 @@ function renderLogin() {
     <main class="grid min-h-screen lg:grid-cols-2">
       <section class="pitch-grid flex min-h-[320px] flex-col justify-between bg-pitch-900 px-7 py-7 text-white sm:px-12 sm:py-10 lg:min-h-screen lg:px-16">
         <div class="flex items-center gap-3"><span class="grid h-11 w-11 place-items-center rounded-2xl bg-lime text-pitch-950">⚽</span><span><b class="display block text-xl font-extrabold">O Pachanga</b><span class="text-[10px] font-semibold tracking-[.16em] text-white/55">FÚTBOL ENTRE AMIGOS</span></span></div>
-        <div class="max-w-xl py-10"><span class="rounded-full border border-white/15 bg-white/5 px-3 py-1.5 text-xs font-semibold text-lime">TEMPORADA ABIERTA</span><h1 class="display mt-6 text-4xl font-extrabold leading-tight sm:text-6xl">Los martes<br/>son de <span class="text-lime">partido.</span></h1><p class="mt-5 max-w-md text-base leading-7 text-white/65">Organiza la pachanga semanal y mantente al día con el equipo.</p></div>
+        <div class="max-w-xl py-10"><span class="rounded-full border border-white/15 bg-white/5 px-3 py-1.5 text-xs font-semibold text-lime">TEMPORADA ABIERTA</span><h1 class="display mt-6 text-4xl font-extrabold leading-tight sm:text-6xl">El templo de<br/><span class="text-lime">O Pachanga.</span></h1><p class="mt-5 max-w-md text-base leading-7 text-white/65">Organiza la pachanga semanal y mantente al día con el equipo.</p></div>
         <p class="text-xs font-medium text-white/45">PARTIDO · EQUIPO · AMIGOS</p>
       </section>
       <section class="flex items-center justify-center px-5 py-12 sm:px-10 lg:px-16"><div class="w-full max-w-md">
@@ -400,8 +401,8 @@ function renderLogin() {
         </a>
         <div class="relative max-w-xl py-12 lg:py-0">
           <span class="mb-5 inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/5 px-3 py-1.5 text-xs font-semibold text-lime"><span class="h-1.5 w-1.5 rounded-full bg-lime"></span> TEMPORADA ABIERTA</span>
-          <h1 class="display max-w-lg text-4xl font-extrabold leading-[1.08] tracking-[-.04em] sm:text-6xl">Los martes<br/>son de <span class="text-lime">partido.</span></h1>
-          <p class="mt-5 max-w-md text-base leading-7 text-white/65">La pachanga semanal, organizada como se merece. Elige tu usuario y salta al campo.</p>
+          <h1 class="display max-w-lg text-4xl font-extrabold leading-[1.08] tracking-[-.04em] sm:text-6xl">El templo de<br/><span class="text-lime">O Pachanga.</span></h1>
+          <p class="mt-5 max-w-md text-base leading-7 text-white/65">La pachanga semanal, organizada como se merece. Inicia sesión y salta al campo.</p>
         </div>
         <div class="relative flex items-center gap-2 text-xs font-medium text-white/45"><span class="inline-flex gap-1"><i class="h-1 w-1 rounded-full bg-lime"></i><i class="h-1 w-1 rounded-full bg-lime/60"></i><i class="h-1 w-1 rounded-full bg-lime/30"></i></span>PARTIDO · EQUIPO · AMIGOS</div>
       </section>
@@ -470,11 +471,10 @@ async function renderAdmin() {
         method: "PATCH",
         body: JSON.stringify({
           base_role: document.querySelector("#admin-base-role").value,
-          ranking_position: document.querySelector("#admin-profile-rank").value || null,
         }),
       });
       currentUser = result.user;
-      showToast("Perfil y posición de ranking actualizados.");
+      showToast("Rol base actualizado.");
       await renderAdmin();
     } catch (error) {
       showToast(error.message);
@@ -587,7 +587,7 @@ function bindMatchActions(isAdmin = false) {
         body: "{}",
       });
       selectedMatchId = match.id;
-      showToast("Draft iniciado. El jugador #2 elige primero.");
+      showToast("Draft iniciado. El segundo mejor clasificado elige primero.");
       await renderAdmin();
     } catch (error) {
       showToast(error.message);
