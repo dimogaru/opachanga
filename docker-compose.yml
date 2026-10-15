@@ -1,0 +1,18 @@
+services:
+  o-pachanga:
+    build: .
+    container_name: o-pachanga
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DATA_DIR: /app/data
+      SESSION_SECRET: ${SESSION_SECRET:?Define SESSION_SECRET en el entorno}
+      INITIAL_ADMIN_NAME: ${INITIAL_ADMIN_NAME:-Admin O Pachanga}
+    volumes:
+      - pachanga-data:/app/data
+
+volumes:
+  pachanga-data:

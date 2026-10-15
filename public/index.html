@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#123b2a" />
+    <meta name="description" content="Organiza los partidos de fútbol con tus amigos." />
+    <link rel="manifest" href="/manifest.json" />
+    <link rel="icon" href="/icons/icon-192.png" />
+    <link rel="apple-touch-icon" href="/icons/icon-192.png" />
+    <title>O Pachanga — fútbol entre amigos</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              pitch: { 950: "#102d21", 900: "#123b2a", 800: "#1a5039", 700: "#28704b", 100: "#e2eee5" },
+              paper: "#f7f6f0",
+              ink: "#1d2a22",
+              lime: "#c9ed68"
+            },
+            fontFamily: { sans: ["Inter", "ui-sans-serif", "system-ui"] },
+            boxShadow: { card: "0 20px 60px rgba(23, 51, 35, .08)" }
+          }
+        }
+      };
+    </script>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap" rel="stylesheet" />
+    <style>
+      body { font-family: "DM Sans", sans-serif; }
+      h1, h2, h3, .display { font-family: "Manrope", sans-serif; }
+      .pitch-grid { background-image: linear-gradient(rgba(255,255,255,.035) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.035) 1px, transparent 1px); background-size: 42px 42px; }
+      .field-mark { border: 1px solid rgba(255,255,255,.12); border-radius: 50%; }
+      input, select { color-scheme: light; }
+    </style>
+  </head>
+  <body class="min-h-screen bg-paper text-ink antialiased">
+    <div id="app" class="min-h-screen"></div>
+    <div id="toast" class="pointer-events-none fixed bottom-5 left-1/2 z-50 -translate-x-1/2 translate-y-3 rounded-xl bg-pitch-950 px-5 py-3 text-sm font-semibold text-white opacity-0 shadow-xl transition" role="status" aria-live="polite"></div>
+    <script src="/app.js" defer></script>
+  </body>
+</html>
