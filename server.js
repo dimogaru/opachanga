@@ -151,7 +151,9 @@ if (!userColumns.includes("base_role")) {
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_alias_unique ON users(alias COLLATE NOCASE) WHERE alias IS NOT NULL");
 db.prepare("UPDATE users SET account_status = 'pending' WHERE role != 'admin' AND password_hash IS NULL AND account_status = 'active'").run();
 
-const defaultAdminPasswordHash = "$2b$12$gaqaTxzmMlTqHxFpr5iA0uhcd2uwmcIiKAPettfW3dKm9x8Obti22";
+const defaultAdminPasswordHash = process.env.INITIAL_ADMIN_PASSWORD
+  ? bcrypt.hashSync(process.env.INITIAL_ADMIN_PASSWORD, 12)
+  : "$2b$12$gaqaTxzmMlTqHxFpr5iA0uhcd2uwmcIiKAPettfW3dKm9x8Obti22";
 let defaultAdmin = db.prepare("SELECT * FROM users WHERE role = 'admin' ORDER BY id LIMIT 1").get();
 if (!defaultAdmin) {
   const createdAdmin = db.prepare(`
@@ -207,20 +209,30 @@ app.use(
 const publicUser = (user) => ({
   id: user.id,
   name: user.name,
+  first_name: user.first_name,
+  last_name: user.last_name,
+  alias: user.alias,
   role: user.role,
   base_role: user.base_role,
   ranking_position: user.ranking_position,
   balance: user.balance,
+  must_change_password: Boolean(user.must_change_password),
 });
 
 function requireUser(req, res, next) {
   if (!req.session.user) return res.status(401).json({ error: "Inicia sesión para continuar." });
+  if (req.session.user.must_change_password && req.path !== "/api/account/password") {
+    return res.status(403).json({ error: "Cambia la contraseña inicial para continuar." });
+  }
   next();
 }
 
 function requireAdmin(req, res, next) {
   if (!req.session.user || req.session.user.role !== "admin") {
     return res.status(403).json({ error: "Se requiere una sesión de administración." });
+  }
+  if (req.session.user.must_change_password && req.path !== "/api/account/password") {
+    return res.status(403).json({ error: "Cambia la contraseña inicial para continuar." });
   }
   next();
 }
@@ -280,6 +292,7 @@ function getConvocationData(match, userId) {
     SELECT u.id, u.name, u.role, u.base_role, u.ranking_position, c.status AS response
     FROM users u
     LEFT JOIN convocations c ON c.user_id = u.id AND c.match_id = ?
+    WHERE u.account_status = 'active'
     ORDER BY
       CASE COALESCE(c.status, u.base_role)
         WHEN 'principal' THEN 1
@@ -369,10 +382,12 @@ async function sendNegativeBalanceAlert(match) {
     SELECT s.endpoint, s.p256dh, s.auth
     FROM push_subscriptions s
     JOIN users u ON u.id = s.user_id
-    WHERE u.balance < 0
-  `).all();
+    JOIN convocations c ON c.user_id = u.id AND c.match_id = ?
+      AND c.status IN ('principal', 'suplente')
+    WHERE u.account_status = 'active' AND u.balance < 0
+  `).all(match.id);
   const payload = JSON.stringify({
-    title: "Saldo pendiente · O Pachanga",
+    title: "Saldo negativo antes de jugar",
     body: "Tienes saldo negativo. Revisa tu cuenta antes del partido de mañana.",
     url: "/",
   });
@@ -431,16 +446,17 @@ async function sendCampaign(match, type) {
   }
 
   const subscriptions = type === "opening"
-    ? db.prepare("SELECT endpoint, p256dh, auth FROM push_subscriptions").all()
+    ? db.prepare("SELECT s.endpoint, s.p256dh, s.auth FROM push_subscriptions s JOIN users u ON u.id = s.user_id WHERE u.account_status = 'active'").all()
     : db.prepare(`
         SELECT s.endpoint, s.p256dh, s.auth
         FROM push_subscriptions s
+        JOIN users u ON u.id = s.user_id AND u.account_status = 'active'
         LEFT JOIN convocations c ON c.user_id = s.user_id AND c.match_id = ?
         WHERE c.user_id IS NULL
       `).all(match.id);
   const message = type === "opening"
-    ? { title: "¡Convocatoria abierta!", body: "Confirma si vienes al partido de esta semana.", url: "/" }
-    : { title: "¿Vienes a la pachanga?", body: "Aún no has respondido. Confirma antes del lunes a las 20:00.", url: "/" };
+    ? { title: "Convocatoria abierta", body: "Confirma si vienes al partido de esta semana.", url: "/" }
+    : { title: "Aún no te has apuntado al partido", body: "Confirma si vienes antes del lunes a las 20:00.", url: "/" };
   const results = await Promise.allSettled(subscriptions.map((subscription) =>
     webPush.sendNotification({
       endpoint: subscription.endpoint,
@@ -469,34 +485,183 @@ async function sendCampaign(match, type) {
   return { delivered, failed: errors.length, status };
 }
 
-app.get("/api/users", (_req, res) => {
-  const users = db
-    .prepare("SELECT id, name, role, base_role, ranking_position, balance FROM users ORDER BY role, ranking_position, name")
-    .all();
+async function sendUserNotification(userId, payload) {
+  if (!pushConfigured) return { skipped: true };
+  const subscriptions = db.prepare(`
+    SELECT endpoint, p256dh, auth FROM push_subscriptions WHERE user_id = ?
+  `).all(userId);
+  const results = await Promise.allSettled(subscriptions.map((subscription) =>
+    webPush.sendNotification({
+      endpoint: subscription.endpoint,
+      keys: { p256dh: subscription.p256dh, auth: subscription.auth },
+    }, JSON.stringify(payload), { TTL: 60 * 60 * 24 }),
+  ));
+  let delivered = 0;
+  const expired = [];
+  results.forEach((result, index) => {
+    if (result.status === "fulfilled") delivered += 1;
+    else if ([404, 410].includes(result.reason?.statusCode)) expired.push(subscriptions[index].endpoint);
+  });
+  const removeExpired = db.prepare("DELETE FROM push_subscriptions WHERE endpoint = ?");
+  expired.forEach((endpoint) => removeExpired.run(endpoint));
+  return { delivered, failed: results.length - delivered };
+}
+
+app.post("/api/register", async (req, res) => {
+  const body = req.body || {};
+  const firstName = String(body.first_name || "").trim().replace(/\s+/g, " ");
+  const lastName = String(body.last_name || "").trim().replace(/\s+/g, " ");
+  const alias = String(body.alias || "").trim().normalize("NFKC").toLowerCase();
+  const password = typeof body.password === "string" ? body.password : "";
+  const fullName = `${firstName} ${lastName}`.trim();
+  if (!firstName || firstName.length > 60 || !lastName || lastName.length > 80) {
+    return res.status(400).json({ error: "Indica un nombre y unos apellidos válidos." });
+  }
+  if (!/^[\p{L}\p{N}._-]{3,24}$/u.test(alias)) {
+    return res.status(400).json({ error: "El alias debe tener entre 3 y 24 letras, números, puntos, guiones o guiones bajos." });
+  }
+  if (Buffer.byteLength(password, "utf8") < 8 || Buffer.byteLength(password, "utf8") > 72) {
+    return res.status(400).json({ error: "La contraseña debe tener entre 8 y 72 bytes." });
+  }
+  if (db.prepare("SELECT id FROM users WHERE alias = ? COLLATE NOCASE").get(alias)) {
+    return res.status(409).json({ error: "Ese alias ya está en uso." });
+  }
+  try {
+    const passwordHash = await bcrypt.hash(password, 12);
+    const existingPlayer = db.prepare(`
+      SELECT id FROM users
+      WHERE role != 'admin' AND account_status = 'pending'
+        AND alias IS NULL AND password_hash IS NULL
+        AND lower(trim(name)) = lower(?)
+      ORDER BY id LIMIT 1
+    `).get(fullName);
+    let userId;
+    if (existingPlayer) {
+      userId = existingPlayer.id;
+      db.prepare(`
+        UPDATE users
+        SET name = ?, first_name = ?, last_name = ?, alias = ?, password_hash = ?,
+            account_status = 'pending', must_change_password = 0, created_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `).run(fullName, firstName, lastName, alias, passwordHash, userId);
+    } else {
+      const created = db.prepare(`
+        INSERT INTO users (name, first_name, last_name, alias, password_hash, account_status,
+          role, base_role, ranking_position, balance)
+        VALUES (?, ?, ?, ?, ?, 'pending', 'principal', 'principal', NULL, 0)
+      `).run(fullName, firstName, lastName, alias, passwordHash);
+      userId = Number(created.lastInsertRowid);
+    }
+    res.status(202).json({ registered: true, status: "pending", name: fullName });
+  } catch (error) {
+    if (String(error.code || "").includes("CONSTRAINT")) {
+      return res.status(409).json({ error: "Ese alias ya está en uso." });
+    }
+    console.error("No se pudo registrar el usuario:", error.message);
+    res.status(500).json({ error: "No se pudo completar el registro." });
+  }
+});
+
+app.get("/api/users", requireUser, (_req, res) => {
+  const users = db.prepare(`
+    SELECT id, name, first_name, last_name, alias, role, base_role, ranking_position, balance
+    FROM users
+    WHERE account_status = 'active'
+    ORDER BY role, ranking_position IS NULL, ranking_position, name COLLATE NOCASE
+  `).all();
   res.json(users);
+});
+
+app.get("/api/admin/pending-users", requireAdmin, (_req, res) => {
+  const pendingUsers = db.prepare(`
+    SELECT id, first_name, last_name, name, alias, created_at
+    FROM users
+    WHERE role != 'admin' AND account_status = 'pending'
+      AND alias IS NOT NULL AND password_hash IS NOT NULL
+    ORDER BY created_at, id
+  `).all();
+  res.json(pendingUsers);
+});
+
+app.post("/api/admin/pending-users/:id/approve", requireAdmin, (req, res) => {
+  const id = Number(req.params.id);
+  const pending = db.prepare(`
+    SELECT id FROM users
+    WHERE id = ? AND role != 'admin' AND account_status = 'pending'
+      AND alias IS NOT NULL AND password_hash IS NOT NULL
+  `).get(id);
+  if (!pending) return res.status(404).json({ error: "No se encontró una solicitud pendiente válida." });
+  const baseRole = req.body?.base_role;
+  const rankingPosition = Number(req.body?.ranking_position);
+  const balance = Number(req.body?.balance);
+  if (!["principal", "suplente"].includes(baseRole)) {
+    return res.status(400).json({ error: "El rol base debe ser principal o suplente." });
+  }
+  if (!Number.isInteger(rankingPosition) || rankingPosition < 2) {
+    return res.status(400).json({ error: "Asigna una posición fija del ranking; la posición 1 pertenece al administrador." });
+  }
+  if (!Number.isFinite(balance)) return res.status(400).json({ error: "El saldo inicial debe ser válido." });
+  if (db.prepare("SELECT id FROM users WHERE account_status = 'active' AND ranking_position = ? AND id != ?").get(rankingPosition, id)) {
+    return res.status(409).json({ error: "Esa posición ya está asignada a otro jugador activo." });
+  }
+  db.prepare(`
+    UPDATE users
+    SET role = ?, base_role = ?, ranking_position = ?, balance = ?, account_status = 'active'
+    WHERE id = ?
+  `).run(baseRole, baseRole, rankingPosition, balance, id);
+  res.json({ approved: true, user: publicUser(db.prepare("SELECT * FROM users WHERE id = ?").get(id)) });
 });
 
 app.get("/api/session", (req, res) => {
   if (!req.session.user) return res.json({ user: null });
-  const user = db.prepare("SELECT id, name, role, base_role FROM users WHERE id = ?")
-    .get(req.session.user.id);
-  if (!user) {
+  const user = db.prepare(`
+    SELECT id, name, first_name, last_name, alias, role, base_role,
+      ranking_position, balance, must_change_password, account_status
+    FROM users WHERE id = ?
+  `).get(req.session.user.id);
+  if (!user || user.account_status !== "active") {
     req.session.destroy(() => {});
     return res.json({ user: null });
   }
   req.session.user = user;
-  res.json({ user });
+  res.json({ user: publicUser(user) });
 });
 
-app.post("/api/session", (req, res) => {
-  const userId = Number(req.body?.userId);
-  if (!Number.isInteger(userId) || userId < 1) {
-    return res.status(400).json({ error: "Selecciona un usuario válido." });
+app.post("/api/session", async (req, res) => {
+  const alias = String(req.body?.alias || "").trim().normalize("NFKC").toLowerCase();
+  const password = typeof req.body?.password === "string" ? req.body.password : "";
+  const user = db.prepare(`
+    SELECT id, name, first_name, last_name, alias, role, base_role,
+      ranking_position, balance, password_hash, must_change_password, account_status
+    FROM users WHERE alias = ? COLLATE NOCASE
+  `).get(alias);
+  if (user?.account_status === "pending") {
+    return res.status(403).json({ error: "Tu cuenta está pendiente de aprobación." });
   }
-  const user = db.prepare("SELECT id, name, role, base_role FROM users WHERE id = ?").get(userId);
-  if (!user) return res.status(404).json({ error: "No se encontró ese usuario." });
-  req.session.user = user;
-  res.json({ user });
+  if (!user || user.account_status !== "active" || !user.password_hash || !(await bcrypt.compare(password, user.password_hash))) {
+    return res.status(401).json({ error: "Alias o contraseña incorrectos." });
+  }
+  await new Promise((resolve, reject) => req.session.regenerate((error) => error ? reject(error) : resolve()));
+  req.session.user = publicUser(user);
+  res.json({ user: publicUser(user) });
+});
+
+app.post("/api/account/password", requireUser, async (req, res) => {
+  const currentPassword = typeof req.body?.current_password === "string" ? req.body.current_password : "";
+  const newPassword = typeof req.body?.new_password === "string" ? req.body.new_password : "";
+  const user = db.prepare("SELECT password_hash FROM users WHERE id = ? AND account_status = 'active'")
+    .get(req.session.user.id);
+  if (!user || !(await bcrypt.compare(currentPassword, user.password_hash))) {
+    return res.status(401).json({ error: "La contraseña actual no es válida." });
+  }
+  if (Buffer.byteLength(newPassword, "utf8") < 8 || Buffer.byteLength(newPassword, "utf8") > 72) {
+    return res.status(400).json({ error: "La nueva contraseña debe tener entre 8 y 72 bytes." });
+  }
+  const passwordHash = await bcrypt.hash(newPassword, 12);
+  db.prepare("UPDATE users SET password_hash = ?, must_change_password = 0 WHERE id = ?")
+    .run(passwordHash, req.session.user.id);
+  req.session.user.must_change_password = 0;
+  res.json({ updated: true });
 });
 
 app.delete("/api/session", (req, res) => {
@@ -529,6 +694,7 @@ app.get("/api/standings", requireUser, (_req, res) => {
       COUNT(mp.match_id) AS matches_played
     FROM users u
     LEFT JOIN match_points mp ON mp.user_id = u.id
+    WHERE u.account_status = 'active'
     GROUP BY u.id
     ORDER BY points DESC, wins DESC, u.name COLLATE NOCASE
   `).all();
@@ -723,7 +889,7 @@ app.post("/api/convocations/me", requireUser, (req, res) => {
   res.json(getConvocationData(match, user.id));
 });
 
-app.post("/api/admin/convocations/:userId/promote", requireAdmin, (req, res) => {
+app.post("/api/admin/convocations/:userId/promote", requireAdmin, async (req, res) => {
   const match = ensureCurrentMatch();
   if (match.status !== "open") {
     return res.status(409).json({ error: "La convocatoria está cerrada; ya no se pueden mover jugadores." });
@@ -736,7 +902,13 @@ app.post("/api/admin/convocations/:userId/promote", requireAdmin, (req, res) => 
   }
   db.prepare("UPDATE convocations SET status = 'principal', updated_at = CURRENT_TIMESTAMP WHERE match_id = ? AND user_id = ?")
     .run(match.id, userId);
-  res.json(getConvocationData(match, req.session.user.id));
+  const notification = await sendUserNotification(userId, {
+    title: "Pasas de Suplente a Principal para jugar",
+    body: "Te han promocionado a la Lista Principal para el partido.",
+    url: "/",
+    tag: `promotion-${match.id}-${userId}`,
+  }).catch(() => ({ failed: 1 }));
+  res.json({ ...getConvocationData(match, req.session.user.id), promotionNotification: notification });
 });
 
 app.patch("/api/admin/profile", requireAdmin, (req, res) => {
@@ -748,6 +920,9 @@ app.patch("/api/admin/profile", requireAdmin, (req, res) => {
   const rank = rawRank === undefined ? undefined : rawRank === "" || rawRank == null ? null : Number(rawRank);
   if (rank !== undefined && rank !== null && (!Number.isInteger(rank) || rank < 1)) {
     return res.status(400).json({ error: "La posición del ranking debe ser un entero positivo." });
+  }
+  if (rank !== undefined && rank !== null && db.prepare("SELECT id FROM users WHERE account_status = 'active' AND ranking_position = ? AND id != ?").get(rank, req.session.user.id)) {
+    return res.status(409).json({ error: "Esa posición ya está asignada a otro jugador activo." });
   }
   if (rank === undefined) {
     db.prepare("UPDATE users SET base_role = ? WHERE id = ?").run(baseRole, req.session.user.id);
@@ -822,15 +997,16 @@ app.post("/api/admin/notifications/:type", requireAdmin, async (req, res) => {
 app.get("/api/admin/users", requireAdmin, (_req, res) => {
   const users = db
     .prepare(
-      "SELECT id, name, role, base_role, ranking_position, balance FROM users WHERE role != 'admin' ORDER BY ranking_position IS NULL, ranking_position, name",
+      "SELECT id, name, first_name, last_name, alias, role, base_role, ranking_position, balance FROM users WHERE role != 'admin' AND account_status = 'active' ORDER BY ranking_position IS NULL, ranking_position, name",
     )
     .all();
   res.json(users);
 });
 
-app.post("/api/admin/users", requireAdmin, (req, res) => {
-  const { name, role, ranking_position: rankingPosition, balance } = req.body || {};
+app.post("/api/admin/users", requireAdmin, async (req, res) => {
+  const { name, role, alias: rawAlias, password, ranking_position: rankingPosition, balance } = req.body || {};
   const cleanName = typeof name === "string" ? name.trim() : "";
+  const alias = String(rawAlias || "").trim().normalize("NFKC").toLowerCase();
   const rank = rankingPosition === "" || rankingPosition == null ? null : Number(rankingPosition);
   const amount = balance === "" || balance == null ? 0 : Number(balance);
   if (!cleanName || cleanName.length > 80) {
@@ -839,21 +1015,45 @@ app.post("/api/admin/users", requireAdmin, (req, res) => {
   if (!["principal", "suplente"].includes(role)) {
     return res.status(400).json({ error: "El rol debe ser principal o suplente." });
   }
+  if (!/^[\p{L}\p{N}._-]{3,24}$/u.test(alias)) {
+    return res.status(400).json({ error: "Indica un alias válido de 3 a 24 caracteres." });
+  }
+  if (typeof password !== "string" || Buffer.byteLength(password, "utf8") < 8 || Buffer.byteLength(password, "utf8") > 72) {
+    return res.status(400).json({ error: "La contraseña debe tener entre 8 y 72 bytes." });
+  }
+  if (db.prepare("SELECT id FROM users WHERE alias = ? COLLATE NOCASE").get(alias)) {
+    return res.status(409).json({ error: "Ese alias ya está en uso." });
+  }
   if (rank !== null && (!Number.isInteger(rank) || rank < 1)) {
     return res.status(400).json({ error: "La posición del ranking debe ser un entero positivo." });
   }
   if (!Number.isFinite(amount)) {
     return res.status(400).json({ error: "El saldo debe ser un importe válido." });
   }
-  const result = db
-    .prepare("INSERT INTO users (name, role, base_role, ranking_position, balance) VALUES (?, ?, ?, ?, ?)")
-    .run(cleanName, role, role, rank, amount);
-  res.status(201).json(publicUser(db.prepare("SELECT * FROM users WHERE id = ?").get(result.lastInsertRowid)));
+  if (rank !== null && db.prepare("SELECT id FROM users WHERE account_status = 'active' AND ranking_position = ?").get(rank)) {
+    return res.status(409).json({ error: "Esa posición ya está asignada a otro jugador activo." });
+  }
+  try {
+    const passwordHash = await bcrypt.hash(password, 12);
+    const [firstName, ...lastParts] = cleanName.split(/\s+/);
+    const lastName = lastParts.join(" ");
+    const result = db.prepare(`
+      INSERT INTO users (name, first_name, last_name, alias, password_hash, account_status,
+        role, base_role, ranking_position, balance)
+      VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)
+    `).run(cleanName, firstName, lastName, alias, passwordHash, role, role, rank, amount);
+    res.status(201).json(publicUser(db.prepare("SELECT * FROM users WHERE id = ?").get(result.lastInsertRowid)));
+  } catch (error) {
+    if (String(error.code || "").includes("CONSTRAINT")) {
+      return res.status(409).json({ error: "Ese alias o posición ya está en uso." });
+    }
+    res.status(500).json({ error: "No se pudo crear el jugador." });
+  }
 });
 
-app.patch("/api/admin/users/:id", requireAdmin, (req, res) => {
+app.patch("/api/admin/users/:id", requireAdmin, async (req, res) => {
   const id = Number(req.params.id);
-  const current = db.prepare("SELECT * FROM users WHERE id = ? AND role != 'admin'").get(id);
+  const current = db.prepare("SELECT * FROM users WHERE id = ? AND role != 'admin' AND account_status = 'active'").get(id);
   if (!current) return res.status(404).json({ error: "No se encontró ese jugador." });
   const body = req.body || {};
   const name = body.name === undefined ? current.name : String(body.name).trim();
@@ -861,6 +1061,8 @@ app.patch("/api/admin/users/:id", requireAdmin, (req, res) => {
   const rawRank = body.ranking_position === undefined ? current.ranking_position : body.ranking_position;
   const rank = rawRank === "" || rawRank == null ? null : Number(rawRank);
   const amount = body.balance === undefined ? current.balance : Number(body.balance);
+  const alias = body.alias === undefined ? current.alias : String(body.alias).trim().normalize("NFKC").toLowerCase();
+  const password = typeof body.password === "string" ? body.password : "";
   if (!name || name.length > 80) {
     return res.status(400).json({ error: "El nombre es obligatorio y debe tener 80 caracteres o menos." });
   }
@@ -873,8 +1075,25 @@ app.patch("/api/admin/users/:id", requireAdmin, (req, res) => {
   if (!Number.isFinite(amount)) {
     return res.status(400).json({ error: "El saldo debe ser un importe válido." });
   }
-  db.prepare("UPDATE users SET name = ?, role = ?, base_role = ?, ranking_position = ?, balance = ? WHERE id = ?")
-    .run(name, role, role, rank, amount, id);
+  if (!/^[\p{L}\p{N}._-]{3,24}$/u.test(alias || "")) {
+    return res.status(400).json({ error: "El alias debe tener entre 3 y 24 caracteres." });
+  }
+  if (password && (Buffer.byteLength(password, "utf8") < 8 || Buffer.byteLength(password, "utf8") > 72)) {
+    return res.status(400).json({ error: "La nueva contraseña debe tener entre 8 y 72 bytes." });
+  }
+  if (db.prepare("SELECT id FROM users WHERE alias = ? COLLATE NOCASE AND id != ?").get(alias, id)) {
+    return res.status(409).json({ error: "Ese alias ya está en uso." });
+  }
+  if (rank !== null && db.prepare("SELECT id FROM users WHERE account_status = 'active' AND ranking_position = ? AND id != ?").get(rank, id)) {
+    return res.status(409).json({ error: "Esa posición ya está asignada a otro jugador activo." });
+  }
+  const [firstName, ...lastParts] = name.split(/\s+/);
+  const lastName = lastParts.join(" ");
+  const passwordHash = password ? await bcrypt.hash(password, 12) : current.password_hash;
+  db.prepare(`
+    UPDATE users SET name = ?, first_name = ?, last_name = ?, alias = ?, password_hash = ?,
+      role = ?, base_role = ?, ranking_position = ?, balance = ? WHERE id = ?
+  `).run(name, firstName, lastName, alias, passwordHash, role, role, rank, amount, id);
   res.json(publicUser(db.prepare("SELECT * FROM users WHERE id = ?").get(id)));
 });
 

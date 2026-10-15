@@ -9,6 +9,7 @@ let pushConfig = { enabled: false, publicKey: null };
 let selectedMatchId = null;
 let matchData = { matches: [], pot: 0 };
 let standingsData = { standings: [], pot: 0 };
+let pendingUsers = [];
 
 async function api(url, options = {}) {
   const response = await fetch(url, {
@@ -250,6 +251,13 @@ function renderStandingsBoard(data) {
   return `<section class="mb-7 overflow-hidden rounded-3xl border border-ink/[.07] bg-white shadow-sm"><div class="flex flex-col gap-3 border-b border-ink/[.07] p-5 sm:flex-row sm:items-center sm:justify-between sm:px-6"><div><p class="text-xs font-bold uppercase tracking-[.12em] text-pitch-700">Temporada</p><h2 class="display mt-1 text-2xl font-extrabold">Clasificación</h2><p class="mt-1 text-xs text-ink/50">Puntos globales por asistencia y resultado.</p></div><div class="rounded-2xl bg-lime/35 px-4 py-3"><p class="text-[10px] font-bold uppercase tracking-[.12em] text-pitch-900/60">Bote acumulado</p><p class="display text-xl font-extrabold text-pitch-900">${formatMoney(data.pot)}</p></div></div><div class="overflow-x-auto"><table class="w-full min-w-[560px] text-left"><thead class="bg-paper/70 text-[10px] font-bold uppercase tracking-[.12em] text-ink/45"><tr><th class="px-5 py-3">#</th><th class="px-4 py-3">Jugador</th><th class="px-4 py-3">Puntos</th><th class="px-4 py-3">PJ</th><th class="px-4 py-3">V-E-D</th></tr></thead><tbody class="divide-y divide-ink/[.06]">${rows.length ? rows.map((player, index) => `<tr><td class="px-5 py-3 text-sm font-bold text-pitch-700">${index + 1}</td><td class="px-4 py-3 text-sm font-semibold">${escapeHtml(player.name)}</td><td class="px-4 py-3"><span class="rounded-full bg-pitch-100 px-2.5 py-1 text-xs font-extrabold text-pitch-900">${player.points}</span></td><td class="px-4 py-3 text-sm text-ink/55">${player.matches_played}</td><td class="px-4 py-3 text-sm text-ink/55">${player.wins}-${player.draws}-${player.losses}</td></tr>`).join("") : `<tr><td colspan="5" class="px-5 py-8 text-center text-sm text-ink/45">La clasificación empieza con el primer resultado.</td></tr>`}</tbody></table></div></section>`;
 }
 
+function renderApprovalPanel(pending) {
+  const cards = pending.length
+    ? pending.map((user) => `<form class="pending-approval-card grid gap-3 border-t border-ink/[.06] p-4 sm:grid-cols-[1fr_1fr_1fr_1fr_auto] sm:items-end" data-user-id="${user.id}"><div><p class="font-bold">${escapeHtml(`${user.first_name} ${user.last_name}`)}</p><p class="mt-0.5 text-xs text-ink/45">@${escapeHtml(user.alias)}</p></div><label><span class="mb-1 block text-[11px] font-semibold text-ink/55">Rol base</span><select name="base_role" class="w-full rounded-lg border border-ink/10 bg-white px-2.5 py-2 text-sm"><option value="principal">Principal</option><option value="suplente">Suplente</option></select></label><label><span class="mb-1 block text-[11px] font-semibold text-ink/55">Posición fija</span><input name="ranking_position" type="number" min="2" step="1" required placeholder="2" class="w-full rounded-lg border border-ink/10 px-2.5 py-2 text-sm"/></label><label><span class="mb-1 block text-[11px] font-semibold text-ink/55">Saldo inicial (€)</span><input name="balance" type="number" step="0.01" required value="0" class="w-full rounded-lg border border-ink/10 px-2.5 py-2 text-sm"/></label><button class="rounded-xl bg-pitch-900 px-4 py-2.5 text-xs font-bold text-white">Aprobar</button></form>`).join("")
+    : `<p class="px-5 py-7 text-center text-sm text-ink/45">No hay solicitudes pendientes de revisión.</p>`;
+  return `<section class="mb-7 overflow-hidden rounded-2xl border border-ink/[.07] bg-white shadow-sm"><header class="flex items-center justify-between px-5 py-4"><div><h2 class="font-bold">Aprobaciones pendientes</h2><p class="mt-1 text-xs text-ink/45">Asigna rol base, posición fija y saldo inicial para activar la cuenta.</p></div><span class="rounded-full bg-amber-50 px-3 py-1 text-xs font-bold text-amber-800">${pending.length}</span></header>${cards}</section>`;
+}
+
 function shell(content, active = "Inicio") {
   const initials = currentUser?.name?.split(/\s+/).slice(0, 2).map((part) => part[0]).join("").toUpperCase() || "OP";
   app.innerHTML = `
@@ -279,7 +287,107 @@ function shell(content, active = "Inicio") {
   syncPushButton();
 }
 
+function renderRegistration() {
+  app.innerHTML = `
+    <main class="min-h-screen bg-paper px-5 py-10 sm:grid sm:place-items-center">
+      <section class="mx-auto w-full max-w-lg rounded-3xl border border-ink/[.07] bg-white p-6 shadow-card sm:p-9">
+        <p class="text-xs font-bold uppercase tracking-[.15em] text-pitch-700">NUEVO JUGADOR</p><h1 class="display mt-2 text-3xl font-extrabold">Crear cuenta</h1>
+        <p class="mt-2 text-sm leading-6 text-ink/55">El administrador revisará tu solicitud antes de activar el acceso.</p>
+        <form id="register-form" class="mt-6 space-y-4">
+          <div class="grid gap-4 sm:grid-cols-2">
+            <label><span class="mb-1.5 block text-sm font-semibold">Nombre</span><input name="first_name" required maxlength="60" autocomplete="given-name" class="w-full rounded-xl border border-ink/15 px-4 py-3 text-sm outline-none focus:border-pitch-700"/></label>
+            <label><span class="mb-1.5 block text-sm font-semibold">Apellidos</span><input name="last_name" required maxlength="80" autocomplete="family-name" class="w-full rounded-xl border border-ink/15 px-4 py-3 text-sm outline-none focus:border-pitch-700"/></label>
+          </div>
+          <label class="block"><span class="mb-1.5 block text-sm font-semibold">Alias único</span><input name="alias" required minlength="3" maxlength="24" autocomplete="username" pattern="[A-Za-zÀ-ÿ0-9._-]{3,24}" class="w-full rounded-xl border border-ink/15 px-4 py-3 text-sm outline-none focus:border-pitch-700"/><span class="mt-1 block text-xs text-ink/45">3–24 caracteres: letras, números, punto, guion o guion bajo.</span></label>
+          <label class="block"><span class="mb-1.5 block text-sm font-semibold">Contraseña</span><input name="password" required type="password" minlength="8" maxlength="72" autocomplete="new-password" class="w-full rounded-xl border border-ink/15 px-4 py-3 text-sm outline-none focus:border-pitch-700"/><span class="mt-1 block text-xs text-ink/45">Mínimo 8 caracteres.</span></label>
+          <div id="register-error" class="hidden rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700"></div>
+          <div class="flex flex-col gap-2 pt-1 sm:flex-row"><button type="button" id="back-to-login" class="flex-1 rounded-xl border border-ink/15 px-4 py-3 text-sm font-bold">Volver</button><button class="flex-1 rounded-xl bg-pitch-900 px-4 py-3 text-sm font-bold text-white">Enviar solicitud</button></div>
+        </form>
+      </section>
+    </main>`;
+  document.querySelector("#back-to-login").addEventListener("click", renderLogin);
+  document.querySelector("#register-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const button = form.querySelector('button[type="submit"]') || form.querySelector("button:last-child");
+    button.disabled = true;
+    try {
+      await api("/api/register", { method: "POST", body: JSON.stringify(Object.fromEntries(new FormData(form).entries())) });
+      app.innerHTML = `<main class="grid min-h-screen place-items-center bg-paper p-5"><section class="w-full max-w-md rounded-3xl bg-white p-8 text-center shadow-card"><span class="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-pitch-100 text-2xl text-pitch-800">✓</span><h1 class="display mt-5 text-2xl font-extrabold">Solicitud enviada</h1><p class="mt-2 text-sm leading-6 text-ink/55">Tu cuenta está pendiente de aprobación. Podrás iniciar sesión cuando el administrador la active.</p><button id="back-to-login" class="mt-6 rounded-xl bg-pitch-900 px-5 py-3 text-sm font-bold text-white">Volver al inicio</button></section></main>`;
+      document.querySelector("#back-to-login").addEventListener("click", renderLogin);
+    } catch (error) {
+      const errorBox = document.querySelector("#register-error");
+      errorBox.textContent = error.message;
+      errorBox.classList.remove("hidden");
+      button.disabled = false;
+    }
+  });
+}
+
+function renderPasswordChange() {
+  app.innerHTML = `<main class="grid min-h-screen place-items-center bg-paper p-5"><section class="w-full max-w-md rounded-3xl border border-ink/[.07] bg-white p-6 shadow-card sm:p-8"><p class="text-xs font-bold uppercase tracking-[.15em] text-pitch-700">PROTEGE TU CUENTA</p><h1 class="display mt-2 text-2xl font-extrabold">Cambia la contraseña inicial</h1><p class="mt-2 text-sm leading-6 text-ink/55">Antes de usar O Pachanga, elige una contraseña personal.</p><form id="password-change-form" class="mt-6 space-y-4"><label class="block"><span class="mb-1.5 block text-sm font-semibold">Contraseña actual</span><input name="current_password" required type="password" autocomplete="current-password" class="w-full rounded-xl border border-ink/15 px-4 py-3 text-sm"/></label><label class="block"><span class="mb-1.5 block text-sm font-semibold">Nueva contraseña</span><input name="new_password" required type="password" minlength="8" maxlength="72" autocomplete="new-password" class="w-full rounded-xl border border-ink/15 px-4 py-3 text-sm"/></label><div id="password-error" class="hidden rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700"></div><button class="w-full rounded-xl bg-pitch-900 px-4 py-3 text-sm font-bold text-white">Guardar contraseña</button></form></section></main>`;
+  document.querySelector("#password-change-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const button = form.querySelector("button");
+    button.disabled = true;
+    try {
+      await api("/api/account/password", { method: "POST", body: JSON.stringify(Object.fromEntries(new FormData(form).entries())) });
+      currentUser.must_change_password = false;
+      await loadUsers();
+      await renderHome();
+    } catch (error) {
+      const errorBox = document.querySelector("#password-error");
+      errorBox.textContent = error.message;
+      errorBox.classList.remove("hidden");
+      button.disabled = false;
+    }
+  });
+}
+
 function renderLogin() {
+  app.innerHTML = `
+    <main class="grid min-h-screen lg:grid-cols-2">
+      <section class="pitch-grid flex min-h-[320px] flex-col justify-between bg-pitch-900 px-7 py-7 text-white sm:px-12 sm:py-10 lg:min-h-screen lg:px-16">
+        <div class="flex items-center gap-3"><span class="grid h-11 w-11 place-items-center rounded-2xl bg-lime text-pitch-950">⚽</span><span><b class="display block text-xl font-extrabold">O Pachanga</b><span class="text-[10px] font-semibold tracking-[.16em] text-white/55">FÚTBOL ENTRE AMIGOS</span></span></div>
+        <div class="max-w-xl py-10"><span class="rounded-full border border-white/15 bg-white/5 px-3 py-1.5 text-xs font-semibold text-lime">TEMPORADA ABIERTA</span><h1 class="display mt-6 text-4xl font-extrabold leading-tight sm:text-6xl">Los martes<br/>son de <span class="text-lime">partido.</span></h1><p class="mt-5 max-w-md text-base leading-7 text-white/65">Organiza la pachanga semanal y mantente al día con el equipo.</p></div>
+        <p class="text-xs font-medium text-white/45">PARTIDO · EQUIPO · AMIGOS</p>
+      </section>
+      <section class="flex items-center justify-center px-5 py-12 sm:px-10 lg:px-16"><div class="w-full max-w-md">
+        <div class="mb-8 flex items-center justify-between gap-3"><div><p class="text-xs font-bold uppercase tracking-[.15em] text-pitch-700">Bienvenido al vestuario</p><h2 class="display mt-2 text-3xl font-extrabold tracking-tight">Iniciar sesión</h2></div>${installButton("shrink-0 border-pitch-900/10 !bg-pitch-900 !text-white")}</div>
+        <form id="login-form" class="space-y-4 rounded-2xl border border-ink/[.07] bg-white p-5 shadow-sm">
+          <label class="block"><span class="mb-1.5 block text-sm font-semibold">Alias</span><input name="alias" required autocomplete="username" maxlength="24" class="w-full rounded-xl border border-ink/15 px-4 py-3 text-sm outline-none focus:border-pitch-700"/></label>
+          <label class="block"><span class="mb-1.5 block text-sm font-semibold">Contraseña</span><input name="password" required type="password" autocomplete="current-password" class="w-full rounded-xl border border-ink/15 px-4 py-3 text-sm outline-none focus:border-pitch-700"/></label>
+          <div id="login-error" class="hidden rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700"></div>
+          <button class="w-full rounded-xl bg-pitch-900 px-4 py-3 text-sm font-bold text-white hover:bg-pitch-800">Entrar</button>
+        </form>
+        <p class="mt-5 text-center text-sm text-ink/55">¿Aún no tienes cuenta? <button id="show-register" class="font-bold text-pitch-700 underline underline-offset-2">Regístrate</button></p>
+      </div></section>
+    </main>`;
+  attachInstallButton();
+  document.querySelector("#login-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = Object.fromEntries(new FormData(event.currentTarget).entries());
+    const button = event.currentTarget.querySelector("button");
+    button.disabled = true;
+    try {
+      const result = await api("/api/session", { method: "POST", body: JSON.stringify(form) });
+      currentUser = result.user;
+      if (currentUser.must_change_password) renderPasswordChange();
+      else {
+        await loadUsers();
+        await renderHome();
+      }
+    } catch (error) {
+      const errorBox = document.querySelector("#login-error");
+      errorBox.textContent = error.message;
+      errorBox.classList.remove("hidden");
+      button.disabled = false;
+    }
+  });
+  document.querySelector("#show-register").addEventListener("click", renderRegistration);
+  return;
+
   const admin = users.filter((user) => user.role === "admin");
   const players = users.filter((user) => user.role !== "admin");
   app.innerHTML = `
@@ -326,6 +434,7 @@ async function renderAdmin() {
   convocationData = await api("/api/convocations/current");
   matchData = await api("/api/matches");
   standingsData = await api("/api/standings");
+  pendingUsers = await api("/api/admin/pending-users");
   pushConfig = await api("/api/push/config").catch(() => ({ enabled: false, publicKey: null }));
   currentUser = { ...currentUser, ...users.find((user) => user.id === currentUser.id) };
   const players = users.filter((user) => user.role !== "admin");
@@ -334,6 +443,7 @@ async function renderAdmin() {
       <div><div class="mb-3 flex items-center gap-2 text-xs font-bold uppercase tracking-[.14em] text-pitch-700"><span class="h-2 w-2 rounded-full bg-pitch-700"></span>ADMINISTRACIÓN <span class="text-ink/25">/</span> EQUIPO</div><h1 class="display text-3xl font-extrabold tracking-tight sm:text-4xl">Gestiona la pachanga</h1><p class="mt-2 text-sm text-ink/55">La convocatoria, el equipo y la organización semanal.</p></div>
       <button id="new-player" class="inline-flex items-center justify-center gap-2 rounded-xl bg-pitch-900 px-5 py-3 text-sm font-bold text-white shadow-sm transition hover:bg-pitch-800"><span class="text-lg leading-none">+</span> Añadir jugador</button>
     </div>
+    ${renderApprovalPanel(pendingUsers)}
     ${renderConvocationBoard(convocationData, true)}
     ${renderMatchPanel(matchData, true)}
     ${renderStandingsBoard(standingsData)}
@@ -353,6 +463,7 @@ async function renderAdmin() {
     button.addEventListener("click", () => openPlayerModal(player));
   });
   bindConvocationActions(true);
+  bindApprovalActions();
   document.querySelector("#save-admin-profile")?.addEventListener("click", async () => {
     try {
       const result = await api("/api/admin/profile", {
@@ -437,6 +548,28 @@ function bindConvocationActions(isAdmin = false) {
       });
     });
   }
+}
+
+function bindApprovalActions() {
+  document.querySelectorAll(".pending-approval-card").forEach((form) => {
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const submit = form.querySelector("button");
+      submit.disabled = true;
+      try {
+        const payload = Object.fromEntries(new FormData(form).entries());
+        await api(`/api/admin/pending-users/${form.dataset.userId}/approve`, {
+          method: "POST",
+          body: JSON.stringify(payload),
+        });
+        showToast("Cuenta aprobada y activada.");
+        await renderAdmin();
+      } catch (error) {
+        showToast(error.message);
+        submit.disabled = false;
+      }
+    });
+  });
 }
 
 function bindMatchActions(isAdmin = false) {
@@ -562,6 +695,8 @@ function openPlayerModal(player = null) {
       <div class="mb-6 flex items-start justify-between"><div><p class="text-xs font-bold uppercase tracking-[.13em] text-pitch-700">${editing ? "PLANTILLA" : "NUEVA INCORPORACIÓN"}</p><h2 id="player-modal-title" class="display mt-1 text-2xl font-extrabold">${editing ? "Editar jugador" : "Añadir jugador"}</h2></div><button type="button" class="close-modal grid h-9 w-9 place-items-center rounded-xl bg-paper text-ink/55 hover:bg-ink/10" aria-label="Cerrar">✕</button></div>
       <form id="player-form" class="space-y-4">
         <label class="block"><span class="mb-1.5 block text-sm font-semibold">Nombre</span><input name="name" required maxlength="80" value="${escapeHtml(player?.name || "")}" placeholder="Ej. Alex García" class="w-full rounded-xl border border-ink/15 bg-white px-4 py-3 text-sm outline-none transition focus:border-pitch-700 focus:ring-4 focus:ring-pitch-700/10"/></label>
+        <label class="block"><span class="mb-1.5 block text-sm font-semibold">Alias único</span><input name="alias" required minlength="3" maxlength="24" pattern="[A-Za-zÀ-ÿ0-9._-]{3,24}" value="${escapeHtml(player?.alias || "")}" placeholder="Ej. alexg" class="w-full rounded-xl border border-ink/15 bg-white px-4 py-3 text-sm outline-none focus:border-pitch-700"/></label>
+        <label class="block"><span class="mb-1.5 block text-sm font-semibold">${editing ? "Nueva contraseña (opcional)" : "Contraseña"}</span><input name="password" type="password" ${editing ? "" : "required"} minlength="8" maxlength="72" autocomplete="new-password" class="w-full rounded-xl border border-ink/15 bg-white px-4 py-3 text-sm outline-none focus:border-pitch-700"/></label>
         <div class="grid gap-4 sm:grid-cols-2">
           <label class="block"><span class="mb-1.5 block text-sm font-semibold">Rol en el equipo</span><select name="role" class="w-full rounded-xl border border-ink/15 bg-white px-4 py-3 text-sm outline-none focus:border-pitch-700">${["principal", "suplente"].map((role) => `<option value="${role}" ${player?.role === role ? "selected" : ""}>${role === "principal" ? "Principal" : "Suplente"}</option>`).join("")}</select></label>
           <label class="block"><span class="mb-1.5 block text-sm font-semibold">Posición en ranking</span><input name="ranking_position" type="number" min="1" step="1" value="${player?.ranking_position ?? ""}" placeholder="Ej. 1" class="w-full rounded-xl border border-ink/15 bg-white px-4 py-3 text-sm outline-none focus:border-pitch-700"/></label>
@@ -597,12 +732,18 @@ function openPlayerModal(player = null) {
   overlay.querySelector('input[name="name"]').focus();
 }
 
-async function login(userId) {
+async function login(alias, password) {
   try {
-    const result = await api("/api/session", { method: "POST", body: JSON.stringify({ userId }) });
+    const result = await api("/api/session", {
+      method: "POST",
+      body: JSON.stringify({ alias, password }),
+    });
     currentUser = result.user;
-    await loadUsers();
-    await renderHome();
+    if (currentUser.must_change_password) renderPasswordChange();
+    else {
+      await loadUsers();
+      await renderHome();
+    }
   } catch (error) {
     showToast(error.message);
   }
@@ -628,6 +769,7 @@ async function logout() {
 }
 
 async function renderHome() {
+  if (currentUser?.must_change_password) return renderPasswordChange();
   if (currentUser?.role === "admin") return renderAdmin();
   return renderPlayer();
 }
@@ -658,14 +800,12 @@ setInterval(refreshConvocationIfChanged, 30000);
 async function start() {
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch((error) => console.warn("No se pudo registrar el service worker:", error));
   try {
-    await loadUsers();
     const session = await api("/api/session");
     currentUser = session.user;
-    if (currentUser) await renderHome();
-    else {
+    if (currentUser) {
       await loadUsers();
-      renderLogin();
-    }
+      await renderHome();
+    } else renderLogin();
   } catch (error) {
     app.innerHTML = `<main class="grid min-h-screen place-items-center p-6"><div class="max-w-sm text-center"><div class="text-4xl">⚽</div><h1 class="display mt-4 text-2xl font-extrabold">No hay conexión con el servidor</h1><p class="mt-2 text-sm text-ink/55">Comprueba la conexión e inténtalo de nuevo.</p><button onclick="location.reload()" class="mt-5 rounded-xl bg-pitch-900 px-5 py-3 text-sm font-bold text-white">Reintentar</button></div></main>`;
     console.error(error);

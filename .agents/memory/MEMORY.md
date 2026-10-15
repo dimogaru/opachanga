@@ -1,0 +1,1 @@
+- [Reglas de O Pachanga](pachanga-rules.md) — calendario, elegibilidad, draft, cobro individual y puntuación son reglas de producto.
