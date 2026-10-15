@@ -1,0 +1,35 @@
+Actualiza la aplicación "O Pachanga" existente con los siguientes ajustes específicos de registro, cuenta de Administrador por defecto y notificaciones extra. Mantiene la arquitectura y estructura de archivos actual.
+
+1. Creación Automática de la Cuenta Admin por Defecto:
+   - Al iniciar la aplicación (o ejecutar la migración de base de datos), crea automáticamente el usuario Administrador con las siguientes credenciales y datos si no existe previa en la BD:
+     * Nombre: DIEGO
+     * Apellidos: GAY DAVILA
+     * Alias: DIEGO (Único)
+     * Contraseña: Opachanga# (almacenar encriptada con bcrypt)
+     * Rol: 'admin'
+     * Estado: 'active'
+     * Rol como jugador: 'Principal'
+     * Posición ranking: 1 (o valor por defecto editable)
+     * Saldo inicial: 0.00
+
+2. Registro de Usuario y Aprobación:
+   - Modifica el flujo de registro público para solicitar: Nombre, Apellidos, Alias (ÚNICO, validar que no esté repetido) y Contraseña (hash bcrypt).
+   - Un usuario recién registrado entra en estado `pending` y no podrá iniciar sesión hasta ser aprobado.
+   - En el Panel de Administración (accesible por el usuario DIEGO), añade la vista "Aprobaciones Pendientes":
+     * El Admin revisa las solicitudes y, para dar el OK, debe seleccionar:
+       a) Rol base: 'Principal' o 'Suplente'.
+       b) Posición fija en el ranking (1, 2, 3...).
+       c) Saldo inicial.
+     * Al aprobar, el usuario pasa a estado `active` y ya puede autenticarse.
+
+3. El Admin como Jugador:
+   - El usuario Admin (DIEGO) tiene todos los atributos de un jugador habitual (saldo, asignación de rol principal/suplente, posición en ranking y capacidad de apuntarse en la convocatoria para jugar).
+
+4. Notificaciones Web Push Faltantes/Adicionales:
+   Asegúrate de que el Service Worker y el módulo de `web-push` gestionen y permitan disparar los siguientes mensajes push a los dispositivos móviles:
+   a) "Convocatoria abierta" (enviada el Martes a todos los usuarios activos).
+   b) "Aún no te has apuntado al partido" (enviada el Viernes a quienes no hayan respondido "SÍ VOY" o "NO VOY").
+   c) "Pasas de Suplente a Principal para jugar" (enviada automáticamente de forma individual al jugador que el Admin mueva de la lista de Suplentes a Principales).
+   d) "Saldo negativo antes de jugar" (enviada 1 día antes del partido a los convocados con saldo menor a 0).
+
+Mantiene el diseño optimizado para pantallas móviles (Mobile-First / PWA).

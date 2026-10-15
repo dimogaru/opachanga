@@ -5,6 +5,7 @@ const session = require("express-session");
 const Database = require("better-sqlite3");
 const cron = require("node-cron");
 const webPush = require("web-push");
+const bcrypt = require("bcrypt");
 
 const app = express();
 const port = Number(process.env.PORT || 5000);
@@ -19,6 +20,14 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
+    first_name TEXT,
+    last_name TEXT,
+    alias TEXT,
+    password_hash TEXT,
+    account_status TEXT NOT NULL DEFAULT 'active'
+      CHECK (account_status IN ('pending', 'active')),
+    must_change_password INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     role TEXT NOT NULL CHECK (role IN ('principal', 'suplente', 'admin')),
     base_role TEXT NOT NULL DEFAULT 'principal'
       CHECK (base_role IN ('principal', 'suplente')),
@@ -120,6 +129,18 @@ db.exec(`
 `);
 
 const userColumns = db.prepare("PRAGMA table_info(users)").all().map((column) => column.name);
+const userMigrations = [
+  ["first_name", "TEXT"],
+  ["last_name", "TEXT"],
+  ["alias", "TEXT"],
+  ["password_hash", "TEXT"],
+  ["account_status", "TEXT NOT NULL DEFAULT 'active'"],
+  ["must_change_password", "INTEGER NOT NULL DEFAULT 0"],
+  ["created_at", "TEXT"],
+];
+for (const [name, definition] of userMigrations) {
+  if (!userColumns.includes(name)) db.exec(`ALTER TABLE users ADD COLUMN ${name} ${definition}`);
+}
 if (!userColumns.includes("base_role")) {
   db.exec(
     "ALTER TABLE users ADD COLUMN base_role TEXT NOT NULL DEFAULT 'principal' CHECK (base_role IN ('principal', 'suplente'))",
@@ -127,11 +148,27 @@ if (!userColumns.includes("base_role")) {
   db.exec("UPDATE users SET base_role = role WHERE role IN ('principal', 'suplente')");
 }
 
-const hasAdmin = db.prepare("SELECT id FROM users WHERE role = 'admin' LIMIT 1").get();
-if (!hasAdmin) {
-  db.prepare(
-    "INSERT INTO users (name, role, base_role, ranking_position, balance) VALUES (?, 'admin', 'principal', NULL, 0)",
-  ).run(process.env.INITIAL_ADMIN_NAME || "Admin O Pachanga");
+db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_alias_unique ON users(alias COLLATE NOCASE) WHERE alias IS NOT NULL");
+db.prepare("UPDATE users SET account_status = 'pending' WHERE role != 'admin' AND password_hash IS NULL AND account_status = 'active'").run();
+
+const defaultAdminPasswordHash = "$2b$12$gaqaTxzmMlTqHxFpr5iA0uhcd2uwmcIiKAPettfW3dKm9x8Obti22";
+let defaultAdmin = db.prepare("SELECT * FROM users WHERE role = 'admin' ORDER BY id LIMIT 1").get();
+if (!defaultAdmin) {
+  const createdAdmin = db.prepare(`
+    INSERT INTO users (name, first_name, last_name, alias, password_hash, account_status,
+      must_change_password, role, base_role, ranking_position, balance)
+    VALUES ('DIEGO GAY DAVILA', 'DIEGO', 'GAY DAVILA', 'DIEGO', ?, 'active', 1, 'admin', 'principal', 1, 0)
+  `).run(defaultAdminPasswordHash);
+  defaultAdmin = db.prepare("SELECT * FROM users WHERE id = ?").get(createdAdmin.lastInsertRowid);
+} else if (!defaultAdmin.alias || !defaultAdmin.password_hash) {
+  db.prepare(`
+    UPDATE users SET name = 'DIEGO GAY DAVILA', first_name = 'DIEGO', last_name = 'GAY DAVILA',
+      alias = COALESCE(NULLIF(alias, ''), 'DIEGO'),
+      password_hash = COALESCE(password_hash, ?), account_status = 'active',
+      must_change_password = CASE WHEN password_hash IS NULL THEN 1 ELSE must_change_password END,
+      base_role = 'principal', ranking_position = 1
+    WHERE id = ?
+  `).run(defaultAdminPasswordHash, defaultAdmin.id);
 }
 
 const vapidPublicKey = process.env.VAPID_PUBLIC_KEY || "";
