@@ -290,17 +290,23 @@ function matchDetails(match) {
   if (!match) return null;
   const teamAIds = readJson(match.team_a, []);
   const teamBIds = readJson(match.team_b, []);
+  const draft = readJson(match.draft_state, {});
   const getTeam = (ids) => ids.length
     ? db.prepare(`SELECT id, name, ranking_position FROM users WHERE id IN (${ids.map(() => "?").join(",")})`).all(...ids)
       .sort((left, right) => ids.indexOf(left.id) - ids.indexOf(right.id))
     : [];
+  const available = draft.remaining?.length ? getTeam(draft.remaining) : [];
   const finance = db.prepare("SELECT * FROM match_finances WHERE match_id = ?").get(match.id) || null;
+  const principalCount = db.prepare("SELECT COUNT(*) AS count FROM convocations WHERE match_id = ? AND status = 'principal'")
+    .get(match.id).count;
   return {
     ...match,
-    draft: readJson(match.draft_state, {}),
+    draft,
     teamA: getTeam(teamAIds),
     teamB: getTeam(teamBIds),
+    available,
     finance,
+    principalCount,
   };
 }
 

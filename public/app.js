@@ -6,6 +6,9 @@ let installPrompt = null;
 let toastTimer;
 let convocationData = null;
 let pushConfig = { enabled: false, publicKey: null };
+let selectedMatchId = null;
+let matchData = { matches: [], pot: 0 };
+let standingsData = { standings: [], pot: 0 };
 
 async function api(url, options = {}) {
   const response = await fetch(url, {
@@ -174,7 +177,7 @@ function renderConvocationBoard(data, isAdmin = false) {
         </div>
       </div>
     </section>
-    <div class="mb-3 flex flex-wrap items-end justify-between gap-2"><div><h2 class="display text-xl font-extrabold tracking-tight">Respuestas del grupo</h2><p class="mt-1 text-xs text-ink/50">La lista se actualiza para todo el equipo.</p></div>${isAdmin ? `<label class="flex items-center gap-2 rounded-xl border border-ink/10 bg-white px-3 py-2 text-xs font-semibold">Mi rol base<select id="admin-base-role" class="rounded-lg border-0 bg-transparent text-xs font-bold text-pitch-800 outline-none"><option value="principal" ${currentUser.base_role === "principal" ? "selected" : ""}>Principal</option><option value="suplente" ${currentUser.base_role === "suplente" ? "selected" : ""}>Suplente</option></select></label>` : ""}</div>
+    <div class="mb-3 flex flex-wrap items-end justify-between gap-2"><div><h2 class="display text-xl font-extrabold tracking-tight">Respuestas del grupo</h2><p class="mt-1 text-xs text-ink/50">La lista se actualiza para todo el equipo.</p></div>${isAdmin ? `<div class="flex flex-wrap items-center gap-2 rounded-xl border border-ink/10 bg-white px-3 py-2 text-xs font-semibold"><label>Mi rol<select id="admin-base-role" class="ml-2 rounded-lg border-0 bg-transparent text-xs font-bold text-pitch-800 outline-none"><option value="principal" ${currentUser.base_role === "principal" ? "selected" : ""}>Principal</option><option value="suplente" ${currentUser.base_role === "suplente" ? "selected" : ""}>Suplente</option></select></label><label>Ranking #<input id="admin-profile-rank" type="number" min="1" step="1" value="${currentUser.ranking_position ?? ""}" class="ml-1 w-14 rounded-md border border-ink/10 px-1.5 py-1 text-xs font-bold outline-none focus:border-pitch-700" aria-label="Tu posición de ranking"/></label><button id="save-admin-profile" class="rounded-lg bg-pitch-900 px-2.5 py-1.5 text-xs font-bold text-white">Guardar</button></div>` : ""}</div>
     ${isAdmin ? `<div class="mb-4 grid gap-3 rounded-2xl border border-pitch-900/10 bg-white p-4 sm:grid-cols-[1fr_auto_auto] sm:items-center"><div><p class="text-sm font-bold">Avisos de esta convocatoria</p><p id="push-status-copy" class="mt-1 text-xs text-ink/50">${pushConfig.enabled ? "Apertura automática el martes · recordatorio el viernes a las 10:00." : "Configura las claves VAPID del servidor para activar los avisos push."}</p></div><button id="send-opening" class="rounded-xl border border-ink/10 px-3 py-2 text-xs font-bold transition hover:bg-paper disabled:cursor-not-allowed disabled:opacity-40">Enviar apertura</button><button id="send-reminder" class="rounded-xl bg-pitch-900 px-3 py-2 text-xs font-bold text-white transition hover:bg-pitch-800 disabled:cursor-not-allowed disabled:opacity-40">Enviar recordatorio</button></div>` : ""}
     <div class="grid gap-4 lg:grid-cols-3">
       ${listPanel("Lista principal", data.lists.principal, "bg-pitch-100 text-pitch-800", "✓", isAdmin)}
@@ -185,6 +188,66 @@ function renderConvocationBoard(data, isAdmin = false) {
       <summary class="cursor-pointer list-none text-sm font-semibold">Sin responder <span class="ml-1 rounded-full bg-paper px-2 py-0.5 text-xs text-ink/55">${data.lists.pending.length}</span></summary>
       <p class="mt-2 text-xs text-ink/50">${data.lists.pending.length ? data.lists.pending.map((user) => escapeHtml(user.name)).join(" · ") : "Todo el grupo ha respondido."}</p>
     </details>`;
+}
+
+function matchLabel(match) {
+  const date = new Date(`${match.start_date}T12:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + 7);
+  return `Partido del ${date.toLocaleDateString("es-ES", { day: "numeric", month: "long", timeZone: "UTC" })}`;
+}
+
+function renderTeamCard(title, players, tone) {
+  const rows = players.length
+    ? players.map((player) => `<li class="flex items-center gap-2.5 border-t border-ink/[.06] px-4 py-3 first:border-0"><span class="grid h-7 w-7 place-items-center rounded-lg bg-white/80 text-[10px] font-bold text-ink/55">${player.ranking_position ? `#${player.ranking_position}` : "⚽"}</span><span class="text-sm font-semibold">${escapeHtml(player.name)}</span></li>`).join("")
+    : `<li class="px-4 py-6 text-sm text-ink/45">Sin jugadores todavía.</li>`;
+  return `<section class="overflow-hidden rounded-2xl border border-ink/[.07] ${tone}"><header class="flex items-center justify-between px-4 py-3"><h3 class="font-bold">${title}</h3><span class="rounded-full bg-white/75 px-2.5 py-1 text-xs font-bold">${players.length}</span></header><ul class="bg-white/70">${rows}</ul></section>`;
+}
+
+function renderMatchPanel(matchesData, isAdmin = false) {
+  const matches = matchesData.matches || [];
+  if (!matches.length) return "";
+  let selected = matches.find((match) => match.id === Number(selectedMatchId));
+  if (!selected) {
+    selected = matches.find((match) => match.status === "closed") ||
+      matches.find((match) => match.status === "played") || matches[0];
+    selectedMatchId = selected.id;
+  }
+  const draft = selected.draft || {};
+  const completed = draft.status === "complete";
+  const available = selected.available || [];
+  const turnName = draft.currentTurn === "A"
+    ? users.find((player) => player.id === draft.captainA)?.name || "Jugador #1"
+    : users.find((player) => player.id === draft.captainB)?.name || "Jugador #2";
+  const selection = `<label class="block"><span class="mb-1.5 block text-xs font-semibold text-ink/55">Seleccionar partido</span><select id="match-picker" class="w-full rounded-xl border border-ink/10 bg-white px-3 py-2.5 text-sm font-semibold outline-none focus:border-pitch-700">${matches.map((match) => `<option value="${match.id}" ${match.id === selected.id ? "selected" : ""}>${escapeHtml(matchLabel(match))} · ${match.status === "played" ? "jugado" : match.status === "closed" ? "convocatoria cerrada" : "convocatoria abierta"}</option>`).join("")}</select></label>`;
+  let adminControls = "";
+  if (isAdmin && selected.status === "closed" && !draft.status) {
+    const count = selected.principalCount ?? convocationData?.principalCount ?? 0;
+    adminControls = count >= 14 && count <= 16
+      ? `<div class="mt-4 rounded-xl bg-paper p-4"><p class="text-sm font-bold">Convocatoria cerrada · ${count} principales</p><p class="mt-1 text-xs text-ink/50">El jugador #2 elige primero. Luego se alterna hasta dejar tres; el #1 elige dos y recibe automáticamente al último.</p><button id="start-draft" data-match-id="${selected.id}" class="mt-3 rounded-xl bg-pitch-900 px-4 py-2.5 text-sm font-bold text-white">Iniciar draft</button></div>`
+      : `<p class="mt-4 rounded-xl bg-amber-50 p-4 text-sm text-amber-800">No se puede iniciar el draft: hacen falta entre 14 y 16 confirmados principales; hay ${count}.</p>`;
+  } else if (isAdmin && draft.status === "in_progress") {
+    adminControls = `<div class="mt-4 rounded-xl bg-paper p-4"><p class="text-sm font-bold">Turno de ${escapeHtml(turnName)} · Equipo ${draft.currentTurn}</p><p class="mt-1 text-xs text-ink/50">${available.length} jugadores disponibles</p><div class="mt-3 flex flex-col gap-2 sm:flex-row"><select id="draft-player" class="min-w-0 flex-1 rounded-xl border border-ink/10 bg-white px-3 py-2.5 text-sm">${available.map((player) => `<option value="${player.id}">${escapeHtml(player.name)}${player.ranking_position ? ` · #${player.ranking_position}` : ""}</option>`).join("")}</select><button id="draft-pick" data-match-id="${selected.id}" ${available.length ? "" : "disabled"} class="rounded-xl bg-pitch-900 px-4 py-2.5 text-sm font-bold text-white disabled:opacity-40">Elegir jugador</button></div></div>`;
+  } else if (selected.status === "open") {
+    adminControls = `<p class="mt-4 rounded-xl bg-paper p-4 text-sm text-ink/55">El draft estará disponible al cerrar la convocatoria el lunes a las 20:00.</p>`;
+  } else if (draft.status === "complete") {
+    adminControls = `<p class="mt-4 rounded-xl bg-pitch-100 p-4 text-sm font-bold text-pitch-900">Draft completo. Composición de equipos guardada.</p>`;
+  }
+  const scoreText = selected.result === "draw" ? "Empate" : selected.result ? `Victoria del Equipo ${selected.result}` : "";
+  const finance = selected.finance;
+  const financeControl = isAdmin && completed && !finance && selected.status !== "played"
+    ? `<form id="match-finance-form" data-match-id="${selected.id}" class="mt-4 grid gap-3 rounded-xl border border-ink/[.07] bg-white p-4 sm:grid-cols-[1fr_1fr_auto] sm:items-end"><label><span class="mb-1.5 block text-xs font-semibold text-ink/55">Coste pista (€)</span><input name="pitch_cost" type="number" min="0" step="0.01" required class="w-full rounded-xl border border-ink/10 px-3 py-2.5 text-sm"/></label><label><span class="mb-1.5 block text-xs font-semibold text-ink/55">Cobro por jugador (€)</span><input name="fee_per_player" type="number" min="0" step="0.01" required class="w-full rounded-xl border border-ink/10 px-3 py-2.5 text-sm"/></label><button class="rounded-xl bg-pitch-900 px-4 py-2.5 text-sm font-bold text-white">Registrar cobro</button><p class="text-xs text-ink/45 sm:col-span-3">Cada participante paga el importe indicado; la diferencia total tras cubrir la pista se suma al bote.</p></form>`
+    : finance ? `<div class="mt-4 grid gap-2 rounded-xl bg-white p-4 text-xs text-ink/60 sm:grid-cols-3"><span>Pista: <b class="text-ink">${formatMoney(finance.pitch_cost)}</b></span><span>Cobrado: <b class="text-ink">${formatMoney(finance.total_collected)}</b></span><span>Al bote: <b class="text-pitch-800">${formatMoney(finance.pot_added)}</b></span></div>` : "";
+  const resultControl = isAdmin && completed && selected.status !== "played"
+    ? `<form id="match-result-form" data-match-id="${selected.id}" class="mt-4 flex flex-col gap-2 rounded-xl bg-white p-4 sm:flex-row sm:items-end"><label class="flex-1"><span class="mb-1.5 block text-xs font-semibold text-ink/55">Resultado final</span><select name="result" required class="w-full rounded-xl border border-ink/10 bg-white px-3 py-2.5 text-sm"><option value="A">Gana Equipo A</option><option value="B">Gana Equipo B</option><option value="draw">Empate</option></select></label><button class="rounded-xl bg-lime px-4 py-2.5 text-sm font-extrabold text-pitch-950">Guardar resultado y puntos</button></form>`
+    : selected.status === "played" ? `<p class="mt-4 rounded-xl bg-lime/20 p-4 text-sm font-bold text-pitch-900">Resultado: ${scoreText}. Puntuación guardada: asistencia +1, victoria +3 extra, empate +1 extra.</p>` : "";
+  const alertControl = isAdmin && pushConfig.enabled && selected.status !== "open"
+    ? `<button id="negative-balance-alert" data-match-id="${selected.id}" class="mt-3 rounded-xl border border-amber-700/20 px-3 py-2 text-xs font-bold text-amber-800 hover:bg-amber-50">Enviar alerta de saldo negativo</button>` : "";
+  return `<section class="mb-7 rounded-3xl border border-ink/[.07] bg-white p-5 shadow-sm sm:p-6"><div class="mb-4 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between"><div><p class="text-xs font-bold uppercase tracking-[.12em] text-pitch-700">Partidos</p><h2 class="display mt-1 text-2xl font-extrabold">${escapeHtml(matchLabel(selected))}</h2><p class="mt-1 text-xs text-ink/50">${selected.status === "played" ? "Partido jugado" : selected.status === "closed" ? "Convocatoria cerrada" : "Convocatoria abierta"}</p></div><div class="w-full sm:max-w-xs">${selection}</div></div><div class="grid gap-3 sm:grid-cols-2">${renderTeamCard("Equipo A", selected.teamA || [], "bg-pitch-100 text-pitch-900")}${renderTeamCard("Equipo B", selected.teamB || [], "bg-amber-50 text-amber-900")}</div>${adminControls}${financeControl}${resultControl}${alertControl}</section>`;
+}
+
+function renderStandingsBoard(data) {
+  const rows = data.standings || [];
+  return `<section class="mb-7 overflow-hidden rounded-3xl border border-ink/[.07] bg-white shadow-sm"><div class="flex flex-col gap-3 border-b border-ink/[.07] p-5 sm:flex-row sm:items-center sm:justify-between sm:px-6"><div><p class="text-xs font-bold uppercase tracking-[.12em] text-pitch-700">Temporada</p><h2 class="display mt-1 text-2xl font-extrabold">Clasificación</h2><p class="mt-1 text-xs text-ink/50">Puntos globales por asistencia y resultado.</p></div><div class="rounded-2xl bg-lime/35 px-4 py-3"><p class="text-[10px] font-bold uppercase tracking-[.12em] text-pitch-900/60">Bote acumulado</p><p class="display text-xl font-extrabold text-pitch-900">${formatMoney(data.pot)}</p></div></div><div class="overflow-x-auto"><table class="w-full min-w-[560px] text-left"><thead class="bg-paper/70 text-[10px] font-bold uppercase tracking-[.12em] text-ink/45"><tr><th class="px-5 py-3">#</th><th class="px-4 py-3">Jugador</th><th class="px-4 py-3">Puntos</th><th class="px-4 py-3">PJ</th><th class="px-4 py-3">V-E-D</th></tr></thead><tbody class="divide-y divide-ink/[.06]">${rows.length ? rows.map((player, index) => `<tr><td class="px-5 py-3 text-sm font-bold text-pitch-700">${index + 1}</td><td class="px-4 py-3 text-sm font-semibold">${escapeHtml(player.name)}</td><td class="px-4 py-3"><span class="rounded-full bg-pitch-100 px-2.5 py-1 text-xs font-extrabold text-pitch-900">${player.points}</span></td><td class="px-4 py-3 text-sm text-ink/55">${player.matches_played}</td><td class="px-4 py-3 text-sm text-ink/55">${player.wins}-${player.draws}-${player.losses}</td></tr>`).join("") : `<tr><td colspan="5" class="px-5 py-8 text-center text-sm text-ink/45">La clasificación empieza con el primer resultado.</td></tr>`}</tbody></table></div></section>`;
 }
 
 function shell(content, active = "Inicio") {
@@ -261,7 +324,10 @@ function renderLogin() {
 async function renderAdmin() {
   await loadUsers();
   convocationData = await api("/api/convocations/current");
+  matchData = await api("/api/matches");
+  standingsData = await api("/api/standings");
   pushConfig = await api("/api/push/config").catch(() => ({ enabled: false, publicKey: null }));
+  currentUser = { ...currentUser, ...users.find((user) => user.id === currentUser.id) };
   const players = users.filter((user) => user.role !== "admin");
   const adminContent = `
     <div class="mb-8 flex flex-col justify-between gap-5 sm:flex-row sm:items-end">
@@ -269,6 +335,8 @@ async function renderAdmin() {
       <button id="new-player" class="inline-flex items-center justify-center gap-2 rounded-xl bg-pitch-900 px-5 py-3 text-sm font-bold text-white shadow-sm transition hover:bg-pitch-800"><span class="text-lg leading-none">+</span> Añadir jugador</button>
     </div>
     ${renderConvocationBoard(convocationData, true)}
+    ${renderMatchPanel(matchData, true)}
+    ${renderStandingsBoard(standingsData)}
     <div class="mb-6 grid gap-3 sm:grid-cols-3">
       <div class="rounded-2xl border border-ink/[.07] bg-white p-5 shadow-sm"><p class="text-xs font-semibold text-ink/45">PLANTILLA TOTAL</p><div class="mt-2 flex items-end justify-between"><span class="display text-3xl font-extrabold">${players.length + 1}</span><span class="pb-1 text-xs text-ink/40">incluye admin</span></div></div>
       <div class="rounded-2xl border border-ink/[.07] bg-white p-5 shadow-sm"><p class="text-xs font-semibold text-ink/45">PRINCIPALES</p><div class="mt-2 flex items-end justify-between"><span class="display text-3xl font-extrabold">${players.filter((user) => user.base_role === "principal").length + (currentUser.base_role === "principal" ? 1 : 0)}</span><span class="mb-1 h-2 w-2 rounded-full bg-pitch-700"></span></div></div>
@@ -285,12 +353,18 @@ async function renderAdmin() {
     button.addEventListener("click", () => openPlayerModal(player));
   });
   bindConvocationActions(true);
-  document.querySelector("#admin-base-role")?.addEventListener("change", async (event) => {
+  document.querySelector("#save-admin-profile")?.addEventListener("click", async () => {
     try {
-      const result = await api("/api/admin/profile", { method: "PATCH", body: JSON.stringify({ base_role: event.target.value }) });
+      const result = await api("/api/admin/profile", {
+        method: "PATCH",
+        body: JSON.stringify({
+          base_role: document.querySelector("#admin-base-role").value,
+          ranking_position: document.querySelector("#admin-profile-rank").value || null,
+        }),
+      });
       currentUser = result.user;
-      showToast("Tu rol base de jugador se ha actualizado.");
-      renderAdmin();
+      showToast("Perfil y posición de ranking actualizados.");
+      await renderAdmin();
     } catch (error) {
       showToast(error.message);
     }
@@ -327,6 +401,7 @@ async function renderAdmin() {
       if (notes.length) document.querySelector("#push-status-copy").textContent = notes.join(" · ");
     }).catch(() => {});
   }
+  bindMatchActions(true);
 }
 
 function bindConvocationActions(isAdmin = false) {
@@ -364,20 +439,114 @@ function bindConvocationActions(isAdmin = false) {
   }
 }
 
+function bindMatchActions(isAdmin = false) {
+  document.querySelector("#match-picker")?.addEventListener("change", async (event) => {
+    selectedMatchId = Number(event.target.value);
+    await renderHome();
+  });
+  if (!isAdmin) return;
+  document.querySelector("#start-draft")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    try {
+      const match = await api(`/api/admin/matches/${button.dataset.matchId}/draft/start`, {
+        method: "POST",
+        body: "{}",
+      });
+      selectedMatchId = match.id;
+      showToast("Draft iniciado. El jugador #2 elige primero.");
+      await renderAdmin();
+    } catch (error) {
+      showToast(error.message);
+      button.disabled = false;
+    }
+  });
+  document.querySelector("#draft-pick")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    const userId = Number(document.querySelector("#draft-player").value);
+    button.disabled = true;
+    try {
+      const match = await api(`/api/admin/matches/${button.dataset.matchId}/draft/pick`, {
+        method: "POST",
+        body: JSON.stringify({ userId }),
+      });
+      selectedMatchId = match.id;
+      showToast(match.draft.status === "complete" ? "Draft completo. Equipos guardados." : "Jugador elegido.");
+      await renderAdmin();
+    } catch (error) {
+      showToast(error.message);
+      button.disabled = false;
+    }
+  });
+  document.querySelector("#match-finance-form")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const payload = Object.fromEntries(new FormData(form).entries());
+    form.querySelector("button").disabled = true;
+    try {
+      await api(`/api/admin/matches/${form.dataset.matchId}/finance`, {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      showToast("Cobro aplicado; los saldos y el bote se han actualizado.");
+      await renderAdmin();
+    } catch (error) {
+      showToast(error.message);
+      form.querySelector("button").disabled = false;
+    }
+  });
+  document.querySelector("#match-result-form")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const result = new FormData(form).get("result");
+    form.querySelector("button").disabled = true;
+    try {
+      await api(`/api/admin/matches/${form.dataset.matchId}/result`, {
+        method: "POST",
+        body: JSON.stringify({ result }),
+      });
+      showToast("Resultado guardado y puntos asignados.");
+      await renderAdmin();
+    } catch (error) {
+      showToast(error.message);
+      form.querySelector("button").disabled = false;
+    }
+  });
+  document.querySelector("#negative-balance-alert")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    try {
+      const result = await api(`/api/admin/matches/${button.dataset.matchId}/notify-negative-balances`, {
+        method: "POST",
+        body: "{}",
+      });
+      showToast(result.alreadySent ? "La alerta de este partido ya se había enviado." : `${result.delivered || 0} alerta(s) de saldo enviadas.`);
+    } catch (error) {
+      showToast(error.message);
+      button.disabled = false;
+    }
+  });
+}
+
 async function renderPlayer() {
   await loadUsers();
   convocationData = await api("/api/convocations/current");
+  matchData = await api("/api/matches");
+  standingsData = await api("/api/standings");
   pushConfig = await api("/api/push/config").catch(() => ({ enabled: false, publicKey: null }));
   const player = users.find((user) => user.id === currentUser?.id);
   const content = `
     <div class="mb-7"><div class="mb-3 flex items-center gap-2 text-xs font-bold uppercase tracking-[.14em] text-pitch-700"><span class="h-2 w-2 rounded-full bg-pitch-700"></span>VESTUARIO</div><h1 class="display text-3xl font-extrabold tracking-tight sm:text-4xl">¡Hola, ${escapeHtml(currentUser?.name?.split(" ")[0] || "jugador")}!</h1><p class="mt-2 text-sm text-ink/55">Responde a la convocatoria y consulta las listas del equipo.</p></div>
     ${renderConvocationBoard(convocationData, false)}
+    ${renderMatchPanel(matchData, false)}
+    ${renderStandingsBoard(standingsData)}
     <div class="mt-5 grid gap-4 sm:grid-cols-2">
       <section class="rounded-2xl border border-ink/[.07] bg-white p-6 shadow-sm"><p class="text-xs font-bold uppercase tracking-[.12em] text-ink/45">Tu rol base</p><p class="display mt-3 text-2xl font-extrabold">${player?.base_role === "principal" ? "Principal" : "Suplente"}</p></section>
       <section class="rounded-2xl border border-ink/[.07] bg-white p-6 shadow-sm"><p class="text-xs font-bold uppercase tracking-[.12em] text-ink/45">Saldo</p><p class="display mt-3 text-2xl font-extrabold">${formatMoney(player?.balance)}</p></section>
     </div>`;
   shell(content);
   bindConvocationActions();
+  bindMatchActions();
 }
 
 function formatMoney(amount) {
