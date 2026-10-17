@@ -27,6 +27,7 @@ db.exec(`
     account_status TEXT NOT NULL DEFAULT 'active'
       CHECK (account_status IN ('pending', 'active')),
     must_change_password INTEGER NOT NULL DEFAULT 0,
+    deleted_at TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     role TEXT NOT NULL CHECK (role IN ('principal', 'suplente', 'admin')),
     base_role TEXT NOT NULL DEFAULT 'principal'
@@ -136,6 +137,7 @@ const userMigrations = [
   ["password_hash", "TEXT"],
   ["account_status", "TEXT NOT NULL DEFAULT 'active'"],
   ["must_change_password", "INTEGER NOT NULL DEFAULT 0"],
+  ["deleted_at", "TEXT"],
   ["created_at", "TEXT"],
 ];
 for (const [name, definition] of userMigrations) {
@@ -172,7 +174,7 @@ if (!defaultAdmin) {
     WHERE id = ?
   `).run(defaultAdminPasswordHash, defaultAdmin.id);
 }
-db.prepare("UPDATE users SET ranking_position = NULL WHERE role = 'admin'").run();
+db.prepare("UPDATE users SET ranking_position = NULL, balance = 0 WHERE role = 'admin'").run();
 
 const vapidPublicKey = process.env.VAPID_PUBLIC_KEY || "";
 const vapidPrivateKey = process.env.VAPID_PRIVATE_KEY || "";
@@ -214,17 +216,26 @@ const publicUser = (user) => ({
   last_name: user.last_name,
   alias: user.alias,
   role: user.role,
-  base_role: user.base_role,
-  ranking_position: user.ranking_position,
-  balance: user.balance,
+  base_role: user.role === "admin" ? null : user.base_role,
+  ranking_position: user.role === "admin" ? null : user.ranking_position,
+  balance: user.role === "admin" ? null : user.balance,
   must_change_password: Boolean(user.must_change_password),
 });
 
 function requireUser(req, res, next) {
   if (!req.session.user) return res.status(401).json({ error: "Inicia sesión para continuar." });
-  if (req.session.user.must_change_password && req.path !== "/api/account/password") {
+  const account = db.prepare(`
+    SELECT account_status, deleted_at, must_change_password
+    FROM users WHERE id = ?
+  `).get(req.session.user.id);
+  if (!account || account.account_status !== "active" || account.deleted_at) {
+    req.session.destroy(() => {});
+    return res.status(401).json({ error: "La cuenta ya no está activa." });
+  }
+  if (Boolean(account.must_change_password) && req.path !== "/api/account/password") {
     return res.status(403).json({ error: "Cambia la contraseña inicial para continuar." });
   }
+  req.session.user.must_change_password = Boolean(account.must_change_password);
   next();
 }
 
@@ -236,6 +247,16 @@ function requireAdmin(req, res, next) {
     return res.status(403).json({ error: "Cambia la contraseña inicial para continuar." });
   }
   next();
+}
+
+function requirePlayer(req, res, next) {
+  requireUser(req, res, (error) => {
+    if (error) return next(error);
+    if (req.session.user.role === "admin") {
+      return res.status(403).json({ error: "Esta acción está disponible solo para jugadores." });
+    }
+    next();
+  });
 }
 
 function madridParts(date = new Date()) {
@@ -293,7 +314,7 @@ function getConvocationData(match, userId) {
     SELECT u.id, u.name, u.role, u.base_role, u.ranking_position, c.status AS response
     FROM users u
     LEFT JOIN convocations c ON c.user_id = u.id AND c.match_id = ?
-    WHERE u.account_status = 'active'
+    WHERE u.account_status = 'active' AND u.role != 'admin' AND u.deleted_at IS NULL
     ORDER BY
       CASE COALESCE(c.status, u.base_role)
         WHEN 'principal' THEN 1
@@ -308,9 +329,9 @@ function getConvocationData(match, userId) {
   const principal = roster.filter((user) => user.response === "principal");
   const suplentes = roster.filter((user) => user.response === "suplente");
   const noVan = roster.filter((user) => user.response === "no_va");
-  const activePlayers = roster.filter((user) => user.role !== "admin");
+  const activePlayers = roster;
   const pending = activePlayers.filter((user) => user.response === null);
-  const principalCount = principal.filter((user) => user.role !== "admin").length;
+  const principalCount = principal.length;
   return {
     match,
     lists: { principal, suplentes, no_va: noVan, pending },
@@ -336,7 +357,7 @@ function activeNonAdminIds(ids) {
   const users = db.prepare(`
     SELECT id FROM users
     WHERE id IN (${uniqueIds.map(() => "?").join(",")})
-      AND role != 'admin' AND account_status = 'active'
+      AND role != 'admin' AND account_status = 'active' AND deleted_at IS NULL
   `).all(...uniqueIds);
   const eligible = new Set(users.map((user) => user.id));
   return uniqueIds.filter((id) => eligible.has(id));
@@ -356,7 +377,7 @@ function matchDetails(match) {
   const teamBIds = readJson(match.team_b, []);
   const draft = readJson(match.draft_state, {});
   const getTeam = (ids) => ids.length
-    ? db.prepare(`SELECT id, name, ranking_position FROM users WHERE id IN (${ids.map(() => "?").join(",")}) AND role != 'admin' AND account_status = 'active'`).all(...ids)
+    ? db.prepare(`SELECT id, name, ranking_position FROM users WHERE id IN (${ids.map(() => "?").join(",")}) AND role != 'admin' AND account_status = 'active' AND deleted_at IS NULL`).all(...ids)
       .sort((left, right) => ids.indexOf(left.id) - ids.indexOf(right.id))
     : [];
   const available = draft.remaining?.length ? getTeam(draft.remaining) : [];
@@ -365,9 +386,16 @@ function matchDetails(match) {
     SELECT COUNT(*) AS count FROM convocations c
     JOIN users u ON u.id = c.user_id
     WHERE c.match_id = ? AND c.status = 'principal'
-      AND u.role != 'admin' AND u.account_status = 'active'
+      AND u.role != 'admin' AND u.account_status = 'active' AND u.deleted_at IS NULL
   `)
     .get(match.id).count;
+  const principalPlayers = db.prepare(`
+    SELECT u.id, u.name, u.ranking_position
+    FROM convocations c JOIN users u ON u.id = c.user_id
+    WHERE c.match_id = ? AND c.status = 'principal'
+      AND u.role != 'admin' AND u.account_status = 'active' AND u.deleted_at IS NULL
+    ORDER BY u.ranking_position IS NULL, u.ranking_position, u.name COLLATE NOCASE
+  `).all(match.id);
   return {
     ...match,
     draft,
@@ -376,6 +404,7 @@ function matchDetails(match) {
     available,
     finance,
     principalCount,
+    principalPlayers,
   };
 }
 
@@ -585,7 +614,7 @@ app.get("/api/users", requireUser, (_req, res) => {
   const users = db.prepare(`
     SELECT id, name, first_name, last_name, alias, role, base_role, ranking_position, balance
     FROM users
-    WHERE account_status = 'active'
+    WHERE account_status = 'active' AND role != 'admin' AND deleted_at IS NULL
     ORDER BY role, ranking_position IS NULL, ranking_position, name COLLATE NOCASE
   `).all();
   res.json(users);
@@ -595,7 +624,7 @@ app.get("/api/admin/pending-users", requireAdmin, (_req, res) => {
   const pendingUsers = db.prepare(`
     SELECT id, first_name, last_name, name, alias, created_at
     FROM users
-    WHERE role != 'admin' AND account_status = 'pending'
+    WHERE role != 'admin' AND account_status = 'pending' AND deleted_at IS NULL
       AND alias IS NOT NULL AND password_hash IS NOT NULL
     ORDER BY created_at, id
   `).all();
@@ -606,7 +635,7 @@ app.post("/api/admin/pending-users/:id/approve", requireAdmin, (req, res) => {
   const id = Number(req.params.id);
   const pending = db.prepare(`
     SELECT id FROM users
-    WHERE id = ? AND role != 'admin' AND account_status = 'pending'
+    WHERE id = ? AND role != 'admin' AND account_status = 'pending' AND deleted_at IS NULL
       AND alias IS NOT NULL AND password_hash IS NOT NULL
   `).get(id);
   if (!pending) return res.status(404).json({ error: "No se encontró una solicitud pendiente válida." });
@@ -635,10 +664,10 @@ app.get("/api/session", (req, res) => {
   if (!req.session.user) return res.json({ user: null });
   const user = db.prepare(`
     SELECT id, name, first_name, last_name, alias, role, base_role,
-      ranking_position, balance, must_change_password, account_status
+      ranking_position, balance, must_change_password, account_status, deleted_at
     FROM users WHERE id = ?
   `).get(req.session.user.id);
-  if (!user || user.account_status !== "active") {
+  if (!user || user.account_status !== "active" || user.deleted_at) {
     req.session.destroy(() => {});
     return res.json({ user: null });
   }
@@ -651,13 +680,13 @@ app.post("/api/session", async (req, res) => {
   const password = typeof req.body?.password === "string" ? req.body.password : "";
   const user = db.prepare(`
     SELECT id, name, first_name, last_name, alias, role, base_role,
-      ranking_position, balance, password_hash, must_change_password, account_status
+      ranking_position, balance, password_hash, must_change_password, account_status, deleted_at
     FROM users WHERE alias = ? COLLATE NOCASE
   `).get(alias);
   if (user?.account_status === "pending") {
     return res.status(403).json({ error: "Tu cuenta está pendiente de aprobación." });
   }
-  if (!user || user.account_status !== "active" || !user.password_hash || !(await bcrypt.compare(password, user.password_hash))) {
+  if (!user || user.account_status !== "active" || user.deleted_at || !user.password_hash || !(await bcrypt.compare(password, user.password_hash))) {
     return res.status(401).json({ error: "Alias o contraseña incorrectos." });
   }
   await new Promise((resolve, reject) => req.session.regenerate((error) => error ? reject(error) : resolve()));

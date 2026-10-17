@@ -1,0 +1,33 @@
+Aplica una reestructuración completa en la aplicación "O Pachanga" para SEPARAR TOTALMENTE el rol de Administrador respecto al rol de Jugador:
+
+1. Separación de Roles e Interfaz Exclusiva:
+   - El Administrador NO es un jugador: No se apunta a convocatorias, no vota, no aparece en listas de convocados/suplentes/no van, no entra en drafts, no paga pistas ni tiene saldo, ni aparece en la clasificación.
+   - Oculta/elimina completamente la tarjeta de votación de asistencia ("¿Cuentas con nosotros?", botones "SÍ VOY" / "NO VOY") para la cuenta de Admin. Esa vista es EXCLUSIVA de los jugadores.
+   - Corriges el texto del banner para jugadores eliminando cualquier mención a "El admin puede apuntarse...".
+
+2. Panel de Administración Exclusivo (Vistas y Herramientas para el Admin):
+   Crea un panel de control dedicado para el usuario Admin (DIEGO) con las siguientes secciones:
+
+   a) Aprobaciones Pendientes:
+      - Lista de nuevos registros (`pending`).
+      - Formulario para aprobar asignando: Rol base ('Principal' / 'Suplente'), Posición en Ranking y Saldo Inicial.
+
+   b) Gestión de Convocatorias:
+      - Botón para Abrir Convocatoria activa.
+      - Botón para Cerrar Convocatoria y designar manualmente a los 2 jugadores encargados de hacer la selección de equipos (A y B).
+      - Visualización de las 3 listas (Principal, Suplentes, No Van) con opción de mover/promocionar jugadores de Suplente a Principal de forma manual.
+
+   c) Centro de Avisos y Notificaciones Push:
+      - Botones para disparar manualmente las notificaciones Web Push: "Convocatoria abierta", "Aún no te has apuntado", "Aviso de saldo negativo" y aviso individual de cambio a Lista Principal.
+
+   d) Gestión Financiera y Saldos:
+      - Vista general de saldos de todos los jugadores.
+      - Formulario para actualizar/ajustar saldos individuales o registrar cobros de partidos.
+
+   e) Clasificación y Partidos:
+      - Vista de la tabla de clasificación con opción de editar puntuaciones/resultados de partidos.
+
+   f) Gestión de Jugadores (CRUD):
+      - Buscar, editar datos de cualquier jugador y opción de Resetear Contraseña.
+
+Asegúrate de que la navegación entre la vista de Jugador y el Panel de Admin esté totalmente diferenciada según el rol del usuario autenticado.
