@@ -136,11 +136,11 @@ function listPanel(title, usersInList, colorClass, icon, isAdmin = false) {
   const playerCount = list.length;
   const rows = list.length
     ? list.map((user) => `<li class="flex items-center gap-3 px-4 py-3 ${isAdmin && title === "Lista de suplentes" ? "pr-2" : ""}">
-        <span class="grid h-8 w-8 shrink-0 place-items-center rounded-xl ${colorClass} text-[11px] font-bold">${escapeHtml(user.name.split(/\s+/).slice(0, 2).map((part) => part[0]).join("").toUpperCase())}</span>
-        <span class="min-w-0 flex-1 truncate text-sm font-semibold">${escapeHtml(user.name)}</span>
+        <span class="grid h-8 w-8 shrink-0 place-items-center rounded-xl ${colorClass} text-[11px] font-bold">${escapeHtml(String(user.alias || "").slice(0, 2).toUpperCase())}</span>
+        <span class="min-w-0 flex-1 truncate text-sm font-semibold">${escapeHtml(user.alias)}</span>
         <span class="hidden text-[11px] text-ink/40 sm:inline">${`${user.base_role === "principal" ? "Principal" : "Suplente"}${user.base_role === "suplente" && user.response === "principal" ? " · promovido" : ""}`}</span>
-        ${isAdmin && title === "Lista de suplentes" ? `<button class="promote-player shrink-0 rounded-lg border border-pitch-700/20 px-2.5 py-1.5 text-[11px] font-bold text-pitch-800 transition hover:bg-pitch-100" data-user-id="${user.id}" aria-label="Promover a ${escapeHtml(user.name)} a principal">↑ Principal</button>` : ""}
-        ${isAdmin && title === "Lista principal" ? `<button class="notify-promoted shrink-0 rounded-lg border border-ink/10 px-2.5 py-1.5 text-[11px] font-bold text-ink/65 transition hover:bg-paper" data-user-id="${user.id}" aria-label="Enviar aviso a ${escapeHtml(user.name)}">Avisar</button>` : ""}
+        ${isAdmin && title === "Lista de suplentes" ? `<button class="promote-player shrink-0 rounded-lg border border-pitch-700/20 px-2.5 py-1.5 text-[11px] font-bold text-pitch-800 transition hover:bg-pitch-100" data-user-id="${user.id}" aria-label="Promover a ${escapeHtml(user.alias)} a principal">↑ Principal</button>` : ""}
+        ${isAdmin && title === "Lista principal" ? `<button class="notify-promoted shrink-0 rounded-lg border border-ink/10 px-2.5 py-1.5 text-[11px] font-bold text-ink/65 transition hover:bg-paper" data-user-id="${user.id}" aria-label="Enviar aviso a ${escapeHtml(user.alias)}">Avisar</button>` : ""}
       </li>`).join("")
     : `<li class="px-4 py-7 text-center text-sm text-ink/40">La lista está vacía.</li>`;
   return `<section class="overflow-hidden rounded-2xl border border-ink/[.07] bg-white shadow-sm">
@@ -161,10 +161,10 @@ function renderConvocationBoard(data, isAdmin = false) {
       : "Hay más de 16 principales";
   const principalList = data.lists.principal || [];
   const captainOptionsA = principalList.map((player, index) =>
-    `<option value="${player.id}" ${index === 0 ? "selected" : ""}>${escapeHtml(player.name)}${player.ranking_position ? ` · #${player.ranking_position}` : ""}</option>`,
+    `<option value="${player.id}" ${index === 0 ? "selected" : ""}>${escapeHtml(player.alias)}</option>`,
   ).join("");
   const captainOptionsB = principalList.map((player, index) =>
-    `<option value="${player.id}" ${index === 1 ? "selected" : ""}>${escapeHtml(player.name)}${player.ranking_position ? ` · #${player.ranking_position}` : ""}</option>`,
+    `<option value="${player.id}" ${index === 1 ? "selected" : ""}>${escapeHtml(player.alias)}</option>`,
   ).join("");
   const canReopen = data.match.canReopen && data.match.status !== "played" && !["in_progress", "complete"].includes(data.match.draft?.status);
   const adminControls = !isAdmin ? "" : open
@@ -206,7 +206,7 @@ function renderConvocationBoard(data, isAdmin = false) {
     </div>
     <details class="mt-4 rounded-2xl border border-ink/[.07] bg-white px-4 py-3">
        <summary class="cursor-pointer list-none text-sm font-semibold">Sin responder <span class="ml-1 rounded-full bg-paper px-2 py-0.5 text-xs text-ink/55">${data.lists.pending.length}</span></summary>
-      <p class="mt-2 text-xs text-ink/50">${data.lists.pending.length ? data.lists.pending.map((user) => escapeHtml(user.name)).join(" · ") : "Todo el grupo ha respondido."}</p>
+      <p class="mt-2 text-xs text-ink/50">${data.lists.pending.length ? data.lists.pending.map((user) => escapeHtml(user.alias)).join(" · ") : "Todo el grupo ha respondido."}</p>
     </details>`;
 }
 
@@ -218,7 +218,7 @@ function matchLabel(match) {
 
 function renderTeamCard(title, players, tone) {
   const rows = players.length
-    ? players.map((player) => `<li class="flex items-center gap-2.5 border-t border-ink/[.06] px-4 py-3 first:border-0"><span class="grid h-7 w-7 place-items-center rounded-lg bg-white/80 text-[10px] font-bold text-ink/55">${player.ranking_position ? `#${player.ranking_position}` : "⚽"}</span><span class="text-sm font-semibold">${escapeHtml(player.name)}</span></li>`).join("")
+    ? players.map((player) => `<li class="flex items-center gap-2.5 border-t border-ink/[.06] px-4 py-3 first:border-0"><span class="grid h-7 w-7 place-items-center rounded-lg bg-white/80 text-[10px] font-bold text-ink/55" aria-hidden="true">⚽</span><span class="text-sm font-semibold">${escapeHtml(player.alias)}</span></li>`).join("")
     : `<li class="px-4 py-6 text-sm text-ink/45">Sin jugadores todavía.</li>`;
   return `<section class="overflow-hidden rounded-2xl border border-ink/[.07] ${tone}"><header class="flex items-center justify-between px-4 py-3"><h3 class="font-bold">${title}</h3><span class="rounded-full bg-white/75 px-2.5 py-1 text-xs font-bold">${players.length}</span></header><ul class="bg-white/70">${rows}</ul></section>`;
 }
@@ -243,7 +243,7 @@ function renderCaptainDraft(match) {
       ? "Al capitán A le queda una elección antes de que el último jugador se asigne automáticamente a su equipo."
       : "Los capitanes alternan una elección cada uno.";
   const playerCards = available.length
-    ? available.map((player) => `<button type="button" class="captain-draft-pick flex min-h-14 w-full items-center justify-between gap-3 rounded-xl border border-ink/10 bg-white px-4 py-3 text-left shadow-sm transition ${isMyTurn ? "hover:border-pitch-700 hover:bg-pitch-50 active:scale-[.99]" : "cursor-not-allowed opacity-55"}" data-match-id="${match.id}" data-player-id="${player.id}" data-final-pick="${remaining === 2 && draft.currentTurn === "A"}" ${isMyTurn ? "" : "disabled"}><span class="min-w-0 truncate text-sm font-semibold">${escapeHtml(player.name)}</span><span class="shrink-0 rounded-lg bg-pitch-100 px-2.5 py-1.5 text-[11px] font-extrabold text-pitch-800">${isMyTurn ? "Elegir" : "En espera"}</span></button>`).join("")
+    ? available.map((player) => `<button type="button" class="captain-draft-pick flex min-h-14 w-full items-center justify-between gap-3 rounded-xl border border-ink/10 bg-white px-4 py-3 text-left shadow-sm transition ${isMyTurn ? "hover:border-pitch-700 hover:bg-pitch-50 active:scale-[.99]" : "cursor-not-allowed opacity-55"}" data-match-id="${match.id}" data-player-id="${player.id}" data-final-pick="${remaining === 2 && draft.currentTurn === "A"}" ${isMyTurn ? "" : "disabled"}><span class="min-w-0 truncate text-sm font-semibold">${escapeHtml(player.alias)}</span><span class="shrink-0 rounded-lg bg-pitch-100 px-2.5 py-1.5 text-[11px] font-extrabold text-pitch-800">${isMyTurn ? "Elegir" : "En espera"}</span></button>`).join("")
     : `<p class="rounded-xl bg-white/70 p-4 text-sm text-ink/50">El draft se está completando.</p>`;
   return `<section class="my-4 rounded-2xl border border-pitch-700/15 bg-pitch-50 p-4 sm:p-5" aria-live="polite">
     <div class="flex flex-wrap items-start justify-between gap-3"><div><p class="text-[10px] font-extrabold uppercase tracking-[.13em] text-pitch-700">Elección de equipos</p><h3 class="display mt-1 text-xl font-extrabold">Eres capitán del Equipo ${myTeam}</h3></div><span class="rounded-full ${isMyTurn ? "bg-pitch-900 text-white" : "bg-white text-ink/60"} px-3 py-1.5 text-xs font-extrabold">${isMyTurn ? "TU TURNO" : `Turno de ${escapeHtml(activeCaptainName)}`}</span></div>
@@ -271,14 +271,14 @@ function renderMatchPanel(matchesData, isAdmin = false, showFinance = isAdmin) {
   const available = selected.available || [];
   const principalPlayers = selected.principalPlayers || [];
   const captainOptionsA = principalPlayers.map((player, index) =>
-    `<option value="${player.id}" ${player.id === draft.captainA || (!draft.captainA && index === 0) ? "selected" : ""}>${escapeHtml(player.name)}${player.ranking_position ? ` · #${player.ranking_position}` : ""}</option>`,
+    `<option value="${player.id}" ${player.id === draft.captainA || (!draft.captainA && index === 0) ? "selected" : ""}>${escapeHtml(player.alias)}</option>`,
   ).join("");
   const captainOptionsB = principalPlayers.map((player, index) =>
-    `<option value="${player.id}" ${player.id === draft.captainB || (!draft.captainB && index === 1) ? "selected" : ""}>${escapeHtml(player.name)}${player.ranking_position ? ` · #${player.ranking_position}` : ""}</option>`,
+    `<option value="${player.id}" ${player.id === draft.captainB || (!draft.captainB && index === 1) ? "selected" : ""}>${escapeHtml(player.alias)}</option>`,
   ).join("");
   const turnName = draft.currentTurn === "A"
-    ? users.find((player) => player.id === draft.captainA)?.name || "Capitán 1"
-    : users.find((player) => player.id === draft.captainB)?.name || "Capitán 2";
+    ? users.find((player) => player.id === draft.captainA)?.alias || "Capitán 1"
+    : users.find((player) => player.id === draft.captainB)?.alias || "Capitán 2";
   const selection = `<label class="block"><span class="mb-1.5 block text-xs font-semibold text-ink/55">Seleccionar partido</span><select id="match-picker" class="w-full rounded-xl border border-ink/10 bg-white px-3 py-2.5 text-sm font-semibold outline-none focus:border-pitch-700">${matches.map((match) => `<option value="${match.id}" ${match.id === selected.id ? "selected" : ""}>${escapeHtml(matchLabel(match))} · ${match.status === "played" ? "jugado" : match.status === "closed" ? "convocatoria cerrada" : "convocatoria abierta"}</option>`).join("")}</select></label>`;
   let adminControls = "";
   if (selected.draftValidationError) {
@@ -330,7 +330,7 @@ function renderMatchFinanceControl(matchesData) {
 
 function renderStandingsBoard(data) {
   const rows = data.standings || [];
-  return `<section class="mb-7 overflow-hidden rounded-3xl border border-ink/[.07] bg-white shadow-sm"><div class="flex flex-col gap-3 border-b border-ink/[.07] p-5 sm:flex-row sm:items-center sm:justify-between sm:px-6"><div><p class="text-xs font-bold uppercase tracking-[.12em] text-pitch-700">Temporada</p><h2 class="display mt-1 text-2xl font-extrabold">Clasificación</h2><p class="mt-1 text-xs text-ink/50">Puntos globales por asistencia y resultado.</p></div><div class="rounded-2xl bg-lime/35 px-4 py-3"><p class="text-[10px] font-bold uppercase tracking-[.12em] text-pitch-900/60">Bote acumulado</p><p class="display text-xl font-extrabold text-pitch-900">${formatMoney(data.pot)}</p></div></div><div class="overflow-x-auto"><table class="w-full min-w-[560px] text-left"><thead class="bg-paper/70 text-[10px] font-bold uppercase tracking-[.12em] text-ink/45"><tr><th class="px-5 py-3">#</th><th class="px-4 py-3">Jugador</th><th class="px-4 py-3">Puntos</th><th class="px-4 py-3">PJ</th><th class="px-4 py-3">V-E-D</th></tr></thead><tbody class="divide-y divide-ink/[.06]">${rows.length ? rows.map((player, index) => `<tr><td class="px-5 py-3 text-sm font-bold text-pitch-700">${index + 1}</td><td class="px-4 py-3 text-sm font-semibold">${escapeHtml(player.name)}</td><td class="px-4 py-3"><span class="rounded-full bg-pitch-100 px-2.5 py-1 text-xs font-extrabold text-pitch-900">${player.points}</span></td><td class="px-4 py-3 text-sm text-ink/55">${player.matches_played}</td><td class="px-4 py-3 text-sm text-ink/55">${player.wins}-${player.draws}-${player.losses}</td></tr>`).join("") : `<tr><td colspan="5" class="px-5 py-8 text-center text-sm text-ink/45">La clasificación empieza con el primer resultado.</td></tr>`}</tbody></table></div></section>`;
+  return `<section class="mb-7 overflow-hidden rounded-3xl border border-ink/[.07] bg-white shadow-sm"><div class="flex flex-col gap-3 border-b border-ink/[.07] p-5 sm:flex-row sm:items-center sm:justify-between sm:px-6"><div><p class="text-xs font-bold uppercase tracking-[.12em] text-pitch-700">Temporada</p><h2 class="display mt-1 text-2xl font-extrabold">Clasificación</h2><p class="mt-1 text-xs text-ink/50">Puntos globales por asistencia y resultado.</p></div><div class="rounded-2xl bg-lime/35 px-4 py-3"><p class="text-[10px] font-bold uppercase tracking-[.12em] text-pitch-900/60">Bote acumulado</p><p class="display text-xl font-extrabold text-pitch-900">${formatMoney(data.pot)}</p></div></div><div class="overflow-x-auto"><table class="w-full min-w-[560px] text-left"><thead class="bg-paper/70 text-[10px] font-bold uppercase tracking-[.12em] text-ink/45"><tr><th class="px-5 py-3">#</th><th class="px-4 py-3">Jugador</th><th class="px-4 py-3">Puntos</th><th class="px-4 py-3">PJ</th><th class="px-4 py-3">V-E-D</th></tr></thead><tbody class="divide-y divide-ink/[.06]">${rows.length ? rows.map((player, index) => `<tr><td class="px-5 py-3 text-sm font-bold text-pitch-700">${index + 1}</td><td class="px-4 py-3 text-sm font-semibold">${escapeHtml(player.alias)}</td><td class="px-4 py-3"><span class="rounded-full bg-pitch-100 px-2.5 py-1 text-xs font-extrabold text-pitch-900">${player.points}</span></td><td class="px-4 py-3 text-sm text-ink/55">${player.matches_played}</td><td class="px-4 py-3 text-sm text-ink/55">${player.wins}-${player.draws}-${player.losses}</td></tr>`).join("") : `<tr><td colspan="5" class="px-5 py-8 text-center text-sm text-ink/45">La clasificación empieza con el primer resultado.</td></tr>`}</tbody></table></div></section>`;
 }
 
 function renderApprovalPanel(pending) {
@@ -411,7 +411,7 @@ function renderNotificationPanel(data, players, config, status) {
         ["unanswered", "Aún no te has apuntado", "Solo a jugadores que todavía no respondieron.", campaigns.friday_reminder],
         ["negative_balance", "Aviso de saldo negativo", "A jugadores convocados con saldo negativo.", null],
       ].map(([type, title, description, campaign]) => `<article class="rounded-2xl border border-ink/[.07] bg-white p-5 shadow-sm"><div class="flex items-start justify-between gap-3"><div><h3 class="font-bold">${title}</h3><p class="mt-1 text-xs leading-5 text-ink/50">${description}</p></div><span class="rounded-full ${campaign?.status === "sent" ? "bg-pitch-100 text-pitch-800" : "bg-paper text-ink/50"} px-2.5 py-1 text-[10px] font-bold">${campaign?.status === "sent" ? `${campaign.delivered_count} enviadas` : "Manual"}</span></div><button data-notification-type="${type}" ${!config.enabled || (type !== "negative_balance" && data.match.status !== "open") ? "disabled" : ""} class="admin-notification-button mt-4 w-full rounded-xl bg-pitch-900 px-4 py-2.5 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-40">${title}</button></article>`).join("")}
-      <article class="rounded-2xl border border-ink/[.07] bg-white p-5 shadow-sm"><h3 class="font-bold">Aviso individual de Lista Principal</h3><p class="mt-1 text-xs leading-5 text-ink/50">Envía un aviso directo a un jugador que aparece en la lista principal actual.</p><div class="mt-4 flex gap-2"><select id="notify-player-select" class="min-w-0 flex-1 rounded-xl border border-ink/10 bg-white px-3 py-2.5 text-sm">${principalPlayers.map((player) => `<option value="${player.id}">${escapeHtml(player.name)}</option>`).join("")}</select><button id="notify-player" ${!config.enabled || !principalPlayers.length ? "disabled" : ""} class="shrink-0 rounded-xl bg-pitch-900 px-3 py-2.5 text-xs font-bold text-white disabled:opacity-40">Enviar</button></div></article>
+      <article class="rounded-2xl border border-ink/[.07] bg-white p-5 shadow-sm"><h3 class="font-bold">Aviso individual de Lista Principal</h3><p class="mt-1 text-xs leading-5 text-ink/50">Envía un aviso directo a un jugador que aparece en la lista principal actual.</p><div class="mt-4 flex gap-2"><select id="notify-player-select" class="min-w-0 flex-1 rounded-xl border border-ink/10 bg-white px-3 py-2.5 text-sm">${principalPlayers.map((player) => `<option value="${player.id}">${escapeHtml(player.alias)}</option>`).join("")}</select><button id="notify-player" ${!config.enabled || !principalPlayers.length ? "disabled" : ""} class="shrink-0 rounded-xl bg-pitch-900 px-3 py-2.5 text-xs font-bold text-white disabled:opacity-40">Enviar</button></div></article>
     </div>
     <section class="rounded-2xl border border-ink/[.07] bg-white p-5 text-xs text-ink/55 shadow-sm"><h3 class="font-bold text-ink">Estado de envíos</h3><p class="mt-2">Apertura: ${campaigns.opening?.status === "sent" ? `${campaigns.opening.delivered_count} entregadas` : "sin enviar"} · Recordatorio: ${campaigns.friday_reminder?.status === "sent" ? `${campaigns.friday_reminder.delivered_count} entregadas` : "sin enviar"}</p><p class="mt-1">Partido semanal: ${escapeHtml(matchLabel(data.match))}</p></section>`;
 }

@@ -192,21 +192,22 @@ db.exec(`
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_alias_unique ON users(alias COLLATE NOCASE) WHERE alias IS NOT NULL");
 db.prepare("UPDATE users SET account_status = 'pending' WHERE role != 'admin' AND password_hash IS NULL AND account_status = 'active'").run();
 
+const testResetAdminPasswordHash = "$2b$12$PL1QrpAlwd1z.AnTQRFcpuZnWcuGs4EWtitzO0rZNdQVh1MZgcvFG";
 const defaultAdminPasswordHash = process.env.INITIAL_ADMIN_PASSWORD
   ? bcrypt.hashSync(process.env.INITIAL_ADMIN_PASSWORD, 12)
-  : "$2b$12$gaqaTxzmMlTqHxFpr5iA0uhcd2uwmcIiKAPettfW3dKm9x8Obti22";
+  : testResetAdminPasswordHash;
 let defaultAdmin = db.prepare("SELECT * FROM users WHERE role = 'admin' ORDER BY id LIMIT 1").get();
 if (!defaultAdmin) {
   const createdAdmin = db.prepare(`
     INSERT INTO users (name, first_name, last_name, alias, password_hash, account_status,
       must_change_password, role, base_role, ranking_position, balance)
-    VALUES ('DIEGO GAY DAVILA', 'DIEGO', 'GAY DAVILA', 'DIEGO', ?, 'active', 1, 'admin', 'principal', NULL, 0)
+    VALUES ('DIEGO GAY DAVILA', 'DIEGO', 'GAY DAVILA', 'DIMOGARU', ?, 'active', 0, 'admin', 'principal', NULL, 0)
   `).run(defaultAdminPasswordHash);
   defaultAdmin = db.prepare("SELECT * FROM users WHERE id = ?").get(createdAdmin.lastInsertRowid);
 } else if (!defaultAdmin.alias || !defaultAdmin.password_hash) {
   db.prepare(`
     UPDATE users SET name = 'DIEGO GAY DAVILA', first_name = 'DIEGO', last_name = 'GAY DAVILA',
-      alias = COALESCE(NULLIF(alias, ''), 'DIEGO'),
+      alias = COALESCE(NULLIF(alias, ''), 'DIMOGARU'),
       password_hash = COALESCE(password_hash, ?), account_status = 'active',
       must_change_password = CASE WHEN password_hash IS NULL THEN 1 ELSE must_change_password END,
       base_role = 'principal', ranking_position = NULL
@@ -214,6 +215,46 @@ if (!defaultAdmin) {
   `).run(defaultAdminPasswordHash, defaultAdmin.id);
 }
 db.prepare("UPDATE users SET ranking_position = NULL, balance = 0 WHERE role = 'admin'").run();
+
+const replitWorkspace = Boolean(process.env.REPL_ID) && process.env.REPLIT_DEPLOYMENT !== "1";
+if (replitWorkspace) {
+  const resetTestDatabase = db.transaction(() => {
+    if (db.prepare("SELECT 1 FROM app_settings WHERE key = 'replit_test_reset_v1'").get()) return false;
+    const admin = db.prepare("SELECT id FROM users WHERE role = 'admin' ORDER BY id LIMIT 1").get();
+    if (!admin) throw new Error("No se puede limpiar la base de pruebas sin conservar la cuenta Admin.");
+
+    db.prepare("DELETE FROM push_subscriptions").run();
+    db.prepare("DELETE FROM push_campaigns").run();
+    db.prepare("DELETE FROM balance_alert_campaigns").run();
+    db.prepare("DELETE FROM match_points").run();
+    db.prepare("DELETE FROM transactions").run();
+    db.prepare("DELETE FROM convocations").run();
+    db.prepare("DELETE FROM match_finances").run();
+    db.prepare("DELETE FROM matches").run();
+    db.prepare("DELETE FROM users WHERE role != 'admin'").run();
+    db.prepare("DELETE FROM users WHERE role = 'admin' AND id != ?").run(admin.id);
+    db.prepare(`
+      UPDATE users SET name = 'DIEGO GAY DAVILA', first_name = 'DIEGO', last_name = 'GAY DAVILA',
+        alias = 'DIMOGARU', password_hash = ?, role = 'admin', base_role = 'principal',
+        account_status = 'active', must_change_password = 0, deleted_at = NULL,
+        ranking_position = NULL, balance = 0
+      WHERE id = ?
+    `).run(testResetAdminPasswordHash, admin.id);
+    db.prepare("DELETE FROM app_settings").run();
+    db.prepare("INSERT INTO app_settings (key, value) VALUES ('pot_cents', '0')").run();
+    db.prepare("INSERT INTO app_settings (key, value) VALUES ('replit_test_reset_v1', 'done')").run();
+    db.prepare(`
+      DELETE FROM sqlite_sequence
+      WHERE name IN ('matches', 'convocations', 'transactions', 'push_subscriptions',
+        'push_campaigns', 'match_points', 'balance_alert_campaigns')
+    `).run();
+    db.prepare("UPDATE sqlite_sequence SET seq = ? WHERE name = 'users'").run(admin.id);
+    return true;
+  });
+  if (resetTestDatabase.immediate()) {
+    console.log("Limpieza inicial de la base de pruebas completada; cuenta Admin conservada.");
+  }
+}
 
 const vapidPublicKey = process.env.VAPID_PUBLIC_KEY || "";
 const vapidPrivateKey = process.env.VAPID_PRIVATE_KEY || "";
@@ -350,7 +391,7 @@ function ensureCurrentMatch(date = new Date()) {
 
 function getConvocationData(match, userId) {
   const roster = db.prepare(`
-    SELECT u.id, u.name, u.role, u.base_role, u.ranking_position, c.status AS response
+    SELECT u.id, u.name, u.alias, u.role, u.base_role, u.ranking_position, c.status AS response
     FROM users u
     LEFT JOIN convocations c ON c.user_id = u.id AND c.match_id = ?
     WHERE u.account_status = 'active' AND u.role != 'admin' AND u.deleted_at IS NULL
@@ -526,7 +567,7 @@ function matchDetails(match) {
   }
   const getTeam = (ids, activeOnly = false) => ids.length
     ? db.prepare(`
-      SELECT id, name, ranking_position FROM users
+      SELECT id, name, alias, ranking_position FROM users
       WHERE id IN (${ids.map(() => "?").join(",")}) AND role != 'admin'
         ${activeOnly ? "AND account_status = 'active' AND deleted_at IS NULL" : ""}
     `).all(...ids)
@@ -542,7 +583,7 @@ function matchDetails(match) {
   `)
     .get(match.id).count;
   const principalPlayers = db.prepare(`
-    SELECT u.id, u.name, u.ranking_position
+    SELECT u.id, u.name, u.alias, u.ranking_position
     FROM convocations c JOIN users u ON u.id = c.user_id
     WHERE c.match_id = ? AND c.status = 'principal'
       AND u.role != 'admin' AND u.account_status = 'active' AND u.deleted_at IS NULL
@@ -944,7 +985,7 @@ app.get("/api/matches", requireUser, (_req, res) => {
 
 app.get("/api/standings", requireUser, (_req, res) => {
   const rows = db.prepare(`
-    SELECT u.id, u.name, u.base_role, u.ranking_position,
+    SELECT u.id, u.alias, u.base_role, u.ranking_position,
       COALESCE(SUM(mp.points), 0) AS points,
       COALESCE(SUM(CASE WHEN mp.result = 'win' THEN 1 ELSE 0 END), 0) AS wins,
       COALESCE(SUM(CASE WHEN mp.result = 'draw' THEN 1 ELSE 0 END), 0) AS draws,

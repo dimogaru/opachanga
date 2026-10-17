@@ -15,7 +15,9 @@ npm install
 SESSION_SECRET="cambia-este-valor" npm start
 ```
 
-Abre `http://localhost:5000`. En el primer inicio se crea el usuario administrador DIEGO con rol base principal, pero sin posición de ranking porque no participa en la competición. El acceso inicial obliga a cambiar la contraseña. Para usar una contraseña inicial propia, configura `INITIAL_ADMIN_PASSWORD` antes del primer arranque. La base se guarda en `data/o-pachanga.sqlite` (o en `DATA_DIR`).
+Abre `http://localhost:5000`. En una instalación nueva se crea el usuario administrador DIMOGARU con rol Admin, activo y sin participación en la competición. Para usar una contraseña inicial propia, configura `INITIAL_ADMIN_PASSWORD` antes del primer arranque. La base se guarda en `data/o-pachanga.sqlite` (o en `DATA_DIR`).
+
+En el workspace de Replit, el primer inicio después de esta migración limpia una sola vez la actividad de pruebas (jugadores, partidos, convocatorias, movimientos, puntos, suscripciones y bote), conserva y configura la cuenta Admin y deja la base lista para una temporada nueva. El marcador de migración evita repetir el borrado en reinicios posteriores; la limpieza no se ejecuta en deployments publicados.
 
 ## Docker
 
