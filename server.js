@@ -63,7 +63,15 @@ db.exec(`
     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     amount REAL NOT NULL,
     concept TEXT NOT NULL,
-    date TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    date TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    match_id INTEGER REFERENCES matches(id),
+    transaction_type TEXT NOT NULL DEFAULT 'manual'
+      CHECK (transaction_type IN ('manual', 'match_charge', 'adjustment')),
+    adjustment_of INTEGER REFERENCES transactions(id),
+    status TEXT NOT NULL DEFAULT 'posted'
+      CHECK (status IN ('posted', 'adjusted', 'refunded')),
+    adjusted_by INTEGER REFERENCES users(id),
+    adjusted_at TEXT
   );
 
   CREATE TABLE IF NOT EXISTS push_subscriptions (
@@ -152,6 +160,34 @@ if (!userColumns.includes("base_role")) {
 }
 const matchColumns = db.prepare("PRAGMA table_info(matches)").all().map((column) => column.name);
 if (!matchColumns.includes("pitch_price")) db.exec("ALTER TABLE matches ADD COLUMN pitch_price REAL");
+const transactionColumns = db.prepare("PRAGMA table_info(transactions)").all().map((column) => column.name);
+const transactionMigrations = [
+  ["match_id", "INTEGER REFERENCES matches(id)"],
+  ["transaction_type", "TEXT NOT NULL DEFAULT 'manual' CHECK (transaction_type IN ('manual', 'match_charge', 'adjustment'))"],
+  ["adjustment_of", "INTEGER REFERENCES transactions(id)"],
+  ["status", "TEXT NOT NULL DEFAULT 'posted' CHECK (status IN ('posted', 'adjusted', 'refunded'))"],
+  ["adjusted_by", "INTEGER REFERENCES users(id)"],
+  ["adjusted_at", "TEXT"],
+];
+for (const [name, definition] of transactionMigrations) {
+  if (!transactionColumns.includes(name)) db.exec(`ALTER TABLE transactions ADD COLUMN ${name} ${definition}`);
+}
+const legacyMatchCharges = db.prepare(`
+  SELECT id, concept FROM transactions
+  WHERE transaction_type = 'manual' AND concept LIKE 'Partido #%: cuota automática'
+`).all();
+const migrateMatchCharge = db.prepare(`
+  UPDATE transactions SET match_id = ?, transaction_type = 'match_charge'
+  WHERE id = ? AND EXISTS (SELECT 1 FROM matches WHERE id = ?)
+`);
+for (const transaction of legacyMatchCharges) {
+  const matchId = Number(transaction.concept.match(/^Partido #(\d+): cuota automática$/)?.[1]);
+  if (Number.isInteger(matchId)) migrateMatchCharge.run(matchId, transaction.id, matchId);
+}
+db.exec(`
+  CREATE INDEX IF NOT EXISTS idx_transactions_match ON transactions(match_id, date DESC);
+  CREATE INDEX IF NOT EXISTS idx_transactions_adjustment ON transactions(adjustment_of, id);
+`);
 
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_alias_unique ON users(alias COLLATE NOCASE) WHERE alias IS NOT NULL");
 db.prepare("UPDATE users SET account_status = 'pending' WHERE role != 'admin' AND password_hash IS NULL AND account_status = 'active'").run();
@@ -376,11 +412,118 @@ function readJson(value, fallback) {
   }
 }
 
+function principalRosterIds(matchId) {
+  return db.prepare(`
+    SELECT c.user_id
+    FROM convocations c JOIN users u ON u.id = c.user_id
+    WHERE c.match_id = ? AND c.status = 'principal' AND u.role != 'admin'
+    ORDER BY c.id
+  `).all(matchId).map((row) => row.user_id);
+}
+
+function validateDraftState(matchId, draft, teamA, teamB) {
+  if (!["in_progress", "complete"].includes(draft?.status)) return "El estado del draft no es válido.";
+  if (!Array.isArray(teamA) || !Array.isArray(teamB) || !Array.isArray(draft.picks)) {
+    return "Faltan datos de elecciones o de equipos.";
+  }
+  const confirmedIds = new Set(principalRosterIds(matchId));
+  const inferredRoster = [
+    ...teamA,
+    ...teamB,
+    ...(Array.isArray(draft.picks) ? draft.picks.map((pick) => pick?.userId) : []),
+    ...(Array.isArray(draft.remaining) ? draft.remaining : []),
+  ].map(Number).filter(Number.isInteger);
+  const roster = Array.isArray(draft.roster) ? draft.roster.map(Number) : [...new Set(inferredRoster)];
+  if (roster.length < 14 || roster.length > 16 || new Set(roster).size !== roster.length ||
+      roster.some((id) => !confirmedIds.has(id))) {
+    return "La lista original de jugadores confirmados no coincide con el draft.";
+  }
+  if (!Number.isInteger(draft.captainA) || !Number.isInteger(draft.captainB) ||
+      draft.captainA === draft.captainB || !roster.includes(draft.captainA) || !roster.includes(draft.captainB)) {
+    return "Los capitanes no son válidos para esta lista.";
+  }
+  const pool = roster.filter((id) => id !== draft.captainA && id !== draft.captainB);
+  const manualPicks = draft.picks.filter((pick) => !pick?.automatic);
+  const automaticPicks = draft.picks.filter((pick) => pick?.automatic === true);
+  if (automaticPicks.length > 1 ||
+      (draft.status === "complete" && automaticPicks.length !== 1) ||
+      (draft.status === "in_progress" && automaticPicks.length !== 0)) {
+    return "La asignación automática del último jugador no coincide con el estado del draft.";
+  }
+
+  const chosen = new Set();
+  const expectedA = [draft.captainA];
+  const expectedB = [draft.captainB];
+  for (let index = 0; index < manualPicks.length; index += 1) {
+    const pick = manualPicks[index];
+    const playerId = Number(pick?.userId);
+    const remainingBeforePick = pool.length - index;
+    const expectedTeam = remainingBeforePick > 3
+      ? index % 2 === 0 ? "B" : "A"
+      : remainingBeforePick >= 2 ? "A" : null;
+    if (!Number.isInteger(playerId) || !pool.includes(playerId) || chosen.has(playerId)) {
+      return "Hay un jugador repetido o ajeno a la lista confirmada.";
+    }
+    if (!expectedTeam || pick.team !== expectedTeam) {
+      return "El orden de turnos no respeta la regla del draft.";
+    }
+    chosen.add(playerId);
+    (pick.team === "A" ? expectedA : expectedB).push(playerId);
+  }
+
+  const unpicked = pool.filter((id) => !chosen.has(id));
+  if (draft.status === "complete") {
+    const automaticPick = automaticPicks[0];
+    const automaticId = Number(automaticPick?.userId);
+    if (manualPicks.length !== pool.length - 1 || unpicked.length !== 1 ||
+        !Number.isInteger(automaticId) || automaticId !== unpicked[0] || automaticPick.team !== "A" ||
+        draft.currentTurn !== null || (draft.remaining || []).length !== 0) {
+      return "No se puede confirmar la alineación: la elección final o el último jugador asignado no son válidos.";
+    }
+    expectedA.push(automaticId);
+  } else {
+    const remaining = Array.isArray(draft.remaining) ? draft.remaining.map(Number) : [];
+    const remainingSet = new Set(remaining);
+    if (remaining.length < 2 || remainingSet.size !== remaining.length ||
+        remaining.length !== unpicked.length || unpicked.some((id) => !remainingSet.has(id))) {
+      return "La lista de jugadores pendientes no coincide con las elecciones realizadas.";
+    }
+    const expectedTurn = remaining.length <= 3
+      ? "A"
+      : manualPicks.length % 2 === 0 ? "B" : "A";
+    if (draft.currentTurn !== expectedTurn) {
+      return "El turno activo no respeta el orden del draft.";
+    }
+  }
+
+  const numericTeamA = teamA.map(Number);
+  const numericTeamB = teamB.map(Number);
+  const allTeamIds = [...numericTeamA, ...numericTeamB];
+  if (new Set(allTeamIds).size !== allTeamIds.length ||
+      numericTeamA.length !== expectedA.length || numericTeamA.some((id, index) => id !== expectedA[index]) ||
+      numericTeamB.length !== expectedB.length || numericTeamB.some((id, index) => id !== expectedB[index])) {
+    return "Hay jugadores duplicados o equipos que no coinciden con las elecciones guardadas.";
+  }
+  return null;
+}
+
 function matchDetails(match) {
   if (!match) return null;
-  const teamAIds = readJson(match.team_a, []);
-  const teamBIds = readJson(match.team_b, []);
+  const storedTeamA = readJson(match.team_a, []);
+  const storedTeamB = readJson(match.team_b, []);
+  const teamAIds = Array.isArray(storedTeamA) ? storedTeamA : [];
+  const teamBIds = Array.isArray(storedTeamB) ? storedTeamB : [];
   const draft = readJson(match.draft_state, {});
+  let draftValidationError = ["in_progress", "complete"].includes(draft.status)
+    ? !Array.isArray(storedTeamA) || !Array.isArray(storedTeamB)
+      ? "Faltan datos de elecciones o de equipos."
+      : validateDraftState(match.id, draft, teamAIds, teamBIds)
+    : null;
+  if (!draftValidationError && ["closed", "played"].includes(match.status) &&
+      (match.draft_state !== "{}" || teamAIds.length || teamBIds.length) &&
+      !["in_progress", "complete"].includes(draft.status)) {
+    draftValidationError = "El estado guardado del draft no es válido.";
+  }
   const getTeam = (ids, activeOnly = false) => ids.length
     ? db.prepare(`
       SELECT id, name, ranking_position FROM users
@@ -408,6 +551,7 @@ function matchDetails(match) {
   return {
     ...match,
     draft,
+    draftValidationError,
     teamA: getTeam(teamAIds),
     teamB: getTeam(teamBIds),
     available,
@@ -781,6 +925,7 @@ app.post("/api/admin/convocations/current/close", requireAdmin, (req, res) => {
       captainA,
       captainB,
       currentTurn: "B",
+      roster: roster.map((player) => player.id),
       remaining: roster.map((player) => player.id).filter((id) => id !== captainA && id !== captainB),
       picks: [],
     };
@@ -846,6 +991,7 @@ app.post("/api/admin/matches/:id/draft/start", requireAdmin, (req, res) => {
     captainA: captainA.id,
     captainB: captainB.id,
     currentTurn: "B",
+    roster: participants.map((player) => player.id),
     remaining,
     picks: [],
   };
@@ -864,6 +1010,15 @@ app.post("/api/matches/:id/draft/pick", requirePlayer, (req, res) => {
   if (match.status !== "closed" || draft.status !== "in_progress") {
     return res.status(409).json({ error: "No hay un draft abierto para este partido." });
   }
+  const teamA = readJson(match.team_a, []);
+  const teamB = readJson(match.team_b, []);
+  const integrityError = validateDraftState(matchId, draft, teamA, teamB);
+  if (integrityError) {
+    return res.status(409).json({
+      error: `Draft inconsistente. No se guardará esta elección: ${integrityError}`,
+      draftInvalid: true,
+    });
+  }
   const expectedCaptainId = draft.currentTurn === "A" ? draft.captainA : draft.currentTurn === "B" ? draft.captainB : null;
   if (pickerId !== expectedCaptainId) {
     return res.status(403).json({ error: "Solo puede elegir el capitán que tiene el turno activo." });
@@ -879,8 +1034,6 @@ app.post("/api/matches/:id/draft/pick", requirePlayer, (req, res) => {
   `).get(matchId, playerId)) {
     return res.status(400).json({ error: "Solo puedes elegir jugadores activos de la Lista Principal confirmada." });
   }
-  const teamA = readJson(match.team_a, []);
-  const teamB = readJson(match.team_b, []);
   const team = draft.currentTurn === "A" ? teamA : teamB;
   team.push(playerId);
   remaining.splice(remaining.indexOf(playerId), 1);
@@ -898,6 +1051,13 @@ app.post("/api/matches/:id/draft/pick", requirePlayer, (req, res) => {
     draft.currentTurn = "A";
   } else if (remaining.length > 3) {
     draft.currentTurn = draft.currentTurn === "A" ? "B" : "A";
+  }
+  const finalIntegrityError = validateDraftState(matchId, draft, teamA, teamB);
+  if (finalIntegrityError) {
+    return res.status(409).json({
+      error: `No se puede confirmar la alineación final: ${finalIntegrityError}`,
+      draftInvalid: true,
+    });
   }
   db.prepare("UPDATE matches SET draft_state = ?, team_a = ?, team_b = ? WHERE id = ?")
     .run(JSON.stringify(draft), JSON.stringify(teamA), JSON.stringify(teamB), matchId);
@@ -936,8 +1096,17 @@ app.post("/api/admin/matches/:id/result", requireAdmin, (req, res) => {
   if (!["closed", "played"].includes(match.status) || readJson(match.draft_state, {}).status !== "complete") {
     return res.status(409).json({ error: "Cierra la convocatoria y completa el draft antes de guardar el resultado." });
   }
-  const teamA = nonAdminPlayerIds(readJson(match.team_a, []));
-  const teamB = nonAdminPlayerIds(readJson(match.team_b, []));
+  const rawTeamA = readJson(match.team_a, []);
+  const rawTeamB = readJson(match.team_b, []);
+  const draftIntegrityError = validateDraftState(matchId, readJson(match.draft_state, {}), rawTeamA, rawTeamB);
+  if (draftIntegrityError) {
+    return res.status(409).json({
+      error: `No se puede guardar el resultado ni cobrar: draft inconsistente. ${draftIntegrityError}`,
+      draftInvalid: true,
+    });
+  }
+  const teamA = nonAdminPlayerIds(rawTeamA);
+  const teamB = nonAdminPlayerIds(rawTeamB);
   const existingFinance = db.prepare("SELECT 1 FROM match_finances WHERE match_id = ?").get(matchId);
   const shouldCharge = !existingFinance && match.status !== "played";
   let charge = null;
@@ -962,14 +1131,20 @@ app.post("/api/admin/matches/:id/result", requireAdmin, (req, res) => {
     };
   }
   const saveResult = db.transaction(() => {
+    const latestMatch = db.prepare("SELECT status FROM matches WHERE id = ?").get(matchId);
+    const financeExists = db.prepare("SELECT 1 FROM match_finances WHERE match_id = ?").get(matchId);
+    if (charge && (latestMatch?.status !== "closed" || financeExists)) charge = null;
     db.prepare("UPDATE matches SET status = 'played', result = ? WHERE id = ?").run(result, matchId);
     if (charge) {
-      const insertTransaction = db.prepare("INSERT INTO transactions (user_id, amount, concept) VALUES (?, ?, ?)");
+      const insertTransaction = db.prepare(`
+        INSERT INTO transactions (user_id, amount, concept, match_id, transaction_type)
+        VALUES (?, ?, ?, ?, 'match_charge')
+      `);
       const debitPlayer = db.prepare("UPDATE users SET balance = ROUND((balance - ?) * 100) / 100 WHERE id = ?");
       if (charge.feeCents > 0) {
         for (const userId of charge.participants) {
           debitPlayer.run(charge.feeCents / 100, userId);
-          insertTransaction.run(userId, -(charge.feeCents / 100), `Partido #${matchId}: cuota automática`);
+          insertTransaction.run(userId, -(charge.feeCents / 100), `Partido #${matchId}: cuota automática`, matchId);
         }
       }
       const currentPotCents = moneyCents(currentPot());
@@ -1007,7 +1182,7 @@ app.post("/api/admin/matches/:id/result", requireAdmin, (req, res) => {
     }
   });
   try {
-    saveResult();
+    saveResult.immediate();
   } catch (error) {
     console.error("No se pudo guardar el resultado:", error.message);
     return res.status(500).json({ error: "No se pudo guardar el resultado." });
@@ -1169,12 +1344,113 @@ app.get("/api/admin/finance/overview", requireAdmin, (_req, res) => {
     ORDER BY balance ASC, name COLLATE NOCASE
   `).all();
   const transactions = db.prepare(`
-    SELECT t.id, t.user_id, u.name, t.amount, t.concept, t.date
+    SELECT t.id, t.user_id, u.name, t.amount, t.concept, t.date,
+      t.match_id, t.adjustment_of, t.transaction_type, t.status, t.adjusted_at,
+      CASE WHEN t.transaction_type = 'match_charge' THEN (
+        SELECT -COALESCE(SUM(CAST(ROUND(t2.amount * 100) AS INTEGER)), 0) / 100.0
+        FROM transactions t2
+        WHERE t2.id = t.id OR t2.adjustment_of = t.id
+      ) ELSE NULL END AS current_charge,
+      CASE WHEN t.transaction_type = 'match_charge' THEN 1 ELSE 0 END AS can_adjust
     FROM transactions t JOIN users u ON u.id = t.user_id
     WHERE u.role != 'admin'
     ORDER BY t.date DESC, t.id DESC LIMIT 100
   `).all();
   res.json({ players, transactions, pot: currentPot() });
+});
+
+app.post("/api/admin/finance/transactions/:id/adjust", requireAdmin, (req, res) => {
+  const transactionId = Number(req.params.id);
+  const action = req.body?.action;
+  const reason = String(req.body?.reason || "").trim();
+  if (!Number.isInteger(transactionId) || transactionId < 1) {
+    return res.status(400).json({ error: "El movimiento seleccionado no es válido." });
+  }
+  if (!["adjust", "refund"].includes(action)) {
+    return res.status(400).json({ error: "Elige corregir la cuota o devolver el cargo." });
+  }
+  if (!reason || reason.length > 120) {
+    return res.status(400).json({ error: "Indica un motivo de hasta 120 caracteres." });
+  }
+  const targetAmount = action === "refund" ? 0 : Number(req.body?.target_amount);
+  const targetCents = moneyCents(targetAmount);
+  if (!Number.isFinite(targetAmount) || targetAmount < 0 || !Number.isSafeInteger(targetCents)) {
+    return res.status(400).json({ error: "La cuota corregida debe ser un importe válido, igual o superior a cero." });
+  }
+  const original = db.prepare(`
+    SELECT t.id FROM transactions t JOIN match_finances mf ON mf.match_id = t.match_id
+    WHERE t.id = ? AND t.transaction_type = 'match_charge'
+  `).get(transactionId);
+  if (!original) return res.status(404).json({ error: "No se encontró un cargo de partido corregible." });
+
+  const applyAdjustment = db.transaction(() => {
+    const charge = db.prepare(`
+      SELECT t.id, t.user_id, t.match_id
+      FROM transactions t JOIN match_finances mf ON mf.match_id = t.match_id
+      WHERE t.id = ? AND t.transaction_type = 'match_charge'
+    `).get(transactionId);
+    if (!charge) return { error: "El cargo ya no está disponible para corregir.", status: 409 };
+    const netCents = db.prepare(`
+      SELECT COALESCE(SUM(CAST(ROUND(amount * 100) AS INTEGER)), 0) AS cents
+      FROM transactions WHERE id = ? OR adjustment_of = ?
+    `).get(transactionId, transactionId).cents;
+    const currentChargeCents = -netCents;
+    if (!Number.isSafeInteger(currentChargeCents) || currentChargeCents < 0) {
+      return { error: "El historial de este cargo es inconsistente; no se ha modificado nada.", status: 409 };
+    }
+    if (targetCents === currentChargeCents) {
+      return { error: "La cuota indicada ya coincide con el importe cobrado.", status: 409 };
+    }
+    if (!db.prepare("SELECT 1 FROM users WHERE id = ?").get(charge.user_id)) {
+      return { error: "No se encontró la cuenta asociada al cargo.", status: 409 };
+    }
+
+    const balanceDeltaCents = currentChargeCents - targetCents;
+    const collectedDeltaCents = targetCents - currentChargeCents;
+    const finance = db.prepare("SELECT * FROM match_finances WHERE match_id = ?").get(charge.match_id);
+    const updatedCollectedCents = moneyCents(finance.total_collected) + collectedDeltaCents;
+    const updatedPotAddedCents = moneyCents(finance.pot_added) + collectedDeltaCents;
+    const updatedPotCents = moneyCents(currentPot()) + collectedDeltaCents;
+    if (![updatedCollectedCents, updatedPotAddedCents, updatedPotCents].every(Number.isSafeInteger) ||
+        updatedCollectedCents < 0) {
+      return { error: "El ajuste excede el rango financiero permitido; no se ha modificado nada.", status: 400 };
+    }
+
+    const status = targetCents === 0 ? "refunded" : "adjusted";
+    const targetText = (targetCents / 100).toFixed(2).replace(".", ",");
+    const concept = action === "refund"
+      ? `Devolución íntegra del cargo del partido #${charge.match_id}: ${reason}`
+      : `Corrección de cuota del partido #${charge.match_id}; nueva cuota ${targetText} €: ${reason}`;
+    db.prepare(`
+      INSERT INTO transactions
+        (user_id, amount, concept, match_id, transaction_type, adjustment_of)
+      VALUES (?, ?, ?, ?, 'adjustment', ?)
+    `).run(charge.user_id, balanceDeltaCents / 100, concept, charge.match_id, transactionId);
+    db.prepare("UPDATE users SET balance = ROUND((balance + ?) * 100) / 100 WHERE id = ?")
+      .run(balanceDeltaCents / 100, charge.user_id);
+    db.prepare(`
+      UPDATE transactions SET status = ?, adjusted_by = ?, adjusted_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(status, req.session.user.id, transactionId);
+    db.prepare(`
+      UPDATE match_finances SET total_collected = ?, pot_added = ? WHERE match_id = ?
+    `).run(updatedCollectedCents / 100, updatedPotAddedCents / 100, charge.match_id);
+    db.prepare(`
+      INSERT INTO app_settings (key, value) VALUES ('pot_cents', ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value
+    `).run(String(updatedPotCents));
+    return {
+      adjusted: true,
+      status,
+      previousCharge: currentChargeCents / 100,
+      newCharge: targetCents / 100,
+      balanceChange: balanceDeltaCents / 100,
+      pot: updatedPotCents / 100,
+    };
+  });
+  const result = applyAdjustment.immediate();
+  if (result.error) return res.status(result.status).json({ error: result.error });
+  res.json(result);
 });
 
 app.post("/api/admin/users/:id/balance", requireAdmin, (req, res) => {
