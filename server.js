@@ -45,6 +45,7 @@ db.exec(`
     draft_state TEXT NOT NULL DEFAULT '{}',
     team_a TEXT NOT NULL DEFAULT '[]',
     team_b TEXT NOT NULL DEFAULT '[]',
+    pitch_price REAL,
     result TEXT CHECK (result IN ('A', 'B', 'draw') OR result IS NULL)
   );
 
@@ -149,6 +150,8 @@ if (!userColumns.includes("base_role")) {
   );
   db.exec("UPDATE users SET base_role = role WHERE role IN ('principal', 'suplente')");
 }
+const matchColumns = db.prepare("PRAGMA table_info(matches)").all().map((column) => column.name);
+if (!matchColumns.includes("pitch_price")) db.exec("ALTER TABLE matches ADD COLUMN pitch_price REAL");
 
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_alias_unique ON users(alias COLLATE NOCASE) WHERE alias IS NOT NULL");
 db.prepare("UPDATE users SET account_status = 'pending' WHERE role != 'admin' AND password_hash IS NULL AND account_status = 'active'").run();
@@ -378,11 +381,15 @@ function matchDetails(match) {
   const teamAIds = readJson(match.team_a, []);
   const teamBIds = readJson(match.team_b, []);
   const draft = readJson(match.draft_state, {});
-  const getTeam = (ids) => ids.length
-    ? db.prepare(`SELECT id, name, ranking_position FROM users WHERE id IN (${ids.map(() => "?").join(",")}) AND role != 'admin'`).all(...ids)
+  const getTeam = (ids, activeOnly = false) => ids.length
+    ? db.prepare(`
+      SELECT id, name, ranking_position FROM users
+      WHERE id IN (${ids.map(() => "?").join(",")}) AND role != 'admin'
+        ${activeOnly ? "AND account_status = 'active' AND deleted_at IS NULL" : ""}
+    `).all(...ids)
       .sort((left, right) => ids.indexOf(left.id) - ids.indexOf(right.id))
     : [];
-  const available = draft.remaining?.length ? getTeam(draft.remaining) : [];
+  const available = draft.remaining?.length ? getTeam(draft.remaining, true) : [];
   const finance = db.prepare("SELECT * FROM match_finances WHERE match_id = ?").get(match.id) || null;
   const principalCount = db.prepare(`
     SELECT COUNT(*) AS count FROM convocations c
@@ -755,19 +762,31 @@ app.post("/api/admin/convocations/current/close", requireAdmin, (req, res) => {
     SELECT u.id FROM convocations c JOIN users u ON u.id = c.user_id
     WHERE c.match_id = ? AND c.status = 'principal'
       AND u.role != 'admin' AND u.account_status = 'active' AND u.deleted_at IS NULL
+    ORDER BY u.ranking_position IS NULL, u.ranking_position, u.name COLLATE NOCASE
   `).all(match.id);
   const captainA = Number(req.body?.captainA);
   const captainB = Number(req.body?.captainB);
   let draft = {};
+  let teamA = [];
+  let teamB = [];
   if (roster.length >= 14 && roster.length <= 16) {
     const ids = new Set(roster.map((player) => player.id));
     if (!Number.isInteger(captainA) || !Number.isInteger(captainB) || captainA === captainB || !ids.has(captainA) || !ids.has(captainB)) {
       return res.status(400).json({ error: "Selecciona dos jugadores distintos de la Lista Principal como capitanes A y B." });
     }
-    draft = { status: "ready", captainA, captainB };
+    teamA = [captainA];
+    teamB = [captainB];
+    draft = {
+      status: "in_progress",
+      captainA,
+      captainB,
+      currentTurn: "B",
+      remaining: roster.map((player) => player.id).filter((id) => id !== captainA && id !== captainB),
+      picks: [],
+    };
   }
-  db.prepare("UPDATE matches SET status = 'closed', draft_state = ?, team_a = '[]', team_b = '[]' WHERE id = ?")
-    .run(JSON.stringify(draft), match.id);
+  db.prepare("UPDATE matches SET status = 'closed', draft_state = ?, team_a = ?, team_b = ? WHERE id = ?")
+    .run(JSON.stringify(draft), JSON.stringify(teamA), JSON.stringify(teamB), match.id);
   res.json(getConvocationData(db.prepare("SELECT * FROM matches WHERE id = ?").get(match.id), req.session.user.id));
 });
 
@@ -835,21 +854,30 @@ app.post("/api/admin/matches/:id/draft/start", requireAdmin, (req, res) => {
   res.json(matchDetails(db.prepare("SELECT * FROM matches WHERE id = ?").get(matchId)));
 });
 
-app.post("/api/admin/matches/:id/draft/pick", requireAdmin, (req, res) => {
+app.post("/api/matches/:id/draft/pick", requirePlayer, (req, res) => {
   const matchId = Number(req.params.id);
   const playerId = Number(req.body?.userId);
+  const pickerId = req.session.user.id;
   const match = db.prepare("SELECT * FROM matches WHERE id = ?").get(matchId);
   if (!match) return res.status(404).json({ error: "No se encontró el partido." });
   const draft = readJson(match.draft_state, {});
   if (match.status !== "closed" || draft.status !== "in_progress") {
     return res.status(409).json({ error: "No hay un draft abierto para este partido." });
   }
+  const expectedCaptainId = draft.currentTurn === "A" ? draft.captainA : draft.currentTurn === "B" ? draft.captainB : null;
+  if (pickerId !== expectedCaptainId) {
+    return res.status(403).json({ error: "Solo puede elegir el capitán que tiene el turno activo." });
+  }
   const remaining = draft.remaining || [];
   if (!Number.isInteger(playerId) || !remaining.includes(playerId)) {
     return res.status(400).json({ error: "Selecciona un jugador disponible en el draft." });
   }
-  if (!db.prepare("SELECT 1 FROM users WHERE id = ? AND role != 'admin' AND account_status = 'active' AND deleted_at IS NULL").get(playerId)) {
-    return res.status(400).json({ error: "El administrador no puede formar parte de los equipos." });
+  if (!db.prepare(`
+    SELECT 1 FROM convocations c JOIN users u ON u.id = c.user_id
+    WHERE c.match_id = ? AND c.user_id = ? AND c.status = 'principal'
+      AND u.role != 'admin' AND u.account_status = 'active' AND u.deleted_at IS NULL
+  `).get(matchId, playerId)) {
+    return res.status(400).json({ error: "Solo puedes elegir jugadores activos de la Lista Principal confirmada." });
   }
   const teamA = readJson(match.team_a, []);
   const teamB = readJson(match.team_b, []);
@@ -876,56 +904,28 @@ app.post("/api/admin/matches/:id/draft/pick", requireAdmin, (req, res) => {
   res.json(matchDetails(db.prepare("SELECT * FROM matches WHERE id = ?").get(matchId)));
 });
 
-app.post("/api/admin/matches/:id/finance", requireAdmin, (req, res) => {
+app.post("/api/admin/matches/:id/price", requireAdmin, (req, res) => {
   const matchId = Number(req.params.id);
-  const pitchCost = Number(req.body?.pitch_cost);
-  const feePerPlayer = Number(req.body?.fee_per_player);
+  const price = Number(req.body?.price_total);
+  const priceCents = moneyCents(price);
   const match = db.prepare("SELECT * FROM matches WHERE id = ?").get(matchId);
   if (!match) return res.status(404).json({ error: "No se encontró el partido." });
-  if (readJson(match.draft_state, {}).status !== "complete") {
-    return res.status(409).json({ error: "Completa primero el draft para registrar el cobro." });
+  if (!Number.isFinite(price) || price < 0 || !Number.isSafeInteger(priceCents)) {
+    return res.status(400).json({ error: "Introduce un precio total válido, igual o superior a cero." });
   }
-  if (!Number.isFinite(pitchCost) || !Number.isFinite(feePerPlayer) || pitchCost < 0 || feePerPlayer < 0) {
-    return res.status(400).json({ error: "Introduce importes válidos, iguales o superiores a cero." });
+  if (match.status === "played") {
+    return res.status(409).json({ error: "No se puede definir un precio retroactivo para un partido jugado." });
   }
   if (db.prepare("SELECT 1 FROM match_finances WHERE match_id = ?").get(matchId)) {
-    return res.status(409).json({ error: "El cobro de este partido ya está registrado." });
+    return res.status(409).json({ error: "El cobro ya se aplicó al registrar el resultado y el precio no se puede cambiar." });
   }
-  const teamA = readJson(match.team_a, []);
-  const teamB = readJson(match.team_b, []);
-  const participantIds = nonAdminPlayerIds([...teamA, ...teamB]);
-  const costCents = moneyCents(pitchCost);
-  const feeCents = moneyCents(feePerPlayer);
-  const collectedCents = participantIds.length * feeCents;
-  if (!participantIds.length) return res.status(409).json({ error: "No hay participantes en los equipos." });
-  if (collectedCents < costCents) {
-    return res.status(400).json({ error: "El total cobrado debe cubrir el coste de la pista para que el bote no quede en negativo." });
-  }
-  const addedPotCents = collectedCents - costCents;
-  try {
-    db.transaction(() => {
-      const insertTransaction = db.prepare("INSERT INTO transactions (user_id, amount, concept) VALUES (?, ?, ?)");
-      const debitPlayer = db.prepare("UPDATE users SET balance = ROUND((balance - ?) * 100) / 100 WHERE id = ?");
-      for (const userId of participantIds) {
-        debitPlayer.run(feeCents / 100, userId);
-        insertTransaction.run(userId, -(feeCents / 100), `Partido #${matchId}: cobro por jugador`);
-      }
-      const currentPotCents = moneyCents(currentPot());
-      db.prepare(`
-        INSERT INTO app_settings (key, value) VALUES ('pot_cents', ?)
-        ON CONFLICT(key) DO UPDATE SET value = excluded.value
-      `).run(String(currentPotCents + addedPotCents));
-      db.prepare(`
-        INSERT INTO match_finances (match_id, pitch_cost, fee_per_player, participants, total_collected, pot_added)
-        VALUES (?, ?, ?, ?, ?, ?)
-      `).run(matchId, costCents / 100, feeCents / 100, participantIds.length, collectedCents / 100, addedPotCents / 100);
-    })();
-  } catch (error) {
-    console.error("No se pudo registrar el cobro:", error.message);
-    return res.status(500).json({ error: "No se pudo completar el cobro; no se aplicaron los cambios." });
-  }
-  res.json({ match: matchDetails(db.prepare("SELECT * FROM matches WHERE id = ?").get(matchId)), pot: currentPot() });
+  db.prepare("UPDATE matches SET pitch_price = ? WHERE id = ?").run(priceCents / 100, matchId);
+  res.json({ match: matchDetails(db.prepare("SELECT * FROM matches WHERE id = ?").get(matchId)) });
 });
+
+app.post("/api/admin/matches/:id/finance", requireAdmin, (_req, res) =>
+  res.status(410).json({ error: "El cobro ahora se calcula automáticamente al guardar el resultado. Configura el Precio por Partido en Finanzas." }),
+);
 
 app.post("/api/admin/matches/:id/result", requireAdmin, (req, res) => {
   const matchId = Number(req.params.id);
@@ -938,8 +938,57 @@ app.post("/api/admin/matches/:id/result", requireAdmin, (req, res) => {
   }
   const teamA = nonAdminPlayerIds(readJson(match.team_a, []));
   const teamB = nonAdminPlayerIds(readJson(match.team_b, []));
+  const existingFinance = db.prepare("SELECT 1 FROM match_finances WHERE match_id = ?").get(matchId);
+  const shouldCharge = !existingFinance && match.status !== "played";
+  let charge = null;
+  if (shouldCharge) {
+    if (match.pitch_price == null) {
+      return res.status(409).json({ error: "Configura primero el Precio por Partido en la pestaña Finanzas." });
+    }
+    const participants = [...new Set([...teamA, ...teamB])];
+    if (!participants.length) return res.status(409).json({ error: "No hay jugadores en los equipos para aplicar el cobro." });
+    const pitchCents = moneyCents(match.pitch_price);
+    const feeCents = Math.ceil(pitchCents / participants.length);
+    const collectedCents = feeCents * participants.length;
+    if (!Number.isSafeInteger(collectedCents)) {
+      return res.status(400).json({ error: "El precio es demasiado alto para calcular el cobro por jugador." });
+    }
+    charge = {
+      participants,
+      pitchCents,
+      feeCents,
+      collectedCents,
+      potAddedCents: collectedCents - pitchCents,
+    };
+  }
   const saveResult = db.transaction(() => {
     db.prepare("UPDATE matches SET status = 'played', result = ? WHERE id = ?").run(result, matchId);
+    if (charge) {
+      const insertTransaction = db.prepare("INSERT INTO transactions (user_id, amount, concept) VALUES (?, ?, ?)");
+      const debitPlayer = db.prepare("UPDATE users SET balance = ROUND((balance - ?) * 100) / 100 WHERE id = ?");
+      if (charge.feeCents > 0) {
+        for (const userId of charge.participants) {
+          debitPlayer.run(charge.feeCents / 100, userId);
+          insertTransaction.run(userId, -(charge.feeCents / 100), `Partido #${matchId}: cuota automática`);
+        }
+      }
+      const currentPotCents = moneyCents(currentPot());
+      db.prepare(`
+        INSERT INTO app_settings (key, value) VALUES ('pot_cents', ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+      `).run(String(currentPotCents + charge.potAddedCents));
+      db.prepare(`
+        INSERT INTO match_finances (match_id, pitch_cost, fee_per_player, participants, total_collected, pot_added)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(
+        matchId,
+        charge.pitchCents / 100,
+        charge.feeCents / 100,
+        charge.participants.length,
+        charge.collectedCents / 100,
+        charge.potAddedCents / 100,
+      );
+    }
     db.prepare(`
       DELETE FROM match_points WHERE match_id = ?
         AND user_id IN (SELECT id FROM users WHERE role = 'admin')
@@ -963,7 +1012,11 @@ app.post("/api/admin/matches/:id/result", requireAdmin, (req, res) => {
     console.error("No se pudo guardar el resultado:", error.message);
     return res.status(500).json({ error: "No se pudo guardar el resultado." });
   }
-  res.json(matchDetails(db.prepare("SELECT * FROM matches WHERE id = ?").get(matchId)));
+  res.json({
+    match: matchDetails(db.prepare("SELECT * FROM matches WHERE id = ?").get(matchId)),
+    pot: currentPot(),
+    charged: Boolean(charge),
+  });
 });
 
 app.post("/api/admin/matches/:id/notify-negative-balances", requireAdmin, async (req, res) => {
@@ -1275,6 +1328,11 @@ app.post("/api/admin/users/:id/reset-password", requireAdmin, async (req, res) =
 
 app.delete("/api/admin/users/:id", requireAdmin, (req, res) => {
   const id = Number(req.params.id);
+  const activeDraft = db.prepare("SELECT draft_state FROM matches WHERE status = 'closed'").all()
+    .some((match) => readJson(match.draft_state, {}).status === "in_progress");
+  if (activeDraft) {
+    return res.status(409).json({ error: "Espera a que termine el draft antes de retirar jugadores." });
+  }
   const player = db.prepare(`
     SELECT id FROM users WHERE id = ? AND role != 'admin'
       AND account_status = 'active' AND deleted_at IS NULL

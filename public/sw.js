@@ -1,4 +1,4 @@
-const CACHE_NAME = "o-pachanga-v6";
+const CACHE_NAME = "o-pachanga-v7";
 const APP_SHELL = [
   "/",
   "/index.html",

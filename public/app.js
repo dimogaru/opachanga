@@ -174,7 +174,7 @@ function renderConvocationBoard(data, isAdmin = false) {
       </form>`
     : data.match.status === "played"
       ? `<div class="border-t border-white/10 bg-white/[.03] p-4 text-xs text-white/60 sm:px-7">Partido jugado; la convocatoria no se puede reabrir.</div>`
-      : `<div class="flex flex-col gap-3 border-t border-white/10 bg-white/[.03] p-4 sm:flex-row sm:items-center sm:justify-between sm:px-7"><span class="text-xs text-white/60">Convocatoria cerrada. ${data.validForMatch ? "Puedes iniciar el draft en Partidos." : "No se puede iniciar draft con este recuento."}</span>${canReopen ? `<button id="open-convocation" class="rounded-xl border border-white/20 px-4 py-2.5 text-xs font-bold text-white transition hover:bg-white/10">Abrir convocatoria</button>` : ""}</div>`;
+      : `<div class="flex flex-col gap-3 border-t border-white/10 bg-white/[.03] p-4 sm:flex-row sm:items-center sm:justify-between sm:px-7"><span class="text-xs text-white/60">Convocatoria cerrada. ${data.match.draft?.status === "in_progress" ? `Capitanes designados; turno del Equipo ${data.match.draft.currentTurn}.` : data.validForMatch ? "Revisa los capitanes en Partidos." : "No se puede iniciar el draft con este recuento."}</span>${canReopen ? `<button id="open-convocation" class="rounded-xl border border-white/20 px-4 py-2.5 text-xs font-bold text-white transition hover:bg-white/10">Abrir convocatoria</button>` : ""}</div>`;
   return `
     <section class="mb-7 overflow-hidden rounded-3xl bg-pitch-900 text-white shadow-card">
       <div class="flex flex-col gap-6 p-5 sm:p-7 lg:flex-row lg:items-center lg:justify-between">
@@ -223,10 +223,41 @@ function renderTeamCard(title, players, tone) {
   return `<section class="overflow-hidden rounded-2xl border border-ink/[.07] ${tone}"><header class="flex items-center justify-between px-4 py-3"><h3 class="font-bold">${title}</h3><span class="rounded-full bg-white/75 px-2.5 py-1 text-xs font-bold">${players.length}</span></header><ul class="bg-white/70">${rows}</ul></section>`;
 }
 
+function renderCaptainDraft(match) {
+  const draft = match.draft || {};
+  if (match.status !== "closed" || draft.status !== "in_progress" ||
+      ![draft.captainA, draft.captainB].includes(currentUser?.id)) return "";
+  const myTeam = currentUser.id === draft.captainA ? "A" : "B";
+  const isMyTurn = draft.currentTurn === myTeam;
+  const activeCaptainName = draft.currentTurn === "A"
+    ? users.find((player) => player.id === draft.captainA)?.name || "Capitán A"
+    : users.find((player) => player.id === draft.captainB)?.name || "Capitán B";
+  const available = match.available || [];
+  const remaining = draft.remaining?.length || 0;
+  const selectionHint = remaining === 3
+    ? "Quedan tres: el capitán A elige dos seguidos y el último jugador se asigna automáticamente al Equipo A."
+    : remaining === 2 && draft.currentTurn === "A"
+      ? "Al capitán A le queda una elección antes de que el último jugador se asigne automáticamente a su equipo."
+      : "Los capitanes alternan una elección cada uno.";
+  const playerCards = available.length
+    ? available.map((player) => `<button type="button" class="captain-draft-pick flex min-h-14 w-full items-center justify-between gap-3 rounded-xl border border-ink/10 bg-white px-4 py-3 text-left shadow-sm transition ${isMyTurn ? "hover:border-pitch-700 hover:bg-pitch-50 active:scale-[.99]" : "cursor-not-allowed opacity-55"}" data-match-id="${match.id}" data-player-id="${player.id}" ${isMyTurn ? "" : "disabled"}><span class="min-w-0 truncate text-sm font-semibold">${escapeHtml(player.name)}</span><span class="shrink-0 rounded-lg bg-pitch-100 px-2.5 py-1.5 text-[11px] font-extrabold text-pitch-800">${isMyTurn ? "Elegir" : "En espera"}</span></button>`).join("")
+    : `<p class="rounded-xl bg-white/70 p-4 text-sm text-ink/50">El draft se está completando.</p>`;
+  return `<section class="my-4 rounded-2xl border border-pitch-700/15 bg-pitch-50 p-4 sm:p-5" aria-live="polite">
+    <div class="flex flex-wrap items-start justify-between gap-3"><div><p class="text-[10px] font-extrabold uppercase tracking-[.13em] text-pitch-700">Elección de equipos</p><h3 class="display mt-1 text-xl font-extrabold">Eres capitán del Equipo ${myTeam}</h3></div><span class="rounded-full ${isMyTurn ? "bg-pitch-900 text-white" : "bg-white text-ink/60"} px-3 py-1.5 text-xs font-extrabold">${isMyTurn ? "TU TURNO" : `Turno de ${escapeHtml(activeCaptainName)}`}</span></div>
+    <p class="mt-2 text-sm leading-5 text-ink/60">${isMyTurn ? "Toca un jugador de la lista para sumarlo a tu equipo." : `${escapeHtml(activeCaptainName)} está eligiendo. La lista se actualizará automáticamente.`}</p>
+    <div class="mt-3 grid gap-2 sm:grid-cols-2">${playerCards}</div>
+    <p class="mt-3 text-[11px] leading-5 text-ink/45">${selectionHint} · ${remaining} ${remaining === 1 ? "jugador restante" : "jugadores restantes"}</p>
+  </section>`;
+}
+
 function renderMatchPanel(matchesData, isAdmin = false, showFinance = isAdmin) {
   const matches = matchesData.matches || [];
   if (!matches.length) return "";
-  let selected = matches.find((match) => match.id === Number(selectedMatchId));
+  const captainMatch = !isAdmin
+    ? matches.find((match) => match.draft?.status === "in_progress" &&
+      [match.draft.captainA, match.draft.captainB].includes(currentUser?.id))
+    : null;
+  let selected = captainMatch || matches.find((match) => match.id === Number(selectedMatchId));
   if (!selected) {
     selected = matches.find((match) => match.status === "closed") ||
       matches.find((match) => match.status === "played") || matches[0];
@@ -253,7 +284,7 @@ function renderMatchPanel(matchesData, isAdmin = false, showFinance = isAdmin) {
       ? `<form id="start-draft-form" data-match-id="${selected.id}" class="mt-4 rounded-xl bg-paper p-4"><p class="text-sm font-bold">Convocatoria cerrada · ${count} principales</p><p class="mt-1 text-xs text-ink/50">Elige los capitanes A y B. El capitán B empieza; al quedar tres jugadores, el capitán A elige dos y recibe automáticamente al último.</p><div class="mt-3 grid gap-2 sm:grid-cols-[1fr_1fr_auto] sm:items-end"><label class="text-xs font-semibold text-ink/55">Capitán A<select name="captainA" required class="mt-1 block w-full rounded-xl border border-ink/10 bg-white px-3 py-2.5 text-sm">${captainOptionsA}</select></label><label class="text-xs font-semibold text-ink/55">Capitán B<select name="captainB" required class="mt-1 block w-full rounded-xl border border-ink/10 bg-white px-3 py-2.5 text-sm">${captainOptionsB}</select></label><button class="rounded-xl bg-pitch-900 px-4 py-2.5 text-sm font-bold text-white">Iniciar draft</button></div></form>`
       : `<p class="mt-4 rounded-xl bg-amber-50 p-4 text-sm text-amber-800">No se puede iniciar el draft: hacen falta entre 14 y 16 confirmados principales; hay ${count}.</p>`;
   } else if (isAdmin && draft.status === "in_progress") {
-    adminControls = `<div class="mt-4 rounded-xl bg-paper p-4"><p class="text-sm font-bold">Turno de ${escapeHtml(turnName)} · Equipo ${draft.currentTurn}</p><p class="mt-1 text-xs text-ink/50">${available.length} jugadores disponibles</p><div class="mt-3 flex flex-col gap-2 sm:flex-row"><select id="draft-player" class="min-w-0 flex-1 rounded-xl border border-ink/10 bg-white px-3 py-2.5 text-sm">${available.map((player) => `<option value="${player.id}">${escapeHtml(player.name)}${player.ranking_position ? ` · #${player.ranking_position}` : ""}</option>`).join("")}</select><button id="draft-pick" data-match-id="${selected.id}" ${available.length ? "" : "disabled"} class="rounded-xl bg-pitch-900 px-4 py-2.5 text-sm font-bold text-white disabled:opacity-40">Elegir jugador</button></div></div>`;
+    adminControls = `<div class="mt-4 rounded-xl bg-paper p-4"><p class="text-sm font-bold">Elección en curso · Turno del Equipo ${draft.currentTurn}</p><p class="mt-1 text-xs text-ink/50">Le toca a ${escapeHtml(turnName)}. Los capitanes eligen desde sus perfiles; la lista se actualiza automáticamente.</p></div>`;
   } else if (selected.status === "open") {
     adminControls = `<p class="mt-4 rounded-xl bg-paper p-4 text-sm text-ink/55">El draft estará disponible después de cerrar la convocatoria.</p>`;
   } else if (draft.status === "complete") {
@@ -261,13 +292,18 @@ function renderMatchPanel(matchesData, isAdmin = false, showFinance = isAdmin) {
   }
   const scoreText = selected.result === "draw" ? "Empate" : selected.result ? `Victoria del Equipo ${selected.result}` : "";
   const finance = selected.finance;
-  const financeControl = isAdmin && showFinance && completed && !finance
-    ? `<form id="match-finance-form" data-match-id="${selected.id}" class="mt-4 grid gap-3 rounded-xl border border-ink/[.07] bg-white p-4 sm:grid-cols-[1fr_1fr_auto] sm:items-end"><label><span class="mb-1.5 block text-xs font-semibold text-ink/55">Coste pista (€)</span><input name="pitch_cost" type="number" min="0" step="0.01" required class="w-full rounded-xl border border-ink/10 px-3 py-2.5 text-sm"/></label><label><span class="mb-1.5 block text-xs font-semibold text-ink/55">Cobro por jugador (€)</span><input name="fee_per_player" type="number" min="0" step="0.01" required class="w-full rounded-xl border border-ink/10 px-3 py-2.5 text-sm"/></label><button class="rounded-xl bg-pitch-900 px-4 py-2.5 text-sm font-bold text-white">Registrar cobro</button><p class="text-xs text-ink/45 sm:col-span-3">Cada participante paga el importe indicado; la diferencia total tras cubrir la pista se suma al bote.</p></form>`
-    : finance ? `<div class="mt-4 grid gap-2 rounded-xl bg-white p-4 text-xs text-ink/60 sm:grid-cols-3"><span>Pista: <b class="text-ink">${formatMoney(finance.pitch_cost)}</b></span><span>Cobrado: <b class="text-ink">${formatMoney(finance.total_collected)}</b></span><span>Al bote: <b class="text-pitch-800">${formatMoney(finance.pot_added)}</b></span></div>` : "";
+  const financeControl = isAdmin && showFinance
+    ? finance
+      ? `<div class="mt-4 grid gap-2 rounded-xl bg-white p-4 text-xs text-ink/60 sm:grid-cols-4"><span>Precio total: <b class="text-ink">${formatMoney(finance.pitch_cost)}</b></span><span>Cuota por jugador: <b class="text-ink">${formatMoney(finance.fee_per_player)}</b></span><span>Cobrado (${finance.participants}): <b class="text-ink">${formatMoney(finance.total_collected)}</b></span><span>Al bote: <b class="text-pitch-800">${formatMoney(finance.pot_added)}</b></span></div>`
+      : `<p class="mt-4 rounded-xl bg-paper p-4 text-sm text-ink/55">${selected.pitch_price == null ? "Configura el Precio por Partido desde la pestaña Finanzas." : `Precio configurado: ${formatMoney(selected.pitch_price)}.`} El descuento se aplicará automáticamente al guardar el resultado.</p>`
+    : "";
+  const canSaveResult = selected.status === "played" || Boolean(finance) || selected.pitch_price != null;
   const resultControl = isAdmin && completed
-    ? `<form id="match-result-form" data-match-id="${selected.id}" data-existing="${selected.status === "played"}" class="mt-4 flex flex-col gap-2 rounded-xl bg-white p-4 sm:flex-row sm:items-end"><label class="flex-1"><span class="mb-1.5 block text-xs font-semibold text-ink/55">Resultado final</span><select name="result" required class="w-full rounded-xl border border-ink/10 bg-white px-3 py-2.5 text-sm"><option value="A" ${selected.result === "A" ? "selected" : ""}>Gana Equipo A</option><option value="B" ${selected.result === "B" ? "selected" : ""}>Gana Equipo B</option><option value="draw" ${selected.result === "draw" ? "selected" : ""}>Empate</option></select></label><button class="rounded-xl bg-lime px-4 py-2.5 text-sm font-extrabold text-pitch-950">${selected.status === "played" ? "Actualizar resultado y puntos" : "Guardar resultado y puntos"}</button></form>`
+    ? canSaveResult
+      ? `<form id="match-result-form" data-match-id="${selected.id}" data-existing="${selected.status === "played"}" class="mt-4 flex flex-col gap-2 rounded-xl bg-white p-4 sm:flex-row sm:items-end"><label class="flex-1"><span class="mb-1.5 block text-xs font-semibold text-ink/55">Resultado final</span><select name="result" required class="w-full rounded-xl border border-ink/10 bg-white px-3 py-2.5 text-sm"><option value="A" ${selected.result === "A" ? "selected" : ""}>Gana Equipo A</option><option value="B" ${selected.result === "B" ? "selected" : ""}>Gana Equipo B</option><option value="draw" ${selected.result === "draw" ? "selected" : ""}>Empate</option></select></label><button class="rounded-xl bg-lime px-4 py-2.5 text-sm font-extrabold text-pitch-950">${selected.status === "played" ? "Actualizar resultado y puntos" : finance ? "Guardar resultado y puntos" : "Guardar resultado y cobrar"}</button></form>${selected.status !== "played" && !finance ? `<p class="mt-2 text-xs text-ink/45">Se cobrará ${formatMoney(selected.pitch_price)} entre quienes jugaron; cualquier redondeo se suma al bote.</p>` : ""}`
+      : `<p class="mt-4 rounded-xl bg-amber-50 p-4 text-sm text-amber-800">Antes de guardar el resultado, define el Precio por Partido en Finanzas.</p>`
     : selected.status === "played" ? `<p class="mt-4 rounded-xl bg-lime/20 p-4 text-sm font-bold text-pitch-900">Resultado: ${scoreText}. Puntuación guardada: asistencia +1, victoria +3 extra, empate +1 extra.</p>` : "";
-  return `<section class="mb-7 rounded-3xl border border-ink/[.07] bg-white p-5 shadow-sm sm:p-6"><div class="mb-4 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between"><div><p class="text-xs font-bold uppercase tracking-[.12em] text-pitch-700">Partidos</p><h2 class="display mt-1 text-2xl font-extrabold">${escapeHtml(matchLabel(selected))}</h2><p class="mt-1 text-xs text-ink/50">${selected.status === "played" ? "Partido jugado" : selected.status === "closed" ? "Convocatoria cerrada" : "Convocatoria abierta"}</p></div><div class="w-full sm:max-w-xs">${selection}</div></div><div class="grid gap-3 sm:grid-cols-2">${renderTeamCard("Equipo A", selected.teamA || [], "bg-pitch-100 text-pitch-900")}${renderTeamCard("Equipo B", selected.teamB || [], "bg-amber-50 text-amber-900")}</div>${adminControls}${financeControl}${resultControl}</section>`;
+  return `<section class="mb-7 rounded-3xl border border-ink/[.07] bg-white p-5 shadow-sm sm:p-6"><div class="mb-4 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between"><div><p class="text-xs font-bold uppercase tracking-[.12em] text-pitch-700">Partidos</p><h2 class="display mt-1 text-2xl font-extrabold">${escapeHtml(matchLabel(selected))}</h2><p class="mt-1 text-xs text-ink/50">${selected.status === "played" ? "Partido jugado" : selected.status === "closed" ? "Convocatoria cerrada" : "Convocatoria abierta"}</p></div><div class="w-full sm:max-w-xs">${selection}</div></div><div class="grid gap-3 sm:grid-cols-2">${renderTeamCard("Equipo A", selected.teamA || [], "bg-pitch-100 text-pitch-900")}${renderTeamCard("Equipo B", selected.teamB || [], "bg-amber-50 text-amber-900")}</div>${isAdmin ? adminControls : renderCaptainDraft(selected)}${financeControl}${resultControl}</section>`;
 }
 
 function renderMatchFinanceControl(matchesData) {
@@ -279,13 +315,12 @@ function renderMatchFinanceControl(matchesData) {
   const options = matches.map((match) =>
     `<option value="${match.id}" ${match.id === selected.id ? "selected" : ""}>${escapeHtml(matchLabel(match))} · ${match.status === "played" ? "jugado" : match.status === "closed" ? "cerrado" : "abierto"}</option>`,
   ).join("");
-  const draftComplete = selected.draft?.status === "complete";
   const action = selected.finance
-    ? `<div class="grid gap-2 rounded-xl bg-paper p-4 text-xs text-ink/60 sm:grid-cols-3"><span>Pista: <b class="text-ink">${formatMoney(selected.finance.pitch_cost)}</b></span><span>Cobrado: <b class="text-ink">${formatMoney(selected.finance.total_collected)}</b></span><span>Al bote: <b class="text-pitch-800">${formatMoney(selected.finance.pot_added)}</b></span></div>`
-    : draftComplete
-      ? `<form id="match-finance-form" data-match-id="${selected.id}" class="grid gap-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end"><label><span class="mb-1.5 block text-xs font-semibold text-ink/55">Coste de pista (€)</span><input name="pitch_cost" type="number" min="0" step="0.01" required class="w-full rounded-xl border border-ink/10 px-3 py-2.5 text-sm"/></label><label><span class="mb-1.5 block text-xs font-semibold text-ink/55">Cobro por jugador (€)</span><input name="fee_per_player" type="number" min="0" step="0.01" required class="w-full rounded-xl border border-ink/10 px-3 py-2.5 text-sm"/></label><button class="rounded-xl bg-pitch-900 px-4 py-2.5 text-sm font-bold text-white">Registrar cobro</button><p class="text-xs text-ink/45 sm:col-span-3">Se descuenta a cada integrante de los equipos; el sobrante se suma al bote.</p></form>`
-      : `<p class="rounded-xl bg-paper p-4 text-sm text-ink/55">Completa el draft del partido para habilitar el cobro.</p>`;
-  return `<section class="mb-5 rounded-2xl border border-ink/[.07] bg-white p-5 shadow-sm"><div class="mb-4 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between"><div><h3 class="font-bold">Cobro de partido y pista</h3><p class="mt-1 text-xs text-ink/50">Cada jugador paga la cuota fijada; el sobrante alimenta el bote.</p></div><label class="text-xs font-semibold text-ink/55 sm:w-64">Partido<select id="finance-match-picker" class="mt-1 block w-full rounded-xl border border-ink/10 bg-white px-3 py-2.5 text-sm">${options}</select></label></div>${action}</section>`;
+    ? `<div class="grid gap-2 rounded-xl bg-paper p-4 text-xs text-ink/60 sm:grid-cols-4"><span>Precio total: <b class="text-ink">${formatMoney(selected.finance.pitch_cost)}</b></span><span>Cuota individual: <b class="text-ink">${formatMoney(selected.finance.fee_per_player)}</b></span><span>Cobrado (${selected.finance.participants}): <b class="text-ink">${formatMoney(selected.finance.total_collected)}</b></span><span>Al bote: <b class="text-pitch-800">${formatMoney(selected.finance.pot_added)}</b></span></div>`
+    : selected.status === "played"
+      ? `<div class="rounded-xl bg-paper p-4 text-sm text-ink/55">Este partido ya tiene resultado, pero no conserva un cobro automático histórico.</div>`
+      : `<form id="match-price-form" data-match-id="${selected.id}" class="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end"><label><span class="mb-1.5 block text-xs font-semibold text-ink/55">Precio por Partido · coste total de pista/reserva (€)</span><input name="price_total" type="number" min="0" step="0.01" required value="${selected.pitch_price ?? ""}" placeholder="Ej. 60,00" class="w-full rounded-xl border border-ink/10 px-3 py-2.5 text-sm"/></label><button class="rounded-xl bg-pitch-900 px-4 py-2.5 text-sm font-bold text-white">${selected.pitch_price == null ? "Guardar precio" : "Actualizar precio"}</button><p class="text-xs text-ink/45 sm:col-span-2">Al guardar el resultado, se dividirá entre los jugadores de los equipos, redondeando la cuota al céntimo superior; el sobrante irá al bote.</p></form>`;
+  return `<section class="mb-5 rounded-2xl border border-ink/[.07] bg-white p-5 shadow-sm"><div class="mb-4 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between"><div><h3 class="font-bold">Precio del partido y cobro automático</h3><p class="mt-1 text-xs text-ink/50">La cuota se descuenta una vez al guardar el primer resultado.</p></div><label class="text-xs font-semibold text-ink/55 sm:w-64">Partido<select id="finance-match-picker" class="mt-1 block w-full rounded-xl border border-ink/10 bg-white px-3 py-2.5 text-sm">${options}</select></label></div>${action}</section>`;
 }
 
 function renderStandingsBoard(data) {
@@ -625,11 +660,13 @@ async function renderAdmin() {
     }
     form.querySelector("button").disabled = true;
     try {
-      await api("/api/admin/convocations/current/close", {
+       const closed = await api("/api/admin/convocations/current/close", {
         method: "POST",
         body: JSON.stringify(payload),
       });
-      showToast("Convocatoria cerrada.");
+       showToast(closed.match.draft?.status === "in_progress"
+         ? "Convocatoria cerrada. Empieza el capitán B desde su perfil."
+         : "Convocatoria cerrada.");
       activeAdminTab = "convocatoria";
       await renderAdmin();
     } catch (error) {
@@ -665,7 +702,7 @@ async function renderAdmin() {
         }),
       });
       showToast("Ajuste registrado en el historial financiero.");
-      activeAdminTab = "finanzas";
+       activeAdminTab = "partidos";
       await renderAdmin();
     } catch (error) {
       showToast(error.message);
@@ -799,6 +836,23 @@ function bindMatchActions(isAdmin = false) {
     activeAdminTab = "finanzas";
     await renderAdmin();
   });
+  document.querySelectorAll(".captain-draft-pick").forEach((button) => {
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      try {
+        const match = await api(`/api/matches/${button.dataset.matchId}/draft/pick`, {
+          method: "POST",
+          body: JSON.stringify({ userId: Number(button.dataset.playerId) }),
+        });
+        selectedMatchId = match.id;
+        showToast(match.draft.status === "complete" ? "Draft completo. Los equipos ya están publicados." : "Elección guardada.");
+        await renderHome();
+      } catch (error) {
+        showToast(error.message);
+        button.disabled = false;
+      }
+    });
+  });
   if (!isAdmin) return;
   document.querySelector("#start-draft-form")?.addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -824,36 +878,19 @@ function bindMatchActions(isAdmin = false) {
       button.disabled = false;
     }
   });
-  document.querySelector("#draft-pick")?.addEventListener("click", async (event) => {
-    const button = event.currentTarget;
-    const userId = Number(document.querySelector("#draft-player").value);
-    button.disabled = true;
-    try {
-      const match = await api(`/api/admin/matches/${button.dataset.matchId}/draft/pick`, {
-        method: "POST",
-        body: JSON.stringify({ userId }),
-      });
-      selectedMatchId = match.id;
-      showToast(match.draft.status === "complete" ? "Draft completo. Equipos guardados." : "Jugador elegido.");
-      activeAdminTab = "partidos";
-      await renderAdmin();
-    } catch (error) {
-      showToast(error.message);
-      button.disabled = false;
-    }
-  });
-  document.querySelector("#match-finance-form")?.addEventListener("submit", async (event) => {
+  document.querySelector("#match-price-form")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = event.currentTarget;
     const payload = Object.fromEntries(new FormData(form).entries());
     form.querySelector("button").disabled = true;
     try {
-      await api(`/api/admin/matches/${form.dataset.matchId}/finance`, {
+      const { match } = await api(`/api/admin/matches/${form.dataset.matchId}/price`, {
         method: "POST",
         body: JSON.stringify(payload),
       });
-      showToast("Cobro aplicado; los saldos y el bote se han actualizado.");
-      activeAdminTab = "partidos";
+      selectedMatchId = match.id;
+      showToast("Precio del partido guardado; el cobro se aplicará al registrar el resultado.");
+      activeAdminTab = "finanzas";
       await renderAdmin();
     } catch (error) {
       showToast(error.message);
@@ -868,11 +905,15 @@ function bindMatchActions(isAdmin = false) {
         !confirm("Esto actualizará el resultado y recalculará los puntos de este partido. ¿Continuar?")) return;
     form.querySelector("button").disabled = true;
     try {
-      await api(`/api/admin/matches/${form.dataset.matchId}/result`, {
+      const resultResponse = await api(`/api/admin/matches/${form.dataset.matchId}/result`, {
         method: "POST",
         body: JSON.stringify({ result }),
       });
-      showToast(form.dataset.existing === "true" ? "Resultado actualizado y puntos recalculados." : "Resultado guardado y puntos asignados.");
+      showToast(resultResponse.charged
+        ? "Resultado guardado, cuota descontada y puntos asignados."
+        : form.dataset.existing === "true"
+          ? "Resultado actualizado; el cobro no se ha repetido."
+          : "Resultado guardado y puntos asignados; el cobro ya estaba registrado.");
       activeAdminTab = "partidos";
       await renderAdmin();
     } catch (error) {
@@ -1052,7 +1093,31 @@ async function refreshConvocationIfChanged() {
   }
 }
 
-setInterval(refreshConvocationIfChanged, 30000);
+let pollingDraft = false;
+async function refreshLiveDraftIfChanged() {
+  if (!currentUser || document.visibilityState !== "visible" || pollingDraft ||
+      document.querySelector('[role="dialog"]')) return;
+  const isDesignatedCaptain = matchData?.matches?.some((match) =>
+    match.draft?.status === "in_progress" &&
+    [match.draft.captainA, match.draft.captainB].includes(currentUser.id),
+  );
+  if (!isDesignatedCaptain) return;
+  pollingDraft = true;
+  try {
+    const latest = await api("/api/matches");
+    if (JSON.stringify(latest) !== JSON.stringify(matchData)) {
+      matchData = latest;
+      await renderHome();
+    }
+  } catch {
+    // The next poll will refresh the draft when the connection returns.
+  } finally {
+    pollingDraft = false;
+  }
+}
+
+setInterval(refreshConvocationIfChanged, 15000);
+setInterval(refreshLiveDraftIfChanged, 4000);
 
 async function start() {
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch((error) => console.warn("No se pudo registrar el service worker:", error));
