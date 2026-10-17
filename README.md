@@ -48,18 +48,21 @@ La pantalla de entrada usa alias y contraseña con hashes bcrypt y sesiones prot
 ## Convocatorias y avisos
 
 - El servidor crea una convocatoria semanal para el martes actual y la cierra el lunes siguiente a las 20:00, usando la zona horaria `Europe/Madrid`.
-- Los jugadores pueden responder «Sí voy» o «No voy». Los principales que confirman entran en Lista principal; los suplentes, en Lista de suplentes; y las bajas, en Lista NO VAN. El administrador conserva un rol base configurable y puede responder, pero no cuenta como jugador activo en convocatorias, draft, cobros, puntos ni clasificación.
+- Los jugadores pueden responder «Sí voy» o «No voy». Los principales que confirman entran en Lista principal; los suplentes, en Lista de suplentes; y las bajas, en Lista NO VAN. Admin es un rol exclusivamente administrativo: no puede responder ni aparecer en las listas, los equipos, cobros, saldo de jugador, puntos o clasificación.
 - El administrador puede promover a principal a una persona de la lista de suplentes mientras la convocatoria siga abierta. La interfaz indica como válida una lista principal de 14 a 16 personas.
-- Con VAPID configurado, se envía automáticamente el aviso de apertura el martes a las 00:05 y un recordatorio el viernes a las 10:00, hora de Madrid. El recordatorio se limita a las suscripciones cuyos usuarios aún no han respondido. El admin también puede disparar manualmente cada campaña.
-- Al promocionar a un suplente, el servidor envía una notificación individual a sus dispositivos suscritos. Las campañas de apertura se limitan a cuentas activas; las alertas de saldo negativo se envían a jugadores activos con saldo negativo que hayan confirmado asistencia.
+- El panel Admin tiene navegación separada para Convocatoria, Avisos, Finanzas, Partidos y Jugadores. Puede abrir o cerrar la convocatoria; si hay 14–16 principales, al cerrarla asigna manualmente a los capitanes A y B.
+- Con VAPID configurado, se envía automáticamente el aviso de apertura el martes a las 00:05 y el recordatorio el viernes a las 10:00, hora de Madrid. El recordatorio solo incluye a jugadores activos sin respuesta. Desde el centro de avisos, Admin puede disparar apertura, recordatorio, alerta de saldo negativo y aviso individual a un jugador de la Lista Principal. Las campañas grupales excluyen a Admin.
+- Promover a un suplente no envía push automáticamente; Admin puede disparar el aviso individual desde la lista principal o el centro de avisos. Las alertas de saldo negativo se limitan a jugadores convocados con saldo negativo.
 - Cada dispositivo debe activar los avisos desde el botón de la app. El navegador exige permiso del usuario; instalar la PWA o iniciar sesión no concede ese permiso automáticamente. Las entregas requieren HTTPS y un navegador compatible con Web Push.
 
 ## Partidos, saldos y clasificación
 
-- Al cerrarse la convocatoria, el admin puede iniciar el draft si hay entre 14 y 16 principales confirmados. El ranking #1 queda en el Equipo A y el #2 en el B; empieza el #2 y se alternan las elecciones hasta tres disponibles. Entonces el #1 elige dos seguidos y recibe automáticamente al último.
-- Los partidos se muestran con sus plantillas y resultados. Para administrar el draft, cobro y resultado se selecciona el partido en el panel.
+- Al cerrarse la convocatoria, Admin puede iniciar el draft si hay entre 14 y 16 principales confirmados. Elige manualmente a los capitanes A y B; empieza B y se alternan las elecciones hasta que quedan tres. Entonces A elige dos seguidos y recibe automáticamente al último.
+- Los partidos se muestran con sus plantillas y resultados. Admin puede corregir un resultado ya guardado; al hacerlo, se recalculan los puntos del partido sin duplicarlos.
 - El admin introduce el coste de pista y el importe cobrado a cada jugador. Se debita ese importe a cada integrante de los equipos, se registra el movimiento en `transactions` y la diferencia entre el total cobrado y la pista se acumula en el bote. El cobro se registra una sola vez por partido y el total debe cubrir la pista.
+- Desde Finanzas, Admin ve los saldos de jugadores activos, registra ajustes positivos o negativos con concepto y consulta movimientos recientes. Los cambios directos de saldo desde la ficha del jugador también generan un movimiento de ajuste.
 - El día del partido se interpreta como el martes posterior al cierre de convocatoria. La alerta de saldo negativo se programa el lunes a las 10:00 (hora de Madrid), dirigida solo a dispositivos suscritos de usuarios con saldo negativo; el admin también puede enviarla manualmente.
 - Al guardar el resultado (Equipo A, Equipo B o empate), cada jugador participante recibe automáticamente +1 por asistencia, +3 adicionales por victoria o +1 adicional por empate. La clasificación suma estos puntos entre partidos.
+- La gestión de jugadores permite buscar, crear, editar, reiniciar contraseñas (el jugador debe cambiarlas al entrar) y retirar cuentas. Retirar conserva movimientos y resultados históricos y revoca el acceso.
 
 La base incluye las tablas `users`, `matches`, `convocations`, `transactions`, `push_subscriptions`, `push_campaigns`, `match_finances`, `match_points`, `balance_alert_campaigns` y `app_settings`.
