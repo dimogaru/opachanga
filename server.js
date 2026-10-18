@@ -126,6 +126,22 @@ db.exec(`
     PRIMARY KEY (match_id, user_id)
   );
 
+  CREATE TABLE IF NOT EXISTS standing_adjustments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    admin_id INTEGER NOT NULL REFERENCES users(id),
+    points_delta INTEGER NOT NULL,
+    matches_played_delta INTEGER NOT NULL,
+    wins_delta INTEGER NOT NULL,
+    draws_delta INTEGER NOT NULL,
+    losses_delta INTEGER NOT NULL,
+    reason TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_standing_adjustments_user
+    ON standing_adjustments(user_id, id);
+
   CREATE TABLE IF NOT EXISTS balance_alert_campaigns (
     match_id INTEGER PRIMARY KEY REFERENCES matches(id) ON DELETE CASCADE,
     status TEXT NOT NULL DEFAULT 'sending' CHECK (status IN ('sending', 'sent', 'failed')),
@@ -282,6 +298,7 @@ if (replitWorkspace) {
     db.prepare("DELETE FROM push_subscriptions").run();
     db.prepare("DELETE FROM push_campaigns").run();
     db.prepare("DELETE FROM balance_alert_campaigns").run();
+    db.prepare("DELETE FROM standing_adjustments").run();
     db.prepare("DELETE FROM match_points").run();
     db.prepare("DELETE FROM transactions").run();
     db.prepare("DELETE FROM convocations").run();
@@ -302,7 +319,7 @@ if (replitWorkspace) {
     db.prepare(`
       DELETE FROM sqlite_sequence
       WHERE name IN ('matches', 'convocations', 'transactions', 'push_subscriptions',
-        'push_campaigns', 'match_points', 'balance_alert_campaigns')
+        'push_campaigns', 'match_points', 'standing_adjustments', 'balance_alert_campaigns')
     `).run();
     db.prepare("UPDATE sqlite_sequence SET seq = ? WHERE name = 'users'").run(admin.id);
     return true;
@@ -1412,21 +1429,169 @@ app.get("/api/matches", requireUser, (_req, res) => {
   res.json({ matches, pot: currentPot() });
 });
 
-app.get("/api/standings", requireUser, (_req, res) => {
-  const rows = db.prepare(`
+function getStandingsRows() {
+  return db.prepare(`
     SELECT u.id, u.alias, u.base_role, u.ranking_position,
-      COALESCE(SUM(mp.points), 0) AS points,
-      COALESCE(SUM(CASE WHEN mp.result = 'win' THEN 1 ELSE 0 END), 0) AS wins,
-      COALESCE(SUM(CASE WHEN mp.result = 'draw' THEN 1 ELSE 0 END), 0) AS draws,
-      COALESCE(SUM(CASE WHEN mp.result = 'loss' THEN 1 ELSE 0 END), 0) AS losses,
-      COUNT(mp.match_id) AS matches_played
+      COALESCE(mp.points, 0) + COALESCE(sa.points_delta, 0) AS points,
+      COALESCE(mp.wins, 0) + COALESCE(sa.wins_delta, 0) AS wins,
+      COALESCE(mp.draws, 0) + COALESCE(sa.draws_delta, 0) AS draws,
+      COALESCE(mp.losses, 0) + COALESCE(sa.losses_delta, 0) AS losses,
+      COALESCE(mp.matches_played, 0) + COALESCE(sa.matches_played_delta, 0) AS matches_played
     FROM users u
-    LEFT JOIN match_points mp ON mp.user_id = u.id
+    LEFT JOIN (
+      SELECT user_id, SUM(points) AS points,
+        SUM(CASE WHEN result = 'win' THEN 1 ELSE 0 END) AS wins,
+        SUM(CASE WHEN result = 'draw' THEN 1 ELSE 0 END) AS draws,
+        SUM(CASE WHEN result = 'loss' THEN 1 ELSE 0 END) AS losses,
+        COUNT(*) AS matches_played
+      FROM match_points
+      GROUP BY user_id
+    ) mp ON mp.user_id = u.id
+    LEFT JOIN (
+      SELECT user_id, SUM(points_delta) AS points_delta,
+        SUM(matches_played_delta) AS matches_played_delta,
+        SUM(wins_delta) AS wins_delta,
+        SUM(draws_delta) AS draws_delta,
+        SUM(losses_delta) AS losses_delta
+      FROM standing_adjustments
+      GROUP BY user_id
+    ) sa ON sa.user_id = u.id
     WHERE u.account_status = 'active' AND u.role != 'admin' AND u.deleted_at IS NULL
-    GROUP BY u.id
-    ORDER BY points DESC, wins DESC, u.name COLLATE NOCASE
+    ORDER BY points DESC, wins DESC, u.alias COLLATE NOCASE
   `).all();
-  res.json({ standings: rows, pot: currentPot() });
+}
+
+function getMatchStandingTotals(userId) {
+  return db.prepare(`
+    SELECT COALESCE(SUM(points), 0) AS points,
+      SUM(CASE WHEN result = 'win' THEN 1 ELSE 0 END) AS wins,
+      SUM(CASE WHEN result = 'draw' THEN 1 ELSE 0 END) AS draws,
+      SUM(CASE WHEN result = 'loss' THEN 1 ELSE 0 END) AS losses,
+      COUNT(*) AS matches_played
+    FROM match_points
+    WHERE user_id = ?
+  `).get(userId);
+}
+
+function getManualStandingDeltas(userId) {
+  return db.prepare(`
+    SELECT COALESCE(SUM(points_delta), 0) AS points,
+      COALESCE(SUM(matches_played_delta), 0) AS matches_played,
+      COALESCE(SUM(wins_delta), 0) AS wins,
+      COALESCE(SUM(draws_delta), 0) AS draws,
+      COALESCE(SUM(losses_delta), 0) AS losses
+    FROM standing_adjustments
+    WHERE user_id = ?
+  `).get(userId);
+}
+
+app.get("/api/admin/standings/adjustments", requireAdmin, (_req, res) => {
+  const adjustments = db.prepare(`
+    SELECT sa.id, sa.user_id, player.alias AS player_alias,
+      sa.admin_id, admin.alias AS admin_alias,
+      sa.points_delta, sa.matches_played_delta, sa.wins_delta,
+      sa.draws_delta, sa.losses_delta, sa.reason, sa.created_at
+    FROM standing_adjustments sa
+    JOIN users player ON player.id = sa.user_id
+    JOIN users admin ON admin.id = sa.admin_id
+    ORDER BY sa.id DESC
+    LIMIT 50
+  `).all();
+  res.json({ adjustments });
+});
+
+app.post("/api/admin/standings/adjustments", requireAdmin, (req, res) => {
+  const userId = Number(req.body?.user_id);
+  const fields = ["points", "matches_played", "wins", "draws", "losses"];
+  const targets = {};
+  for (const field of fields) {
+    const value = req.body?.[field];
+    const number = Number(value);
+    if (value === undefined || value === null || value === "" || !Number.isSafeInteger(number)) {
+      return res.status(400).json({ error: `El campo ${field} debe ser un número entero válido.` });
+    }
+    targets[field] = number;
+  }
+  const reason = typeof req.body?.reason === "string" ? req.body.reason.trim() : "";
+  if (!Number.isSafeInteger(userId) || userId < 1) {
+    return res.status(400).json({ error: "Selecciona un jugador válido." });
+  }
+  if (targets.matches_played < 0 || targets.wins < 0 || targets.draws < 0 || targets.losses < 0) {
+    return res.status(400).json({ error: "Los partidos jugados y sus resultados no pueden ser negativos." });
+  }
+  if (targets.matches_played !== targets.wins + targets.draws + targets.losses) {
+    return res.status(400).json({ error: "Partidos jugados debe coincidir con ganados + empatados + perdidos." });
+  }
+  if (!reason || reason.length > 500) {
+    return res.status(400).json({ error: "Indica un motivo de hasta 500 caracteres." });
+  }
+
+  try {
+    const adjustmentId = db.transaction(() => {
+      const player = db.prepare(`
+        SELECT id FROM users
+        WHERE id = ? AND role != 'admin'
+          AND account_status = 'active' AND deleted_at IS NULL
+      `).get(userId);
+      if (!player) {
+        const error = new Error("No se encontró un jugador activo para ajustar.");
+        error.status = 404;
+        throw error;
+      }
+
+      const matches = getMatchStandingTotals(userId);
+      const manual = getManualStandingDeltas(userId);
+      const current = {
+        points: matches.points + manual.points,
+        matches_played: matches.matches_played + manual.matches_played,
+        wins: matches.wins + manual.wins,
+        draws: matches.draws + manual.draws,
+        losses: matches.losses + manual.losses,
+      };
+      const deltas = Object.fromEntries(fields.map((field) => [field, targets[field] - current[field]]));
+      if (Object.values(deltas).every((delta) => delta === 0)) {
+        const error = new Error("Los totales indicados ya coinciden con la clasificación actual.");
+        error.status = 409;
+        throw error;
+      }
+
+      const result = db.prepare(`
+        INSERT INTO standing_adjustments (
+          user_id, admin_id, points_delta, matches_played_delta,
+          wins_delta, draws_delta, losses_delta, reason
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        userId,
+        req.session.user.id,
+        deltas.points,
+        deltas.matches_played,
+        deltas.wins,
+        deltas.draws,
+        deltas.losses,
+        reason,
+      );
+      return Number(result.lastInsertRowid);
+    }).immediate();
+
+    const adjustment = db.prepare(`
+      SELECT sa.id, sa.user_id, player.alias AS player_alias,
+        sa.admin_id, admin.alias AS admin_alias,
+        sa.points_delta, sa.matches_played_delta, sa.wins_delta,
+        sa.draws_delta, sa.losses_delta, sa.reason, sa.created_at
+      FROM standing_adjustments sa
+      JOIN users player ON player.id = sa.user_id
+      JOIN users admin ON admin.id = sa.admin_id
+      WHERE sa.id = ?
+    `).get(adjustmentId);
+    res.status(201).json({ adjustment, standings: getStandingsRows() });
+  } catch (error) {
+    console.error("No se pudo ajustar la clasificación:", error.message);
+    res.status(error.status || 500).json({ error: error.status ? error.message : "No se pudo guardar el ajuste de clasificación." });
+  }
+});
+
+app.get("/api/standings", requireUser, (_req, res) => {
+  res.json({ standings: getStandingsRows(), pot: currentPot() });
 });
 
 app.post("/api/admin/matches/:id/draft/start", requireAdmin, (req, res) => {

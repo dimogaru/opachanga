@@ -12,6 +12,7 @@ let pushConfig = { enabled: false, publicKey: null };
 let selectedMatchId = null;
 let matchData = { matches: [], pot: 0 };
 let standingsData = { standings: [], pot: 0 };
+let standingAdjustmentsData = [];
 let pendingUsers = [];
 let financeData = { players: [], transactions: [], pot: 0 };
 let activeAdminTab = "convocatoria";
@@ -510,6 +511,31 @@ function renderStandingsBoard(data) {
   return `<section class="mb-7 overflow-hidden rounded-3xl border border-ink/[.07] bg-white shadow-sm"><div class="flex flex-col gap-3 border-b border-ink/[.07] p-5 sm:flex-row sm:items-center sm:justify-between sm:px-6"><div><p class="text-xs font-bold uppercase tracking-[.12em] text-pitch-700">Temporada</p><h2 class="display mt-1 text-2xl font-extrabold">Clasificación</h2><p class="mt-1 text-xs text-ink/50">Puntos globales por asistencia y resultado.</p></div><div class="rounded-2xl bg-lime/35 px-4 py-3"><p class="text-[10px] font-bold uppercase tracking-[.12em] text-pitch-900/60">Bote acumulado</p><p class="display text-xl font-extrabold text-pitch-900">${formatMoney(data.pot)}</p></div></div><div class="overflow-x-auto"><table class="w-full min-w-[560px] text-left"><thead class="bg-paper/70 text-[10px] font-bold uppercase tracking-[.12em] text-ink/45"><tr><th class="px-5 py-3">#</th><th class="px-4 py-3">Jugador</th><th class="px-4 py-3">Puntos</th><th class="px-4 py-3">PJ</th><th class="px-4 py-3">V-E-D</th></tr></thead><tbody class="divide-y divide-ink/[.06]">${rows.length ? rows.map((player, index) => `<tr><td class="px-5 py-3 text-sm font-bold text-pitch-700">${index + 1}</td><td class="px-4 py-3 text-sm font-semibold">${escapeHtml(player.alias)}</td><td class="px-4 py-3"><span class="rounded-full bg-pitch-100 px-2.5 py-1 text-xs font-extrabold text-pitch-900">${player.points}</span></td><td class="px-4 py-3 text-sm text-ink/55">${player.matches_played}</td><td class="px-4 py-3 text-sm text-ink/55">${player.wins}-${player.draws}-${player.losses}</td></tr>`).join("") : `<tr><td colspan="5" class="px-5 py-8 text-center text-sm text-ink/45">La clasificación empieza con el primer resultado.</td></tr>`}</tbody></table></div></section>`;
 }
 
+function renderStandingsAdjustmentPanel(data, adjustments = []) {
+  const players = data.standings || [];
+  const selected = players[0];
+  const fields = [
+    ["points", "Puntos totales"],
+    ["matches_played", "Partidos jugados"],
+    ["wins", "Ganados"],
+    ["draws", "Empatados"],
+    ["losses", "Perdidos"],
+  ];
+  const options = players.map((player) =>
+    `<option value="${player.id}" ${player.id === selected?.id ? "selected" : ""}>${escapeHtml(player.alias)}</option>`,
+  ).join("");
+  const inputs = fields.map(([name, label]) => {
+    const value = selected?.[name] ?? 0;
+    const min = name === "points" ? "" : 'min="0"';
+    return `<label class="block text-xs font-semibold text-ink/60">${label}<input name="${name}" type="number" step="1" ${min} required value="${value}" class="mt-1.5 w-full rounded-xl border border-ink/10 bg-white px-3 py-2.5 text-sm font-semibold text-ink"/></label>`;
+  }).join("");
+  const signed = (value) => `${value > 0 ? "+" : ""}${value}`;
+  const history = adjustments.length
+    ? `<div class="mt-5"><h4 class="text-sm font-bold">Últimos ajustes</h4><ul class="mt-2 divide-y divide-ink/[.06]">${adjustments.slice(0, 20).map((item) => `<li class="py-3"><div class="flex flex-wrap items-center justify-between gap-2"><span class="text-sm font-bold">@${escapeHtml(item.player_alias)}</span><span class="text-[11px] text-ink/45">${escapeHtml(item.created_at)} · Admin @${escapeHtml(item.admin_alias)}</span></div><p class="mt-1 text-xs leading-5 text-ink/60">${escapeHtml(item.reason)}</p><p class="mt-1 text-[11px] font-semibold text-pitch-800">Δ ${signed(item.points_delta)} puntos · ${signed(item.matches_played_delta)} PJ · ${signed(item.wins_delta)} G · ${signed(item.draws_delta)} E · ${signed(item.losses_delta)} P</p></li>`).join("")}</ul></div>`
+    : `<p class="mt-5 rounded-xl bg-paper p-3 text-xs text-ink/50">Aún no hay ajustes manuales registrados.</p>`;
+  return `<section class="mb-7 rounded-3xl border border-ink/[.07] bg-white p-5 shadow-sm sm:p-6"><details class="group"><summary class="flex cursor-pointer list-none items-center justify-between gap-3 rounded-xl bg-pitch-900 px-4 py-3.5 text-sm font-extrabold text-white"><span>Modificar Clasificación</span><span class="text-lime group-open:rotate-45" aria-hidden="true">＋</span></summary><div class="pt-4"><p class="mb-4 text-xs leading-5 text-ink/55">Define los nuevos totales. Se guarda solo la diferencia con el cálculo actual; los resultados e historiales de partidos no se modifican. Cada ajuste queda registrado con motivo.</p>${players.length ? `<form id="standings-adjustment-form" class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3"><label class="block text-xs font-semibold text-ink/60 sm:col-span-2 lg:col-span-1">Jugador · alias<select name="user_id" required class="mt-1.5 w-full rounded-xl border border-ink/10 bg-white px-3 py-2.5 text-sm font-semibold text-ink">${options}</select></label>${inputs}<label class="block text-xs font-semibold text-ink/60 sm:col-span-2 lg:col-span-3">Motivo del ajuste<textarea name="reason" required maxlength="500" rows="2" placeholder="Ej. Ajuste manual de puntos por sanción/corrección" class="mt-1.5 w-full resize-y rounded-xl border border-ink/10 bg-white px-3 py-2.5 text-sm font-normal text-ink"></textarea></label><div class="sm:col-span-2 lg:col-span-3"><button type="submit" class="w-full rounded-xl bg-lime px-4 py-3 text-sm font-extrabold text-pitch-950 transition hover:bg-lime/80 sm:w-auto">Guardar ajuste manual</button><span class="ml-3 text-[11px] text-ink/45">Solo Admin puede realizar esta acción.</span></div></form>` : `<p class="rounded-xl bg-paper p-4 text-sm text-ink/55">No hay jugadores activos para modificar.</p>`}${history}</div></details></section>`;
+}
+
 function renderApprovalPanel(pending) {
   const cards = pending.length
     ? pending.map((user) => `<form class="pending-approval-card grid gap-3 border-t border-ink/[.06] p-4 sm:grid-cols-[1fr_1fr_1fr_1fr_auto] sm:items-end" data-user-id="${user.id}"><div><p class="font-bold">${escapeHtml(`${user.first_name} ${user.last_name}`)}</p><p class="mt-0.5 text-xs text-ink/45">@${escapeHtml(user.alias)}</p></div><label><span class="mb-1 block text-[11px] font-semibold text-ink/55">Rol base</span><select name="base_role" class="w-full rounded-lg border border-ink/10 bg-white px-2.5 py-2 text-sm"><option value="principal">Principal</option><option value="suplente">Suplente</option></select></label><label><span class="mb-1 block text-[11px] font-semibold text-ink/55">Posición fija</span><input name="ranking_position" type="number" min="1" step="1" required placeholder="1" class="w-full rounded-lg border border-ink/10 px-2.5 py-2 text-sm"/></label><label><span class="mb-1 block text-[11px] font-semibold text-ink/55">Saldo inicial (€)</span><input name="balance" type="number" step="0.01" required value="0" class="w-full rounded-lg border border-ink/10 px-2.5 py-2 text-sm"/></label><button class="rounded-xl bg-pitch-900 px-4 py-2.5 text-xs font-bold text-white">Aprobar</button></form>`).join("")
@@ -796,6 +822,7 @@ async function renderAdmin() {
   }
   matchData = await api("/api/matches");
   standingsData = await api("/api/standings");
+  standingAdjustmentsData = (await api("/api/admin/standings/adjustments")).adjustments || [];
   pendingUsers = await api("/api/admin/pending-users");
   financeData = await api("/api/admin/finance/overview");
   pushConfig = await api("/api/push/config").catch(() => ({ enabled: false, publicKey: null }));
@@ -825,6 +852,7 @@ async function renderAdmin() {
     <section class="admin-tab-panel ${activeAdminTab === "partidos" ? "" : "hidden"}" data-admin-panel="partidos">
       ${renderMatchPanel(matchData, true, false)}
       ${renderStandingsBoard(standingsData)}
+      ${renderStandingsAdjustmentPanel(standingsData, standingAdjustmentsData)}
     </section>
     <section class="admin-tab-panel ${activeAdminTab === "jugadores" ? "" : "hidden"}" data-admin-panel="jugadores">
       ${renderPlayerManagementPanel(players, pendingUsers)}
@@ -844,6 +872,37 @@ async function renderAdmin() {
         item.setAttribute("aria-pressed", String(active));
       });
     });
+  });
+  const standingsAdjustmentForm = document.querySelector("#standings-adjustment-form");
+  standingsAdjustmentForm?.elements.user_id.addEventListener("change", (event) => {
+    const player = standingsData.standings.find((item) => item.id === Number(event.target.value));
+    if (!player) return;
+    for (const field of ["points", "matches_played", "wins", "draws", "losses"]) {
+      standingsAdjustmentForm.elements[field].value = player[field];
+    }
+  });
+  standingsAdjustmentForm?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const button = form.querySelector('button[type="submit"]');
+    const values = Object.fromEntries(new FormData(form).entries());
+    for (const field of ["user_id", "points", "matches_played", "wins", "draws", "losses"]) {
+      values[field] = Number(values[field]);
+    }
+    button.disabled = true;
+    try {
+      const response = await api("/api/admin/standings/adjustments", {
+        method: "POST",
+        body: JSON.stringify(values),
+      });
+      standingsData = { ...standingsData, standings: response.standings };
+      showToast(`Clasificación ajustada para @${response.adjustment.player_alias}.`);
+      activeAdminTab = "partidos";
+      await renderAdmin();
+    } catch (error) {
+      showToast(error.message);
+      button.disabled = false;
+    }
   });
   document.querySelector("#new-player")?.addEventListener("click", () => openPlayerModal());
   document.querySelectorAll(".edit-player").forEach((button) => {
@@ -1435,9 +1494,15 @@ async function refreshConvocationIfChanged() {
     const selectedEndpoint = currentUser.role === "admin" && selectedConvocationId
       ? `/api/convocations/${selectedConvocationId}`
       : "/api/convocations/current";
-    const latest = await api(selectedEndpoint);
-    if (JSON.stringify(latest) !== JSON.stringify(convocationData)) {
+    const [latest, latestStandings] = await Promise.all([
+      api(selectedEndpoint),
+      api("/api/standings"),
+    ]);
+    const convocationChanged = JSON.stringify(latest) !== JSON.stringify(convocationData);
+    const standingsChanged = JSON.stringify(latestStandings) !== JSON.stringify(standingsData);
+    if (convocationChanged || standingsChanged) {
       convocationData = latest;
+      standingsData = latestStandings;
       await renderHome();
     }
   } catch {
