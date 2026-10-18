@@ -1543,7 +1543,8 @@ async function openPlayerProfile(userId) {
     return;
   }
 
-  const canEdit = currentUser?.role === "admin" || currentUser?.id === profile.id;
+  const canEditText = currentUser?.role === "admin";
+  const canEditPhoto = canEditText || currentUser?.id === profile.id;
   const overlay = document.createElement("div");
   overlay.className = "fixed inset-0 z-50 grid place-items-center overflow-y-auto bg-pitch-950/65 p-3 backdrop-blur-sm sm:p-5";
   overlay.innerHTML = `
@@ -1551,28 +1552,28 @@ async function openPlayerProfile(userId) {
       <header class="relative overflow-hidden bg-pitch-900 px-5 pb-5 pt-4 text-white sm:px-7 sm:pb-6">
         <div class="absolute -right-8 -top-16 h-48 w-48 rounded-full border border-white/10"></div>
         <div class="relative flex items-start justify-between gap-4">
-          <div><p class="text-[10px] font-bold uppercase tracking-[.16em] text-lime">${canEdit ? "Ficha de jugador" : "Perfil de jugador"}</p><h2 id="profile-modal-title" class="display mt-1 text-2xl font-extrabold">Perfil de ${escapeHtml(profile.alias)}</h2><p class="mt-1 text-xs text-white/60">${canEdit ? "Tu perfil, tu forma de jugar." : "Ficha técnica del jugador."}</p></div>
+          <div><p class="text-[10px] font-bold uppercase tracking-[.16em] text-lime">${canEditPhoto ? "Ficha de jugador" : "Perfil de jugador"}</p><h2 id="profile-modal-title" class="display mt-1 text-2xl font-extrabold">Perfil de ${escapeHtml(profile.alias)}</h2><p class="mt-1 text-xs text-white/60">${canEditText ? "Edita los datos técnicos del jugador." : canEditPhoto ? "Puedes actualizar tu foto; los datos de juego los gestiona el Admin." : "Ficha técnica del jugador."}</p></div>
           <button type="button" class="close-profile grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-white/10 text-white transition hover:bg-white/20" aria-label="Cerrar perfil">✕</button>
         </div>
         <div class="relative mt-5 flex items-center gap-4">
           ${profileAvatar(profile.photo_url, profile.alias)}
-          <div class="min-w-0"><p class="truncate text-lg font-extrabold">@${escapeHtml(profile.alias)}</p><p class="mt-1 text-xs text-white/60">${canEdit ? "Perfil visible para el equipo" : "Información compartida con el equipo"}</p></div>
+          <div class="min-w-0"><p class="truncate text-lg font-extrabold">@${escapeHtml(profile.alias)}</p><p class="mt-1 text-xs text-white/60">${canEditPhoto ? "Perfil visible para el equipo" : "Información compartida con el equipo"}</p></div>
         </div>
       </header>
       <form id="profile-form" class="space-y-4 p-5 sm:p-7">
-        ${canEdit ? `<div class="rounded-2xl border border-ink/[.07] bg-white p-4"><label class="block text-xs font-bold text-ink/60">Foto de perfil<input id="profile-photo-file" type="file" accept="image/*" capture="user" class="mt-2 block w-full text-xs file:mr-3 file:rounded-lg file:border-0 file:bg-pitch-100 file:px-3 file:py-2 file:font-bold file:text-pitch-900"/></label><div class="mt-2 flex items-center justify-between gap-3"><span class="text-[11px] text-ink/45">Recorte cuadrado, se muestra redondeada. Máximo 256 KB tras comprimir.</span><button type="button" id="clear-profile-photo" class="shrink-0 text-[11px] font-bold text-red-700 ${profile.photo_url ? "" : "hidden"}">Quitar foto</button></div><p id="profile-photo-error" class="mt-2 hidden text-xs font-semibold text-red-700" role="alert"></p></div>` : ""}
-        <label class="block text-xs font-bold text-ink/60">Alias público<input name="alias" required minlength="3" maxlength="24" pattern="[A-Za-zÀ-ÿ0-9._-]{3,24}" value="${escapeHtml(profile.alias)}" ${canEdit ? "" : "readonly"} class="mt-1.5 w-full rounded-xl border border-ink/10 bg-white px-3.5 py-3 text-sm font-semibold text-ink outline-none focus:border-pitch-700 ${canEdit ? "" : "text-ink/70"}"/></label>
+        ${canEditPhoto ? `<div class="rounded-2xl border border-ink/[.07] bg-white p-4"><label class="block text-xs font-bold text-ink/60">Foto de perfil<input id="profile-photo-file" type="file" accept="image/*" capture="user" class="mt-2 block w-full text-xs file:mr-3 file:rounded-lg file:border-0 file:bg-pitch-100 file:px-3 file:py-2 file:font-bold file:text-pitch-900"/></label><div class="mt-2 flex items-center justify-between gap-3"><span class="text-[11px] text-ink/45">Recorte cuadrado, se muestra redondeada. Máximo 256 KB tras comprimir.</span><button type="button" id="clear-profile-photo" class="shrink-0 text-[11px] font-bold text-red-700 ${profile.photo_url ? "" : "hidden"}">Quitar foto</button></div><p id="profile-photo-error" class="mt-2 hidden text-xs font-semibold text-red-700" role="alert"></p></div>` : ""}
+        <label class="block text-xs font-bold text-ink/60">Alias público<input name="alias" required minlength="3" maxlength="24" pattern="[A-Za-zÀ-ÿ0-9._-]{3,24}" value="${escapeHtml(profile.alias)}" ${canEditText ? "" : "readonly"} class="mt-1.5 w-full rounded-xl border border-ink/10 ${canEditText ? "bg-white" : "bg-paper"} px-3.5 py-3 text-sm font-semibold text-ink outline-none focus:border-pitch-700"/></label>
         <div class="grid gap-3 sm:grid-cols-2">
-          <label class="block text-xs font-bold text-ink/60">Dónde juega<input name="preferred_position" list="profile-position-options" maxlength="60" value="${escapeHtml(profile.preferred_position || "")}" placeholder="Ej. Extremo izquierdo" ${canEdit ? "" : "readonly"} class="mt-1.5 w-full rounded-xl border border-ink/10 bg-white px-3.5 py-3 text-sm font-normal outline-none focus:border-pitch-700"/></label>
+          <label class="block text-xs font-bold text-ink/60">Dónde juega<input name="preferred_position" list="profile-position-options" maxlength="60" value="${escapeHtml(profile.preferred_position || "")}" placeholder="Ej. Extremo izquierdo" ${canEditText ? "" : "readonly"} class="mt-1.5 w-full rounded-xl border border-ink/10 ${canEditText ? "bg-white" : "bg-paper"} px-3.5 py-3 text-sm font-normal outline-none focus:border-pitch-700"/></label>
           <datalist id="profile-position-options"><option value="Portero"><option value="Defensa"><option value="Centrocampista"><option value="Delantero"><option value="Extremo"><option value="Lateral"><option value="Mediocentro"></datalist>
         </div>
-        <label class="block text-xs font-bold text-ink/60">Puntos fuertes<textarea name="strong_points" maxlength="1000" rows="2" placeholder="Ej. Gran disparo con la zurda, buen pase" ${canEdit ? "" : "readonly"} class="mt-1.5 w-full resize-y rounded-xl border border-ink/10 bg-white px-3.5 py-3 text-sm font-normal leading-5 outline-none focus:border-pitch-700">${escapeHtml(profile.strong_points || "")}</textarea></label>
-        <label class="block text-xs font-bold text-ink/60">Puntos débiles<textarea name="weak_points" maxlength="1000" rows="2" placeholder="Ej. Juego aéreo, repliegue defensivo" ${canEdit ? "" : "readonly"} class="mt-1.5 w-full resize-y rounded-xl border border-ink/10 bg-white px-3.5 py-3 text-sm font-normal leading-5 outline-none focus:border-pitch-700">${escapeHtml(profile.weak_points || "")}</textarea></label>
-        <label class="block text-xs font-bold text-ink/60">Otros datos<textarea name="other_details" maxlength="2000" rows="3" placeholder="Ej. Prefiere jugar en la banda izquierda" ${canEdit ? "" : "readonly"} class="mt-1.5 w-full resize-y rounded-xl border border-ink/10 bg-white px-3.5 py-3 text-sm font-normal leading-5 outline-none focus:border-pitch-700">${escapeHtml(profile.other_details || "")}</textarea></label>
+        <label class="block text-xs font-bold text-ink/60">Puntos fuertes<textarea name="strong_points" maxlength="1000" rows="2" placeholder="Ej. Gran disparo con la zurda, buen pase" ${canEditText ? "" : "readonly"} class="mt-1.5 w-full resize-y rounded-xl border border-ink/10 ${canEditText ? "bg-white" : "bg-paper"} px-3.5 py-3 text-sm font-normal leading-5 outline-none focus:border-pitch-700">${escapeHtml(profile.strong_points || "")}</textarea></label>
+        <label class="block text-xs font-bold text-ink/60">Puntos débiles<textarea name="weak_points" maxlength="1000" rows="2" placeholder="Ej. Juego aéreo, repliegue defensivo" ${canEditText ? "" : "readonly"} class="mt-1.5 w-full resize-y rounded-xl border border-ink/10 ${canEditText ? "bg-white" : "bg-paper"} px-3.5 py-3 text-sm font-normal leading-5 outline-none focus:border-pitch-700">${escapeHtml(profile.weak_points || "")}</textarea></label>
+        <label class="block text-xs font-bold text-ink/60">Otros datos<textarea name="other_details" maxlength="2000" rows="3" placeholder="Ej. Prefiere jugar en la banda izquierda" ${canEditText ? "" : "readonly"} class="mt-1.5 w-full resize-y rounded-xl border border-ink/10 ${canEditText ? "bg-white" : "bg-paper"} px-3.5 py-3 text-sm font-normal leading-5 outline-none focus:border-pitch-700">${escapeHtml(profile.other_details || "")}</textarea></label>
         <div id="profile-form-error" class="hidden rounded-xl bg-red-50 px-3 py-2.5 text-sm text-red-700" role="alert"></div>
-        ${canEdit
-          ? `<button type="submit" class="w-full rounded-xl bg-pitch-900 px-4 py-3 text-sm font-extrabold text-white transition hover:bg-pitch-800 disabled:opacity-50">Guardar perfil</button>`
-          : `<p class="rounded-xl bg-white px-4 py-3 text-center text-xs text-ink/45">Solo el jugador y el Administrador pueden editar esta ficha.</p>`}
+        ${canEditPhoto
+          ? `<button type="submit" class="w-full rounded-xl bg-pitch-900 px-4 py-3 text-sm font-extrabold text-white transition hover:bg-pitch-800 disabled:opacity-50">${canEditText ? "Guardar cambios" : "Guardar fotografía"}</button>`
+          : `<p class="rounded-xl bg-white px-4 py-3 text-center text-xs text-ink/45">Solo el Administrador puede modificar estos datos.</p>`}
       </form>
     </section>`;
   document.body.append(overlay);
@@ -1582,7 +1583,7 @@ async function openPlayerProfile(userId) {
   overlay.addEventListener("click", (event) => { if (event.target === overlay) close(); });
   overlay.addEventListener("keydown", (event) => { if (event.key === "Escape") close(); });
 
-  if (!canEdit) return;
+  if (!canEditPhoto) return;
   const form = overlay.querySelector("#profile-form");
   const avatar = overlay.querySelector("[data-profile-avatar]");
   const photoInput = overlay.querySelector("#profile-photo-file");
@@ -1625,7 +1626,7 @@ async function openPlayerProfile(userId) {
     const errorBox = form.querySelector("#profile-form-error");
     submit.disabled = true;
     errorBox.classList.add("hidden");
-    const values = Object.fromEntries(new FormData(form).entries());
+    const values = canEditText ? Object.fromEntries(new FormData(form).entries()) : {};
     values.photo_url = photoUrl;
     try {
       const response = await api(`/api/users/${profile.id}/profile`, {
@@ -1634,7 +1635,7 @@ async function openPlayerProfile(userId) {
       });
       if (currentUser.id === profile.id) currentUser.alias = response.profile.alias;
       close();
-      showToast("Perfil actualizado.");
+      showToast(canEditText ? "Perfil actualizado." : "Fotografía actualizada.");
       await loadUsers();
       await renderHome();
     } catch (error) {
@@ -1643,7 +1644,8 @@ async function openPlayerProfile(userId) {
       submit.disabled = false;
     }
   });
-  form.elements.alias.focus();
+  if (canEditText) form.elements.alias.focus();
+  else photoInput.focus();
 }
 
 function openPlayerModal(player = null) {

@@ -29,8 +29,8 @@ description: Reglas de negocio semanales para convocatorias, equipos, cobros y c
 
 ## Fotos de perfil
 
-**Regla:** Las fotos de perfil se comprimen en el navegador y se guardan como data URL en SQLite, con un límite de 256 KB por imagen. Las respuestas de listas no incluyen estos datos; se consultan al abrir la ficha.
+**Regla:** Las fotos de perfil se comprimen en el navegador y se guardan como data URL en SQLite, con un límite de 256 KB por imagen. Las respuestas de listas no incluyen estos datos; se consultan al abrir la ficha. Cada jugador solo puede actualizar su propia foto; alias y datos técnicos son de solo lectura para jugadores. Solo Admin edita esos campos de cualquier jugador.
 
 **Why:** La app está pensada para un grupo pequeño en un servidor propio. Guardar imágenes pequeñas en la misma base evita añadir un directorio de medios y dependencias de almacenamiento que también habría que respaldar.
 
-**How to apply:** Mantener la compresión y validación estricta de tipo y tamaño; si el tamaño de la plantilla crece de forma sustancial, migrar las fotos a un almacenamiento persistente y mantener solo la URL/ruta en SQLite.
+**How to apply:** Mantener la compresión y validación estricta de tipo y tamaño; limitar las escrituras del jugador al campo `photo_url` tanto en la UI como en el backend. Proteger las modificaciones de alias y datos técnicos con rol Admin; si el tamaño de la plantilla crece de forma sustancial, migrar las fotos a un almacenamiento persistente y mantener solo la URL/ruta en SQLite.

@@ -1066,6 +1066,42 @@ app.patch("/api/users/:id/profile", requireUser, (req, res) => {
   if (!current) return res.status(404).json({ error: "No se encontró la ficha de ese jugador." });
 
   const body = req.body || {};
+  if (!isAdmin && (Object.keys(body).some((field) => field !== "photo_url") || body.photo_url === undefined)) {
+    return res.status(403).json({ error: "Los jugadores solo pueden actualizar su propia fotografía de perfil." });
+  }
+
+  let photoUrl = current.photo_url;
+  if (body.photo_url !== undefined) {
+    photoUrl = body.photo_url === null || body.photo_url === "" ? null : body.photo_url;
+    if (photoUrl !== null) {
+      const match = typeof photoUrl === "string"
+        ? photoUrl.match(/^data:image\/(webp|jpeg|png);base64,([A-Za-z0-9+/]+={0,2})$/)
+        : null;
+      if (!match) {
+        return res.status(400).json({ error: "La foto debe ser una imagen WebP, JPEG o PNG válida." });
+      }
+      const imageBytes = Buffer.from(match[2], "base64");
+      const hasValidHeader = match[1] === "webp"
+        ? imageBytes.length >= 12 && imageBytes.toString("ascii", 0, 4) === "RIFF" && imageBytes.toString("ascii", 8, 12) === "WEBP"
+        : match[1] === "jpeg"
+          ? imageBytes.length >= 3 && imageBytes[0] === 0xff && imageBytes[1] === 0xd8 && imageBytes[2] === 0xff
+          : imageBytes.length >= 8 && imageBytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+      if (imageBytes.length > maxProfilePhotoBytes || !hasValidHeader) {
+        return res.status(400).json({ error: "La foto no es válida o supera el límite de 256 KB." });
+      }
+    }
+  }
+
+  if (!isAdmin) {
+    db.prepare("UPDATE users SET photo_url = ? WHERE id = ?").run(photoUrl, id);
+    return res.json({
+      profile: db.prepare(`
+        SELECT id, alias, photo_url, strong_points, weak_points, preferred_position, other_details
+        FROM users WHERE id = ?
+      `).get(id),
+    });
+  }
+
   const alias = body.alias === undefined
     ? current.alias
     : typeof body.alias === "string" ? body.alias.trim().normalize("NFKC").toLowerCase() : null;
@@ -1091,28 +1127,6 @@ app.patch("/api/users/:id/profile", requireUser, (req, res) => {
       return res.status(400).json({ error: `${label} debe ser texto de ${limit} caracteres o menos.` });
     }
     profileValues[field] = value;
-  }
-
-  let photoUrl = current.photo_url;
-  if (body.photo_url !== undefined) {
-    photoUrl = body.photo_url === null || body.photo_url === "" ? null : body.photo_url;
-    if (photoUrl !== null) {
-      const match = typeof photoUrl === "string"
-        ? photoUrl.match(/^data:image\/(webp|jpeg|png);base64,([A-Za-z0-9+/]+={0,2})$/)
-        : null;
-      if (!match) {
-        return res.status(400).json({ error: "La foto debe ser una imagen WebP, JPEG o PNG válida." });
-      }
-      const imageBytes = Buffer.from(match[2], "base64");
-      const hasValidHeader = match[1] === "webp"
-        ? imageBytes.length >= 12 && imageBytes.toString("ascii", 0, 4) === "RIFF" && imageBytes.toString("ascii", 8, 12) === "WEBP"
-        : match[1] === "jpeg"
-          ? imageBytes.length >= 3 && imageBytes[0] === 0xff && imageBytes[1] === 0xd8 && imageBytes[2] === 0xff
-          : imageBytes.length >= 8 && imageBytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
-      if (imageBytes.length > maxProfilePhotoBytes || !hasValidHeader) {
-        return res.status(400).json({ error: "La foto no es válida o supera el límite de 256 KB." });
-      }
-    }
   }
 
   try {

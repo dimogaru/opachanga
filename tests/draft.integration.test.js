@@ -631,7 +631,7 @@ test("el draft equilibra plantillas de 14 y 16 jugadores y valida los turnos", a
   });
 });
 
-test("las fichas de jugador se pueden consultar, editar por su titular y administrar con permisos", async () => {
+test("los jugadores solo actualizan su foto y Admin puede editar todos los datos de perfil", async () => {
   const ownPath = `/api/users/${context.playerIds[1]}/profile`;
   const publicProfile = await get(ownPath, context.captainACookie);
   assert.equal(publicProfile.response.status, 200);
@@ -645,32 +645,37 @@ test("las fichas de jugador se pueden consultar, editar por su titular y adminis
   });
   assert.equal(deniedEdit.response.status, 403);
 
-  const duplicateAlias = await patch(`/api/users/${context.playerIds[0]}/profile`, context.captainACookie, {
-    alias: "draft2",
+  const deniedTextEdit = await patch(`/api/users/${context.playerIds[0]}/profile`, context.captainACookie, {
+    alias: "draft1",
+    preferred_position: "Extremo",
+    strong_points: "Buen pase",
+    photo_url: "data:image/webp;base64,UklGRnh4eHhXRUJQ",
   });
-  assert.equal(duplicateAlias.response.status, 409);
+  assert.equal(deniedTextEdit.response.status, 403);
 
   const ownUpdate = await patch(`/api/users/${context.playerIds[0]}/profile`, context.captainACookie, {
-    alias: "draft1",
-    strong_points: "Buen pase",
-    weak_points: "Juego aéreo",
-    preferred_position: "Extremo",
-    other_details: "Prefiere la banda izquierda",
     photo_url: "data:image/webp;base64,UklGRnh4eHhXRUJQ",
   });
   assert.equal(ownUpdate.response.status, 200, JSON.stringify(ownUpdate.payload));
   assert.equal(ownUpdate.payload.profile.photo_url, "data:image/webp;base64,UklGRnh4eHhXRUJQ");
-  assert.equal(ownUpdate.payload.profile.strong_points, "Buen pase");
+  assert.equal(ownUpdate.payload.profile.alias, "draft1");
+  assert.equal(ownUpdate.payload.profile.strong_points, "");
+  assert.equal(ownUpdate.payload.profile.preferred_position, "");
 
   const adminUpdate = await patch(`/api/users/${context.playerIds[2]}/profile`, context.adminCookie, {
     alias: "draft3",
     preferred_position: "Portero",
+    strong_points: "Buen juego aéreo",
+    weak_points: "Salida con el pie",
+    other_details: "Prefiere jugar de portero",
   });
   assert.equal(adminUpdate.response.status, 200, JSON.stringify(adminUpdate.payload));
   assert.equal(adminUpdate.payload.profile.preferred_position, "Portero");
+  assert.equal(adminUpdate.payload.profile.strong_points, "Buen juego aéreo");
+  assert.equal(adminUpdate.payload.profile.weak_points, "Salida con el pie");
+  assert.equal(adminUpdate.payload.profile.other_details, "Prefiere jugar de portero");
 
   const invalidPhoto = await patch(`/api/users/${context.playerIds[0]}/profile`, context.captainACookie, {
-    alias: "draft1",
     photo_url: "data:image/svg+xml;base64,PHN2Zz4=",
   });
   assert.equal(invalidPhoto.response.status, 400);
