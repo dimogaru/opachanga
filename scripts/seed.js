@@ -34,38 +34,6 @@ const players = [
   rankingPosition: index + 1,
 }));
 
-function madridParts(date = new Date()) {
-  const parts = new Intl.DateTimeFormat("en-GB", {
-    timeZone: "Europe/Madrid",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-  }).formatToParts(date);
-  return Object.fromEntries(parts.filter((part) => part.type !== "literal").map((part) => [part.type, part.value]));
-}
-
-function formatUtcDate(date) {
-  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}-${String(date.getUTCDate()).padStart(2, "0")}`;
-}
-
-function dateOffset(dateString, days) {
-  const date = new Date(`${dateString}T00:00:00Z`);
-  date.setUTCDate(date.getUTCDate() + days);
-  return formatUtcDate(date);
-}
-
-function currentConvocationDates() {
-  const now = madridParts();
-  const tuesday = new Date(Date.UTC(Number(now.year), Number(now.month) - 1, Number(now.day)));
-  const daysSinceTuesday = (tuesday.getUTCDay() - 2 + 7) % 7;
-  tuesday.setUTCDate(tuesday.getUTCDate() - daysSinceTuesday);
-  const startDate = formatUtcDate(tuesday);
-  return { startDate, endDate: `${dateOffset(startDate, 6)}T20:00:00`, now: `${now.year}-${now.month}-${now.day}T${now.hour}:${now.minute}:00` };
-}
-
 function tableExists(db, name) {
   return Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name));
 }
@@ -80,14 +48,13 @@ let db;
 try {
   db = new Database(databasePath);
   db.pragma("foreign_keys = ON");
-  for (const table of ["users", "matches", "convocations"]) {
+  for (const table of ["users"]) {
     if (!tableExists(db, table)) {
       throw new Error(`Falta la tabla ${table}; inicia la aplicación una vez antes de ejecutar la semilla.`);
     }
   }
 
   const seed = db.transaction(() => {
-    const { startDate, endDate, now } = currentConvocationDates();
     const findAlias = db.prepare("SELECT id, role FROM users WHERE alias COLLATE NOCASE = ?");
     const seedAccounts = players.map((player) => {
       const existing = findAlias.get(player.alias);
@@ -138,48 +105,11 @@ try {
       }
     }
 
-    let match = db.prepare("SELECT * FROM matches WHERE start_date = ?").get(startDate);
-    if (!match) {
-      const created = db.prepare(`
-        INSERT INTO matches (start_date, end_date, status) VALUES (?, ?, 'open')
-      `).run(startDate, endDate);
-      match = db.prepare("SELECT * FROM matches WHERE id = ?").get(created.lastInsertRowid);
-    }
-    if (match.status !== "open" || now >= match.end_date) {
-      throw new Error(`La convocatoria del ${startDate} no está abierta; no se reabrió ni modificó.`);
-    }
-    if (match.result || JSON.parse(match.draft_state || "{}").status ||
-        JSON.parse(match.team_a || "[]").length || JSON.parse(match.team_b || "[]").length ||
-        db.prepare("SELECT 1 FROM match_finances WHERE match_id = ?").get(match.id) ||
-        db.prepare("SELECT 1 FROM match_points WHERE match_id = ?").get(match.id)) {
-      throw new Error("La convocatoria ya tiene draft, resultado o actividad financiera/deportiva; no se modificó.");
-    }
-
-    const placeholders = [...seedIds].map(() => "?").join(", ");
-    const otherResponses = db.prepare(`
-      SELECT u.alias FROM convocations c JOIN users u ON u.id = c.user_id
-      WHERE c.match_id = ? AND u.role != 'admin' AND u.account_status = 'active'
-        AND u.deleted_at IS NULL AND u.id NOT IN (${placeholders})
-    `).all(match.id, ...seedIds);
-    if (otherResponses.length) {
-      throw new Error(`La convocatoria ya tiene respuestas de otros jugadores (${otherResponses.map((user) => user.alias).join(", ")}); no se modificó.`);
-    }
-
-    const setYes = db.prepare(`
-      INSERT INTO convocations (match_id, user_id, status)
-      VALUES (?, ?, 'principal')
-      ON CONFLICT(match_id, user_id) DO UPDATE SET status = 'principal', updated_at = CURRENT_TIMESTAMP
-    `);
-    for (const player of seedAccounts) setYes.run(match.id, player.id);
-
     return {
-      matchId: match.id,
-      startDate,
       players: seedAccounts.length,
       baseRolePrincipal: seedAccounts.filter((player) => player.baseRole === "principal").length,
       baseRoleSuplente: seedAccounts.filter((player) => player.baseRole === "suplente").length,
-      confirmedInListaPrincipal: seedAccounts.length,
-      note: "Los cuatro suplentes conservan su rol base y quedan promovidos en esta convocatoria para habilitar el draft de 14.",
+      note: "La semilla no crea ni abre convocatorias; Admin debe abrirlas y asignar la fecha del partido manualmente.",
     };
   });
 

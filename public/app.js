@@ -128,6 +128,7 @@ async function togglePushSubscription() {
 }
 
 function formatConvocationDate(match) {
+  if (match.match_date) return `Partido · ${formatMatchDate(match)}`;
   const start = new Date(`${match.start_date}T12:00:00Z`);
   const end = new Date(`${match.end_date.slice(0, 10)}T12:00:00Z`);
   const fmt = (date) => date.toLocaleDateString("es-ES", { day: "numeric", month: "short", timeZone: "UTC" });
@@ -135,10 +136,41 @@ function formatConvocationDate(match) {
 }
 
 function formatConvocationRange(match) {
+  if (match.match_date) return `Partido ${formatMatchDate(match)}`;
   const start = new Date(`${match.start_date}T12:00:00Z`);
   const end = new Date(`${match.end_date.slice(0, 10)}T12:00:00Z`);
   const fmt = (date) => date.toLocaleDateString("es-ES", { day: "numeric", month: "short", timeZone: "UTC" });
   return `Jornada ${fmt(start)} - ${fmt(end)}`;
+}
+
+function formatSpanishDate(dateString) {
+  if (typeof dateString !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(dateString)) return null;
+  const date = new Date(`${dateString}T12:00:00Z`);
+  if (Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== dateString) return null;
+  const parts = new Intl.DateTimeFormat("es-ES", {
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+    timeZone: "UTC",
+  }).formatToParts(date);
+  const values = Object.fromEntries(parts.filter((part) => part.type !== "literal").map((part) => [part.type, part.value]));
+  const titleCase = (value) => value.charAt(0).toLocaleUpperCase("es-ES") + value.slice(1);
+  return `${titleCase(values.weekday)}, ${values.day} de ${titleCase(values.month)}`;
+}
+
+function formatMatchDate(match) {
+  return formatSpanishDate(match?.match_date) || match?.match_date_label || "Fecha por definir";
+}
+
+function madridDateInputValue(date = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Europe/Madrid",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const values = Object.fromEntries(parts.filter((part) => part.type !== "literal").map((part) => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day}`;
 }
 
 function convocationStatusLabel(status) {
@@ -146,7 +178,8 @@ function convocationStatusLabel(status) {
 }
 
 function renderConvocationHistorySelector(data, history) {
-  const rows = history.length ? history : [data.match];
+  const rows = history.length ? history : data.match ? [data.match] : [];
+  if (!rows.length) return "";
   return `<div class="mb-4 rounded-2xl border border-ink/[.07] bg-white p-4 shadow-sm">
     <label for="convocation-history-picker" class="mb-2 block text-xs font-bold uppercase tracking-[.1em] text-ink/50">Historial de convocatorias</label>
     <select id="convocation-history-picker" class="w-full rounded-xl border border-ink/10 bg-paper px-3 py-3 text-sm font-semibold text-ink outline-none transition focus:border-pitch-700 sm:max-w-xl">
@@ -213,7 +246,32 @@ function listPanel(title, usersInList, colorClass, icon, isAdmin = false, showBa
   </section>`;
 }
 
+function renderNewConvocationControl(match, history = []) {
+  const hasActiveMatch = history.some((item) => item.is_active);
+  if (hasActiveMatch || (match && match.status !== "played")) return "";
+  const sourceMatchId = match?.status === "played" ? match.id : "";
+  return `<div class="mt-2 w-full">
+    <button id="show-new-convocation-date" type="button" class="w-full rounded-xl bg-lime px-4 py-3 text-sm font-extrabold text-pitch-950 shadow-sm transition hover:bg-lime/90 focus:outline-none focus:ring-2 focus:ring-lime focus:ring-offset-2 focus:ring-offset-pitch-900">Abrir Nueva Convocatoria</button>
+    <form id="new-convocation-form" data-source-match-id="${sourceMatchId}" class="mt-3 hidden rounded-xl border border-white/15 bg-white/[.08] p-3">
+      <label class="block text-xs font-bold text-white/80">Fecha del Partido
+        <input name="match_date" type="date" min="${madridDateInputValue()}" required class="mt-1.5 w-full rounded-lg border border-white/15 bg-white px-2.5 py-2.5 text-sm font-semibold text-ink"/>
+      </label>
+      <p class="mt-2 text-[11px] leading-4 text-white/55">El grupo verá esta fecha. La convocatoria solo se cerrará cuando la cierre Admin.</p>
+      <button class="mt-3 w-full rounded-lg bg-white px-3 py-2.5 text-xs font-extrabold text-pitch-900">Confirmar fecha y abrir</button>
+    </form>
+  </div>`;
+}
+
 function renderConvocationBoard(data, isAdmin = false, history = []) {
+  if (!data.match) {
+    return `${isAdmin ? renderConvocationHistorySelector(data, history) : ""}
+      <section class="mb-7 rounded-3xl bg-pitch-900 p-5 text-white shadow-card sm:p-7">
+        <span class="inline-flex rounded-full bg-white/15 px-3 py-1.5 text-[10px] font-bold tracking-[.12em]">SIN CONVOCATORIA ABIERTA</span>
+        <h2 class="display mt-4 text-2xl font-extrabold sm:text-3xl">${isAdmin ? "Abre la próxima convocatoria" : "Aún no hay convocatoria abierta"}</h2>
+        <p class="mt-2 max-w-xl text-sm leading-6 text-white/65">${isAdmin ? "La fecha y la apertura se deciden manualmente desde Administración." : "El administrador anunciará la fecha del próximo partido cuando abra la convocatoria."}</p>
+        ${isAdmin ? renderNewConvocationControl(null, history) : ""}
+      </section>`;
+  }
   const open = data.match.status === "open";
   const readOnly = data.match.readOnly === true;
   const readinessText = data.validForMatch
@@ -246,16 +304,16 @@ function renderConvocationBoard(data, isAdmin = false, history = []) {
     <section class="mb-7 overflow-hidden rounded-3xl bg-pitch-900 text-white shadow-card">
       <div class="flex flex-col gap-6 p-5 sm:p-7 lg:flex-row lg:items-center lg:justify-between">
         <div class="max-w-xl">
-          <div class="flex flex-wrap items-center gap-2"><span class="rounded-full ${open ? "bg-lime/15 text-lime" : "bg-white/15 text-white/70"} px-3 py-1.5 text-[10px] font-bold tracking-[.12em]">${data.match.status === "played" ? "PARTIDO JUGADO" : open ? "CONVOCATORIA ABIERTA" : "CONVOCATORIA CERRADA"}</span><span class="text-xs text-white/50">${formatConvocationDate(data.match)}</span></div>
+          <div class="flex flex-wrap items-center gap-2"><span class="rounded-full ${open ? "bg-lime/15 text-lime" : "bg-white/15 text-white/70"} px-3 py-1.5 text-[10px] font-bold tracking-[.12em]">${data.match.status === "played" ? "PARTIDO JUGADO" : open ? "CONVOCATORIA ABIERTA" : "CONVOCATORIA CERRADA"}</span><span class="text-xs text-white/50">${formatConvocationDate(data.match)}</span>${!isAdmin ? `<span class="rounded-full bg-lime px-3 py-1.5 text-[10px] font-extrabold tracking-[.08em] text-pitch-950">PRÓXIMO PARTIDO: ${escapeHtml(formatMatchDate(data.match))}</span>` : ""}</div>
           <h2 class="display mt-4 text-2xl font-extrabold tracking-tight sm:text-3xl">${isAdmin ? readOnly ? "Historial de convocatoria" : "Control de convocatoria" : "¿Cuentas con nosotros?"}</h2>
-          <p class="mt-1 text-sm text-white/60">${isAdmin ? "Administra el plazo y revisa las respuestas del grupo." : "Responde antes del lunes a las 20:00."}</p>
+          <p class="mt-1 text-sm text-white/60">${isAdmin ? "La apertura y el cierre se realizan manualmente. Revisa las respuestas del grupo." : "Responde antes del día del partido a las 20:00 h para confirmar tu asistencia."}</p>
           <div class="mt-4 flex items-center gap-2 text-sm font-semibold ${data.validForMatch ? "text-lime" : "text-white/80"}"><span class="grid h-6 w-6 place-items-center rounded-full ${data.validForMatch ? "bg-lime/15 text-lime" : "bg-white/10"}">${data.validForMatch ? "✓" : "!"}</span>${readinessText}</div>
         </div>
         <div class="flex min-w-[210px] flex-col gap-3 rounded-2xl border border-white/10 bg-white/[.06] p-4">
            <div class="flex items-end justify-between"><span class="text-xs font-semibold text-white/60">Lista principal</span><span class="display text-3xl font-extrabold ${data.validForMatch ? "text-lime" : "text-white"}">${data.principalCount}<span class="text-base font-semibold text-white/40"> / 14 o 16</span></span></div>
           <div class="h-2 overflow-hidden rounded-full bg-white/10"><div class="h-full rounded-full ${data.validForMatch ? "bg-lime" : "bg-white/70"} transition-all" style="width:${Math.min(100, Math.round((data.principalCount / 16) * 100))}%"></div></div>
            <span class="text-[11px] text-white/45">${readOnly ? `${data.responseCount} respuestas guardadas` : `${data.responseCount} respuestas · ${data.totalPlayers - data.responseCount} sin responder`}</span>
-           ${isAdmin && data.match.status === "played" ? `<button id="new-convocation" data-match-id="${data.match.id}" class="mt-2 w-full rounded-xl bg-lime px-4 py-3 text-sm font-extrabold text-pitch-950 shadow-sm transition hover:bg-lime/90 focus:outline-none focus:ring-2 focus:ring-lime focus:ring-offset-2 focus:ring-offset-pitch-900">Abrir Nueva Convocatoria</button>` : ""}
+            ${isAdmin ? renderNewConvocationControl(data.match, history) : ""}
         </div>
       </div>
       ${isAdmin ? adminControls : `<div class="flex flex-col gap-3 border-t border-white/10 bg-white/[.03] p-4 sm:flex-row sm:items-center sm:justify-between sm:px-7">
@@ -280,9 +338,7 @@ function renderConvocationBoard(data, isAdmin = false, history = []) {
 }
 
 function matchLabel(match) {
-  const date = new Date(`${match.start_date}T12:00:00Z`);
-  date.setUTCDate(date.getUTCDate() + 7);
-  return `Partido del ${date.toLocaleDateString("es-ES", { day: "numeric", month: "long", timeZone: "UTC" })}`;
+  return `Partido del ${formatMatchDate(match)}`;
 }
 
 function renderTeamCard(title, players, tone) {
@@ -475,19 +531,20 @@ function renderFinancePanel(data, matchesData) {
 function renderNotificationPanel(data, players, config, status) {
   const campaigns = status.campaigns || {};
   const message = config.enabled
-    ? "Web Push está activo. La apertura y el recordatorio también se programan automáticamente."
+    ? "Web Push está activo. Admin abre y cierra las convocatorias manualmente; el recordatorio de respuestas sigue programado."
     : "Web Push está desactivado: configura VAPID_PUBLIC_KEY y VAPID_PRIVATE_KEY en el servidor.";
   const principalPlayers = data.lists.principal || [];
+  const matchStatus = data.match?.status || null;
   return `<div class="mb-5"><p class="text-xs font-bold uppercase tracking-[.12em] text-pitch-700">Centro de avisos</p><h2 class="display mt-1 text-2xl font-extrabold">Notificaciones push</h2><p class="mt-1 text-sm text-ink/50">${message}</p></div>
     <div class="mb-5 grid gap-3 sm:grid-cols-2">
       ${[
         ["opening", "Convocatoria abierta", "Envía el aviso de apertura al grupo.", campaigns.opening],
         ["unanswered", "Aún no te has apuntado", "Solo a jugadores que todavía no respondieron.", campaigns.friday_reminder],
         ["negative_balance", "Aviso de saldo negativo", "A jugadores convocados con saldo negativo.", null],
-      ].map(([type, title, description, campaign]) => `<article class="rounded-2xl border border-ink/[.07] bg-white p-5 shadow-sm"><div class="flex items-start justify-between gap-3"><div><h3 class="font-bold">${title}</h3><p class="mt-1 text-xs leading-5 text-ink/50">${description}</p></div><span class="rounded-full ${campaign?.status === "sent" ? "bg-pitch-100 text-pitch-800" : "bg-paper text-ink/50"} px-2.5 py-1 text-[10px] font-bold">${campaign?.status === "sent" ? `${campaign.delivered_count} enviadas` : "Manual"}</span></div><button data-notification-type="${type}" ${!config.enabled || (type !== "negative_balance" && data.match.status !== "open") ? "disabled" : ""} class="admin-notification-button mt-4 w-full rounded-xl bg-pitch-900 px-4 py-2.5 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-40">${title}</button></article>`).join("")}
+      ].map(([type, title, description, campaign]) => `<article class="rounded-2xl border border-ink/[.07] bg-white p-5 shadow-sm"><div class="flex items-start justify-between gap-3"><div><h3 class="font-bold">${title}</h3><p class="mt-1 text-xs leading-5 text-ink/50">${description}</p></div><span class="rounded-full ${campaign?.status === "sent" ? "bg-pitch-100 text-pitch-800" : "bg-paper text-ink/50"} px-2.5 py-1 text-[10px] font-bold">${campaign?.status === "sent" ? `${campaign.delivered_count} enviadas` : "Manual"}</span></div><button data-notification-type="${type}" ${!config.enabled || !matchStatus || (type !== "negative_balance" && matchStatus !== "open") ? "disabled" : ""} class="admin-notification-button mt-4 w-full rounded-xl bg-pitch-900 px-4 py-2.5 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-40">${title}</button></article>`).join("")}
       <article class="rounded-2xl border border-ink/[.07] bg-white p-5 shadow-sm"><h3 class="font-bold">Aviso individual de Lista Principal</h3><p class="mt-1 text-xs leading-5 text-ink/50">Envía un aviso directo a un jugador que aparece en la lista principal actual.</p><div class="mt-4 flex gap-2"><select id="notify-player-select" class="min-w-0 flex-1 rounded-xl border border-ink/10 bg-white px-3 py-2.5 text-sm">${principalPlayers.map((player) => `<option value="${player.id}">${escapeHtml(player.alias)}</option>`).join("")}</select><button id="notify-player" ${!config.enabled || !principalPlayers.length ? "disabled" : ""} class="shrink-0 rounded-xl bg-pitch-900 px-3 py-2.5 text-xs font-bold text-white disabled:opacity-40">Enviar</button></div></article>
     </div>
-    <section class="rounded-2xl border border-ink/[.07] bg-white p-5 text-xs text-ink/55 shadow-sm"><h3 class="font-bold text-ink">Estado de envíos</h3><p class="mt-2">Apertura: ${campaigns.opening?.status === "sent" ? `${campaigns.opening.delivered_count} entregadas` : "sin enviar"} · Recordatorio: ${campaigns.friday_reminder?.status === "sent" ? `${campaigns.friday_reminder.delivered_count} entregadas` : "sin enviar"}</p><p class="mt-1">Partido semanal: ${escapeHtml(matchLabel(data.match))}</p></section>`;
+    <section class="rounded-2xl border border-ink/[.07] bg-white p-5 text-xs text-ink/55 shadow-sm"><h3 class="font-bold text-ink">Estado de envíos</h3><p class="mt-2">Apertura: ${campaigns.opening?.status === "sent" ? `${campaigns.opening.delivered_count} entregadas` : "sin enviar"} · Recordatorio: ${campaigns.friday_reminder?.status === "sent" ? `${campaigns.friday_reminder.delivered_count} entregadas` : "sin enviar"}</p><p class="mt-1">Próximo partido: ${data.match ? escapeHtml(matchLabel(data.match)) : "Sin convocatoria activa"}</p></section>`;
 }
 
 function shell(content, active = "Inicio") {
@@ -666,21 +723,29 @@ async function renderAdmin() {
   const activeConvocation = await api("/api/convocations/current");
   const historyResponse = await api("/api/admin/convocations/history");
   convocationHistory = historyResponse.matches || [];
-  const activeMatchId = activeConvocation.match.id;
+  const activeMatchId = activeConvocation.match?.id ?? null;
   const hasSelectedMatch = convocationHistory.some((match) => match.id === Number(selectedConvocationId));
-  if (!viewingHistoricalConvocation || selectedConvocationId == null || !hasSelectedMatch) {
-    selectedConvocationId = activeMatchId;
-    viewingHistoricalConvocation = false;
+  if (activeMatchId !== null) {
+    if (!viewingHistoricalConvocation || selectedConvocationId == null || !hasSelectedMatch) {
+      selectedConvocationId = activeMatchId;
+      viewingHistoricalConvocation = false;
+    }
+  } else if (!viewingHistoricalConvocation || selectedConvocationId == null || !hasSelectedMatch) {
+    selectedConvocationId = convocationHistory[0]?.id ?? null;
+    viewingHistoricalConvocation = selectedConvocationId !== null;
   }
-  if (Number(selectedConvocationId) === activeMatchId) {
+  if (activeMatchId !== null && Number(selectedConvocationId) === activeMatchId) {
     convocationData = activeConvocation;
-  } else {
+  } else if (selectedConvocationId !== null) {
     try {
       convocationData = await api(`/api/convocations/${Number(selectedConvocationId)}`);
     } catch {
       selectedConvocationId = activeMatchId;
+      viewingHistoricalConvocation = false;
       convocationData = activeConvocation;
     }
+  } else {
+    convocationData = activeConvocation;
   }
   matchData = await api("/api/matches");
   standingsData = await api("/api/standings");
@@ -769,13 +834,27 @@ async function renderAdmin() {
     viewingHistoricalConvocation = selectedConvocationId !== historyResponse.active_match_id;
     await renderAdmin();
   });
-  document.querySelector("#new-convocation")?.addEventListener("click", async (event) => {
+  document.querySelector("#show-new-convocation-date")?.addEventListener("click", (event) => {
     const button = event.currentTarget;
-    button.disabled = true;
+    const form = document.querySelector("#new-convocation-form");
+    if (!form) return;
+    form.classList.remove("hidden");
+    button.classList.add("hidden");
+    form.querySelector('[name="match_date"]')?.focus();
+  });
+  document.querySelector("#new-convocation-form")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const button = form.querySelector('button[type="submit"], button:not([type])');
+    if (button) button.disabled = true;
     try {
+      const sourceMatchId = form.dataset.sourceMatchId;
       const response = await api("/api/admin/convocations/new", {
         method: "POST",
-        body: JSON.stringify({ match_id: Number(button.dataset.matchId) }),
+        body: JSON.stringify({
+          match_date: form.elements.match_date.value,
+          ...(sourceMatchId ? { source_match_id: Number(sourceMatchId) } : {}),
+        }),
       });
       selectedConvocationId = response.match.id;
       viewingHistoricalConvocation = false;
@@ -789,13 +868,13 @@ async function renderAdmin() {
               : " Aviso de apertura procesado.";
         showToast(`Nueva convocatoria abierta.${pushMessage}`);
       } else {
-        showToast("Ya existe una jornada abierta; se ha seleccionado.");
+        showToast("La convocatoria para esa fecha ya estaba abierta.");
       }
       activeAdminTab = "convocatoria";
       await renderAdmin();
     } catch (error) {
       showToast(error.message);
-      button.disabled = false;
+      if (button) button.disabled = false;
     }
   });
   bindApprovalActions();
@@ -827,8 +906,10 @@ async function renderAdmin() {
     const button = event.currentTarget;
     button.disabled = true;
     try {
-      await api("/api/admin/convocations/current/open", { method: "POST", body: "{}" });
-      showToast("Convocatoria abierta.");
+      const response = await api("/api/admin/convocations/current/open", { method: "POST", body: "{}" });
+      showToast(response.notification?.status === "disabled"
+        ? "Convocatoria abierta. Web Push no está configurado."
+        : "Convocatoria abierta.");
       activeAdminTab = "convocatoria";
       await renderAdmin();
     } catch (error) {

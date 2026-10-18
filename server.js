@@ -40,6 +40,7 @@ db.exec(`
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     start_date TEXT NOT NULL,
     end_date TEXT NOT NULL,
+    match_date TEXT,
     status TEXT NOT NULL DEFAULT 'open'
       CHECK (status IN ('open', 'closed', 'played')),
     draft_state TEXT NOT NULL DEFAULT '{}',
@@ -160,6 +161,11 @@ if (!userColumns.includes("base_role")) {
 }
 const matchColumns = db.prepare("PRAGMA table_info(matches)").all().map((column) => column.name);
 if (!matchColumns.includes("pitch_price")) db.exec("ALTER TABLE matches ADD COLUMN pitch_price REAL");
+if (!matchColumns.includes("match_date")) {
+  db.exec("ALTER TABLE matches ADD COLUMN match_date TEXT");
+}
+db.exec("UPDATE matches SET match_date = date(start_date, '+7 days') WHERE match_date IS NULL");
+db.exec("CREATE INDEX IF NOT EXISTS idx_matches_match_date ON matches(match_date, status)");
 const transactionColumns = db.prepare("PRAGMA table_info(transactions)").all().map((column) => column.name);
 const transactionMigrations = [
   ["match_id", "INTEGER REFERENCES matches(id)"],
@@ -358,50 +364,50 @@ function shiftDate(dateString, offsetDays) {
   return date.toISOString().slice(0, 10);
 }
 
-function currentTuesday(date = new Date()) {
+function madridDate(date = new Date()) {
   const parts = madridParts(date);
-  const localDate = `${parts.year}-${parts.month}-${parts.day}`;
-  const weekday = new Date(`${localDate}T00:00:00Z`).getUTCDay();
-  return shiftDate(localDate, -((weekday - 2 + 7) % 7));
+  return `${parts.year}-${parts.month}-${parts.day}`;
 }
 
-function ensureCurrentMatch(date = new Date()) {
-  const startDate = currentTuesday(date);
-  const endDate = `${shiftDate(startDate, 6)}T20:00:00`;
-  let match = db.prepare("SELECT * FROM matches WHERE start_date = ?").get(startDate);
-  let created = false;
+function isValidDateOnly(value) {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const date = new Date(`${value}T12:00:00Z`);
+  return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
+}
 
-  if (match?.status === "played") {
-    match = db.prepare(`
-      SELECT * FROM matches
-      WHERE start_date > ? AND status IN ('open', 'closed')
-      ORDER BY start_date, id LIMIT 1
-    `).get(startDate) || match;
-  }
-  if (!match) {
-    match = db.prepare(`
-      SELECT * FROM matches
-      WHERE start_date >= ? AND status IN ('open', 'closed')
-      ORDER BY start_date, id LIMIT 1
-    `).get(startDate);
-  }
-  if (!match) {
-    const result = db
-      .prepare("INSERT INTO matches (start_date, end_date, status) VALUES (?, ?, 'open')")
-      .run(startDate, endDate);
-    match = db.prepare("SELECT * FROM matches WHERE id = ?").get(result.lastInsertRowid);
-    created = true;
-  }
-  const parts = madridParts(date);
-  const now = `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:00`;
-  if (match.status === "open" && now >= match.end_date) {
-    db.prepare("UPDATE matches SET status = 'closed' WHERE id = ?").run(match.id);
-    match = db.prepare("SELECT * FROM matches WHERE id = ?").get(match.id);
-  }
-  if (created && match.status === "open" && pushConfigured) {
-    setImmediate(() => sendCampaign(match, "opening").catch((error) => console.error("No se pudo enviar la apertura push:", error.message)));
-  }
-  return match;
+function formatSpanishDate(dateString) {
+  if (!isValidDateOnly(dateString)) return null;
+  const parts = new Intl.DateTimeFormat("es-ES", {
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+    timeZone: "UTC",
+  }).formatToParts(new Date(`${dateString}T12:00:00Z`));
+  const values = Object.fromEntries(parts.filter((part) => part.type !== "literal").map((part) => [part.type, part.value]));
+  const titleCase = (value) => value.charAt(0).toLocaleUpperCase("es-ES") + value.slice(1);
+  return `${titleCase(values.weekday)}, ${values.day} de ${titleCase(values.month)}`;
+}
+
+function getCurrentMatch() {
+  return db.prepare(`
+    SELECT * FROM matches
+    WHERE status IN ('open', 'closed')
+    ORDER BY CASE status WHEN 'open' THEN 0 ELSE 1 END,
+      match_date DESC, start_date DESC, id DESC
+    LIMIT 1
+  `).get() || null;
+}
+
+function emptyConvocationData() {
+  return {
+    match: null,
+    lists: { principal: [], suplentes: [], no_va: [], pending: [] },
+    currentResponse: null,
+    principalCount: 0,
+    validForMatch: false,
+    responseCount: 0,
+    totalPlayers: 0,
+  };
 }
 
 function getConvocationData(match, userId, { historical = false } = {}) {
@@ -437,13 +443,12 @@ function getConvocationData(match, userId, { historical = false } = {}) {
   const activePlayers = roster;
   const pending = historical ? [] : activePlayers.filter((user) => user.response === null);
   const principalCount = principal.length;
-  const parts = madridParts();
-  const now = `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:00`;
   return {
     match: {
       ...matchDetails(match),
       draft: readJson(match.draft_state, {}),
-      canReopen: !historical && now < match.end_date,
+      canReopen: !historical && match.status === "closed" &&
+        !["in_progress", "complete"].includes(readJson(match.draft_state, {}).status),
       readOnly: historical,
       transactions: historical || match.status === "played" ? getMatchTransactions(match.id) : [],
     },
@@ -616,7 +621,7 @@ function recalculateMatchPoints(matchId, result, teamA, teamB) {
 }
 
 function repairCurrentLegacyDraftBalance() {
-  const currentMatch = db.prepare("SELECT * FROM matches WHERE start_date = ?").get(currentTuesday());
+  const currentMatch = db.prepare("SELECT * FROM matches ORDER BY match_date DESC, start_date DESC, id DESC LIMIT 1").get();
   if (!currentMatch) return false;
   const draft = readJson(currentMatch.draft_state, {});
   if (draft.status !== "complete" || !Array.isArray(draft.picks)) return false;
@@ -688,6 +693,7 @@ repairCurrentLegacyDraftBalance();
 
 function matchDetails(match) {
   if (!match) return null;
+  const matchDate = match.match_date || shiftDate(match.start_date, 7);
   const storedTeamA = readJson(match.team_a, []);
   const storedTeamB = readJson(match.team_b, []);
   const teamAIds = Array.isArray(storedTeamA) ? storedTeamA : [];
@@ -729,6 +735,8 @@ function matchDetails(match) {
   `).all(match.id);
   return {
     ...match,
+    match_date: matchDate,
+    match_date_label: formatSpanishDate(matchDate),
     draft,
     draftValidationError,
     teamA: getTeam(teamAIds),
@@ -769,7 +777,7 @@ async function sendNegativeBalanceAlert(match) {
   `).all(match.id);
   const payload = JSON.stringify({
     title: "Saldo negativo antes de jugar",
-    body: "Tienes saldo negativo. Revisa tu cuenta antes del partido de mañana.",
+    body: `Tienes saldo negativo. El partido es ${formatSpanishDate(match.match_date || shiftDate(match.start_date, 7))}. Revisa tu cuenta.`,
     url: "/",
   });
   const results = await Promise.allSettled(recipients.map((subscription) =>
@@ -835,9 +843,10 @@ async function sendCampaign(match, type) {
         LEFT JOIN convocations c ON c.user_id = s.user_id AND c.match_id = ?
         WHERE c.user_id IS NULL OR c.status IS NULL
       `).all(match.id);
+  const matchDateLabel = formatSpanishDate(match.match_date || shiftDate(match.start_date, 7));
   const message = type === "opening"
-    ? { title: "Convocatoria abierta", body: "Confirma si vienes al próximo partido.", url: "/" }
-    : { title: "Aún no te has apuntado al partido", body: "Confirma si vienes antes del lunes a las 20:00.", url: "/" };
+    ? { title: "Convocatoria abierta", body: `Confirma si vienes al partido del ${matchDateLabel}.`, url: "/" }
+    : { title: "Aún no te has apuntado al partido", body: `Confirma si vienes antes del ${matchDateLabel} a las 20:00 h.`, url: "/" };
   const results = await Promise.allSettled(subscriptions.map((subscription) =>
     webPush.sendNotification({
       endpoint: subscription.endpoint,
@@ -1060,23 +1069,28 @@ app.delete("/api/session", (req, res) => {
 });
 
 app.get("/api/convocations/current", requireUser, (_req, res) => {
-  const match = ensureCurrentMatch();
-  res.json(getConvocationData(match, _req.session.user.id));
+  const match = getCurrentMatch();
+  res.json(match ? getConvocationData(match, _req.session.user.id) : emptyConvocationData());
 });
 
 app.get("/api/admin/convocations/history", requireAdmin, (_req, res) => {
-  const activeMatch = ensureCurrentMatch();
+  const activeMatch = getCurrentMatch();
   const matches = db.prepare(`
-    SELECT m.id, m.start_date, m.end_date, m.status, m.result,
+    SELECT m.id, m.start_date, m.end_date, m.match_date, m.status, m.result,
       COUNT(CASE WHEN u.role != 'admin' THEN c.user_id END) AS response_count,
       COUNT(CASE WHEN c.status = 'principal' AND u.role != 'admin' THEN 1 END) AS principal_count
     FROM matches m
     LEFT JOIN convocations c ON c.match_id = m.id
     LEFT JOIN users u ON u.id = c.user_id
     GROUP BY m.id
-    ORDER BY m.start_date DESC, m.id DESC
-  `).all().map((match) => ({ ...match, is_active: match.id === activeMatch.id }));
-  res.json({ active_match_id: activeMatch.id, matches });
+    ORDER BY COALESCE(m.match_date, m.start_date) DESC, m.id DESC
+  `).all().map((match) => ({
+    ...match,
+    match_date: match.match_date || shiftDate(match.start_date, 7),
+    match_date_label: formatSpanishDate(match.match_date || shiftDate(match.start_date, 7)),
+    is_active: match.id === activeMatch?.id,
+  }));
+  res.json({ active_match_id: activeMatch?.id || null, matches });
 });
 
 app.get("/api/convocations/:matchId", requireUser, (req, res) => {
@@ -1084,26 +1098,37 @@ app.get("/api/convocations/:matchId", requireUser, (req, res) => {
   if (!Number.isInteger(matchId)) return res.status(400).json({ error: "Identificador de jornada no válido." });
   const match = db.prepare("SELECT * FROM matches WHERE id = ?").get(matchId);
   if (!match) return res.status(404).json({ error: "No se encontró la convocatoria." });
-  const activeMatch = ensureCurrentMatch();
-  res.json(getConvocationData(match, req.session.user.id, { historical: match.id !== activeMatch.id }));
+  const activeMatch = getCurrentMatch();
+  res.json(getConvocationData(match, req.session.user.id, { historical: match.id !== activeMatch?.id }));
 });
 
-app.post("/api/admin/convocations/current/open", requireAdmin, (req, res) => {
-  const match = ensureCurrentMatch();
-  const parts = madridParts();
-  const now = `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:00`;
+app.post("/api/admin/convocations/current/open", requireAdmin, async (req, res) => {
+  const match = getCurrentMatch();
+  if (!match) return res.status(404).json({ error: "No hay una convocatoria cerrada para reabrir." });
   const draft = readJson(match.draft_state, {});
   if (match.status === "played" || ["in_progress", "complete"].includes(draft.status)) {
     return res.status(409).json({ error: "No se puede reabrir una convocatoria con un draft iniciado o un partido jugado." });
   }
-  if (now >= match.end_date) return res.status(409).json({ error: "La convocatoria semanal ya ha pasado su hora de cierre." });
+  if (match.status !== "closed") return res.status(409).json({ error: "La convocatoria ya está abierta." });
   db.prepare("UPDATE matches SET status = 'open', draft_state = '{}', team_a = '[]', team_b = '[]' WHERE id = ?")
     .run(match.id);
-  res.json(getConvocationData(db.prepare("SELECT * FROM matches WHERE id = ?").get(match.id), req.session.user.id));
+  let notification = { status: "disabled" };
+  if (pushConfigured) {
+    try {
+      notification = await sendCampaign(db.prepare("SELECT * FROM matches WHERE id = ?").get(match.id), "opening");
+    } catch (error) {
+      notification = { status: "failed", error: error.message };
+    }
+  }
+  res.json({
+    ...getConvocationData(db.prepare("SELECT * FROM matches WHERE id = ?").get(match.id), req.session.user.id),
+    notification,
+  });
 });
 
 app.post("/api/admin/convocations/current/close", requireAdmin, (req, res) => {
-  const match = ensureCurrentMatch();
+  const match = getCurrentMatch();
+  if (!match) return res.status(404).json({ error: "No hay una convocatoria abierta para cerrar." });
   if (match.status !== "open") return res.status(409).json({ error: "La convocatoria ya está cerrada." });
   const roster = db.prepare(`
     SELECT u.id FROM convocations c JOIN users u ON u.id = c.user_id
@@ -1139,44 +1164,66 @@ app.post("/api/admin/convocations/current/close", requireAdmin, (req, res) => {
 });
 
 app.post("/api/admin/convocations/new", requireAdmin, async (req, res) => {
-  const sourceMatchId = Number(req.body?.match_id);
-  if (!Number.isInteger(sourceMatchId)) {
-    return res.status(400).json({ error: "Selecciona un partido finalizado para abrir la siguiente jornada." });
+  const matchDate = typeof req.body?.match_date === "string" ? req.body.match_date.trim() : "";
+  if (!isValidDateOnly(matchDate)) {
+    return res.status(400).json({ error: "Selecciona una fecha de partido válida." });
   }
-  const sourceMatch = db.prepare("SELECT id, status FROM matches WHERE id = ?").get(sourceMatchId);
-  if (!sourceMatch) return res.status(404).json({ error: "No se encontró el partido seleccionado." });
-  if (sourceMatch.status !== "played") {
-    return res.status(409).json({ error: "Solo se puede abrir la siguiente jornada después de finalizar el partido seleccionado." });
+  if (matchDate < madridDate()) {
+    return res.status(400).json({ error: "La fecha del partido no puede estar en el pasado." });
   }
 
-  ensureCurrentMatch();
+  const sourceValue = req.body?.source_match_id;
+  const sourceMatchId = sourceValue == null || sourceValue === "" ? null : Number(sourceValue);
+  if (sourceMatchId !== null) {
+    if (!Number.isInteger(sourceMatchId)) return res.status(400).json({ error: "La jornada anterior no es válida." });
+    const sourceMatch = db.prepare("SELECT id, status FROM matches WHERE id = ?").get(sourceMatchId);
+    if (!sourceMatch) return res.status(404).json({ error: "No se encontró la jornada anterior." });
+    if (sourceMatch.status !== "played") {
+      return res.status(409).json({ error: "Finaliza el partido anterior antes de abrir una nueva convocatoria." });
+    }
+  }
+
   let schedule;
   try {
     schedule = db.transaction(() => {
-      const latest = db.prepare("SELECT * FROM matches ORDER BY start_date DESC, id DESC LIMIT 1").get();
-      if (latest && latest.status !== "played") return { match: latest, created: false };
+      const activeMatch = getCurrentMatch();
+      if (activeMatch) {
+        if (activeMatch.status === "open" && activeMatch.match_date === matchDate) {
+          return { match: activeMatch, created: false };
+        }
+        const error = new Error("Ya existe una convocatoria activa. Ciérrala y finaliza su partido antes de abrir otra.");
+        error.status = 409;
+        throw error;
+      }
+      const existingDate = db.prepare("SELECT * FROM matches WHERE match_date = ? ORDER BY id DESC LIMIT 1")
+        .get(matchDate);
+      if (existingDate) {
+        const error = new Error("Ya existe una jornada registrada para esa fecha de partido.");
+        error.status = 409;
+        throw error;
+      }
+      const latest = db.prepare("SELECT * FROM matches ORDER BY COALESCE(match_date, start_date) DESC, id DESC LIMIT 1").get();
+      if (latest && latest.status !== "played") {
+        const error = new Error("Finaliza la jornada anterior antes de abrir una convocatoria nueva.");
+        error.status = 409;
+        throw error;
+      }
 
-      const currentWeek = currentTuesday();
-      const nextAfterLatest = latest ? shiftDate(latest.start_date, 7) : currentWeek;
-      const startDate = nextAfterLatest > currentWeek ? nextAfterLatest : currentWeek;
-      const existing = db.prepare("SELECT * FROM matches WHERE start_date = ? ORDER BY id DESC LIMIT 1").get(startDate);
-      if (existing) return { match: existing, created: false };
-
-      const endDate = `${shiftDate(startDate, 6)}T20:00:00`;
-      const insert = db.prepare("INSERT INTO matches (start_date, end_date, status) VALUES (?, ?, 'open')")
-        .run(startDate, endDate);
+      const startDate = madridDate();
+      const endDate = `${matchDate}T20:00:00`;
+      const insert = db.prepare(`
+        INSERT INTO matches (start_date, end_date, match_date, status)
+        VALUES (?, ?, ?, 'open')
+      `).run(startDate, endDate, matchDate);
       return {
         match: db.prepare("SELECT * FROM matches WHERE id = ?").get(insert.lastInsertRowid),
         created: true,
       };
     }).immediate();
   } catch (error) {
+    if (error.status) return res.status(error.status).json({ error: error.message });
     console.error("No se pudo abrir la siguiente convocatoria:", error.message);
     return res.status(500).json({ error: "No se pudo crear la nueva convocatoria." });
-  }
-
-  if (schedule.match.status !== "open") {
-    return res.status(409).json({ error: "La jornada más reciente aún no está finalizada. No se abrirá otra convocatoria." });
   }
 
   let notification;
@@ -1197,8 +1244,7 @@ app.post("/api/admin/convocations/new", requireAdmin, async (req, res) => {
 });
 
 app.get("/api/matches", requireUser, (_req, res) => {
-  ensureCurrentMatch();
-  const matches = db.prepare("SELECT * FROM matches ORDER BY start_date DESC, id DESC LIMIT 12").all()
+  const matches = db.prepare("SELECT * FROM matches ORDER BY COALESCE(match_date, start_date) DESC, id DESC LIMIT 12").all()
     .map(matchDetails);
   res.json({ matches, pot: currentPot() });
 });
@@ -1456,7 +1502,8 @@ app.post("/api/convocations/me", requirePlayer, (req, res) => {
   if (!["yes", "no"].includes(response)) {
     return res.status(400).json({ error: "Elige «Sí voy» o «No voy»." });
   }
-  const match = ensureCurrentMatch();
+  const match = getCurrentMatch();
+  if (!match) return res.status(409).json({ error: "No hay una convocatoria abierta." });
   if (match.status !== "open") {
     return res.status(409).json({ error: "La convocatoria ya está cerrada." });
   }
@@ -1474,7 +1521,8 @@ app.post("/api/convocations/me", requirePlayer, (req, res) => {
 });
 
 app.post("/api/admin/convocations/:userId/promote", requireAdmin, (req, res) => {
-  const match = ensureCurrentMatch();
+  const match = getCurrentMatch();
+  if (!match) return res.status(409).json({ error: "No hay una convocatoria abierta." });
   if (match.status !== "open") {
     return res.status(409).json({ error: "La convocatoria está cerrada; ya no se pueden mover jugadores." });
   }
@@ -1529,7 +1577,8 @@ app.delete("/api/push/subscriptions", requirePlayer, (req, res) => {
 });
 
 app.get("/api/admin/notifications/status", requireAdmin, (_req, res) => {
-  const match = ensureCurrentMatch();
+  const match = getCurrentMatch();
+  if (!match) return res.json({ enabled: pushConfigured, matchId: null, campaigns: {} });
   const campaigns = db.prepare("SELECT type, status, delivered_count, sent_at FROM push_campaigns WHERE match_id = ?")
     .all(match.id);
   res.json({
@@ -1540,7 +1589,8 @@ app.get("/api/admin/notifications/status", requireAdmin, (_req, res) => {
 });
 
 app.post("/api/admin/notifications/:type", requireAdmin, async (req, res) => {
-  const match = ensureCurrentMatch();
+  const match = getCurrentMatch();
+  if (!match) return res.status(409).json({ error: "No hay una convocatoria para enviar este aviso." });
   const type = req.params.type === "unanswered" ? "friday_reminder" : req.params.type;
   if (["opening", "friday_reminder"].includes(type) && match.status !== "open") {
     return res.status(409).json({ error: "La convocatoria está cerrada." });
@@ -1556,7 +1606,8 @@ app.post("/api/admin/notifications/:type", requireAdmin, async (req, res) => {
 
 app.post("/api/admin/players/:id/notify-promoted", requireAdmin, async (req, res) => {
   const userId = Number(req.params.id);
-  const match = ensureCurrentMatch();
+  const match = getCurrentMatch();
+  if (!match) return res.status(409).json({ error: "No hay una convocatoria abierta." });
   if (!Number.isInteger(userId)) return res.status(400).json({ error: "Selecciona un jugador válido." });
   const player = db.prepare(`
     SELECT u.id FROM users u JOIN convocations c ON c.user_id = u.id
@@ -1867,35 +1918,29 @@ app.delete("/api/admin/users/:id", requireAdmin, (req, res) => {
   res.json({ deleted: true, preservedHistory: true });
 });
 
-cron.schedule("* * * * *", () => {
-  ensureCurrentMatch();
-}, { timezone: timeZone });
-
-cron.schedule("5 0 * * 2", async () => {
-  const match = ensureCurrentMatch();
-  try {
-    await sendCampaign(match, "opening");
-  } catch (error) {
-    console.error("No se pudo enviar la apertura semanal:", error.message);
-  }
-}, { timezone: timeZone });
-
 cron.schedule("0 10 * * 5", async () => {
-  const match = ensureCurrentMatch();
+  const match = getCurrentMatch();
+  if (!match || match.status !== "open" || match.match_date < madridDate()) return;
   try {
     await sendCampaign(match, "friday_reminder");
   } catch (error) {
-    console.error("No se pudo enviar el recordatorio del viernes:", error.message);
+    console.error("No se pudo enviar el recordatorio de respuestas:", error.message);
   }
 }, { timezone: timeZone });
 
-cron.schedule("0 10 * * 1", async () => {
-  const match = ensureCurrentMatch();
-  try {
-    const result = await sendNegativeBalanceAlert(match);
-    if (!result.skipped) console.log(`Alertas de saldo del partido #${match.id}: ${result.delivered || 0} enviadas.`);
-  } catch (error) {
-    console.error("No se pudieron enviar las alertas de saldo del lunes:", error.message);
+cron.schedule("0 10 * * *", async () => {
+  const tomorrow = shiftDate(madridDate(), 1);
+  const matches = db.prepare(`
+    SELECT * FROM matches
+    WHERE match_date = ? AND status IN ('open', 'closed')
+  `).all(tomorrow);
+  for (const match of matches) {
+    try {
+      const result = await sendNegativeBalanceAlert(match);
+      if (!result.skipped) console.log(`Alertas de saldo del partido #${match.id}: ${result.delivered || 0} enviadas.`);
+    } catch (error) {
+      console.error(`No se pudieron enviar las alertas de saldo del partido #${match.id}:`, error.message);
+    }
   }
 }, { timezone: timeZone });
 

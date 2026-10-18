@@ -63,6 +63,13 @@ async function post(pathname, cookie, body) {
   return { response, payload };
 }
 
+async function get(pathname, cookie) {
+  const response = await fetch(`${context.baseUrl}${pathname}`, {
+    headers: { cookie },
+  });
+  return { response, payload: await response.json() };
+}
+
 function createMatchWithRoster(rosterSize) {
   const db = new Database(context.databasePath);
   try {
@@ -147,6 +154,42 @@ after(async () => {
     await once(context.process, "exit");
   }
   if (context.dataDirectory) fs.rmSync(context.dataDirectory, { recursive: true, force: true });
+});
+
+test("no se crea una convocatoria automáticamente y Admin debe elegir la fecha", async () => {
+  const initial = await get("/api/convocations/current", context.adminCookie);
+  assert.equal(initial.response.status, 200);
+  assert.equal(initial.payload.match, null);
+
+  const missingDate = await post("/api/admin/convocations/new", context.adminCookie, {});
+  assert.equal(missingDate.response.status, 400);
+  assert.match(missingDate.payload.error, /fecha de partido/);
+
+  const matchDate = new Date(Date.now() + 60 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const created = await post(
+    "/api/admin/convocations/new",
+    context.adminCookie,
+    { match_date: matchDate },
+  );
+  assert.equal(created.response.status, 201, JSON.stringify(created.payload));
+  assert.equal(created.payload.match.match_date, matchDate);
+  assert.match(created.payload.match.match_date_label, /^(Lunes|Martes|Miércoles|Jueves|Viernes|Sábado|Domingo), \d{1,2} de [A-ZÁÉÍÓÚ][a-záéíóú]+$/);
+
+  const current = await get("/api/convocations/current", context.adminCookie);
+  assert.equal(current.payload.match.match_date, matchDate);
+  assert.equal(current.payload.match.status, "open");
+
+  const closed = await post("/api/admin/convocations/current/close", context.adminCookie, {});
+  assert.equal(closed.response.status, 200, JSON.stringify(closed.payload));
+  assert.equal(closed.payload.match.status, "closed");
+
+  const reopened = await post("/api/admin/convocations/current/open", context.adminCookie, {});
+  assert.equal(reopened.response.status, 200, JSON.stringify(reopened.payload));
+  assert.equal(reopened.payload.match.status, "open");
+
+  const closedAgain = await post("/api/admin/convocations/current/close", context.adminCookie, {});
+  assert.equal(closedAgain.response.status, 200, JSON.stringify(closedAgain.payload));
+  assert.equal(closedAgain.payload.match.status, "closed");
 });
 
 test("el draft equilibra plantillas de 14 y 16 jugadores y valida los turnos", async (t) => {
