@@ -19,6 +19,10 @@ Abre `http://localhost:5000`. En una instalación nueva se crea el usuario admin
 
 En el workspace de Replit, el primer inicio después de esta migración limpia una sola vez la actividad de pruebas (jugadores, partidos, convocatorias, movimientos, puntos, suscripciones y bote), conserva y configura la cuenta Admin y deja la base lista para una temporada nueva. El marcador de migración evita repetir el borrado en reinicios posteriores; la limpieza no se ejecuta en deployments publicados.
 
+## Jugadores de prueba
+
+Ejecuta `npm run seed` para crear o actualizar los 14 jugadores de prueba y confirmar su respuesta en la convocatoria abierta actual. El comando es manual y no forma parte de `npm start`; también se puede ejecutar directamente con `NODE_ENV=development node scripts/seed.js`. La semilla no borra otros registros: se detiene si detecta jugadores ajenos en las posiciones de ranking 1–14, respuestas de otros jugadores o una convocatoria que ya tenga draft, resultado o actividad financiera. Los cuatro suplentes conservan su rol base y se marcan promovidos en la convocatoria para dejar disponibles los 14 jugadores del draft.
+
 ## Docker
 
 ```sh
