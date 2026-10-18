@@ -41,6 +41,26 @@ function escapeHtml(value) {
   })[character]);
 }
 
+function profileButton(userId, alias) {
+  return `<button type="button" class="open-player-profile inline-flex shrink-0 items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-bold text-pitch-700 transition hover:bg-pitch-100 focus:outline-none focus:ring-2 focus:ring-pitch-700/30" data-profile-user-id="${Number(userId)}" aria-label="Abrir perfil de ${escapeHtml(alias)}" title="Ver perfil">
+    <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="8" r="3.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 20c.6-3.4 3.2-5.5 7-5.5s6.4 2.1 7 5.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+    <span>Perfil</span>
+  </button>`;
+}
+
+function profileAvatar(photoUrl, alias, size = "h-24 w-24") {
+  const initials = escapeHtml(String(alias || "?").slice(0, 2).toUpperCase());
+  return `<div class="${size} grid shrink-0 place-items-center overflow-hidden rounded-full border-4 border-white bg-pitch-100 text-2xl font-extrabold text-pitch-800 shadow-md" data-profile-avatar>
+    ${photoUrl ? `<img src="${escapeHtml(photoUrl)}" alt="Foto de ${escapeHtml(alias)}" class="h-full w-full object-cover"/>` : initials}
+  </div>`;
+}
+
+function bindPlayerProfileButtons() {
+  document.querySelectorAll(".open-player-profile").forEach((button) =>
+    button.addEventListener("click", () => openPlayerProfile(Number(button.dataset.profileUserId))),
+  );
+}
+
 function installButton(extraClasses = "") {
   return `<button id="install-app" class="hidden items-center justify-center gap-2 rounded-xl border border-white/20 bg-white/10 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-white/20 ${extraClasses}">
     <svg aria-hidden="true" width="17" height="17" viewBox="0 0 24 24" fill="none"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 17v3h14v-3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -240,7 +260,7 @@ function listPanel(title, usersInList, colorClass, icon, isAdmin = false, showBa
   const rows = list.length
     ? list.map((user) => `<li class="flex items-center gap-3 px-4 py-3 ${isAdmin && title === "Lista de suplentes" ? "pr-2" : ""}">
         <span class="grid h-8 w-8 shrink-0 place-items-center rounded-xl ${colorClass} text-[11px] font-bold">${escapeHtml(String(user.alias || "").slice(0, 2).toUpperCase())}</span>
-        <span class="min-w-0 flex-1 truncate text-sm font-semibold">${escapeHtml(user.alias)}${title === "Lista de suplentes" && user.invited_by_alias ? `<span class="ml-1 font-normal text-ink/50">(${escapeHtml(user.invited_by_alias)})</span>` : ""}</span>
+        <span class="flex min-w-0 flex-1 items-center gap-1.5"><span class="min-w-0 flex-1 truncate text-sm font-semibold">${escapeHtml(user.alias)}${title === "Lista de suplentes" && user.invited_by_alias ? `<span class="ml-1 font-normal text-ink/50">(${escapeHtml(user.invited_by_alias)})</span>` : ""}</span>${profileButton(user.id, user.alias)}</span>
         ${showBaseRole ? `<span class="hidden text-[11px] text-ink/40 sm:inline">${`${user.base_role === "principal" ? "Principal" : "Suplente"}${user.base_role === "suplente" && user.response === "principal" ? " · promovido" : ""}`}</span>` : ""}
         ${isAdmin && title === "Lista de suplentes" ? `<button class="promote-player shrink-0 rounded-lg border border-pitch-700/20 px-2.5 py-1.5 text-[11px] font-bold text-pitch-800 transition hover:bg-pitch-100" data-user-id="${user.id}" aria-label="Promover a ${escapeHtml(user.alias)} a principal">↑ Principal</button>` : ""}
         ${isAdmin && title === "Lista principal" ? `<button class="notify-promoted shrink-0 rounded-lg border border-ink/10 px-2.5 py-1.5 text-[11px] font-bold text-ink/65 transition hover:bg-paper" data-user-id="${user.id}" aria-label="Enviar aviso a ${escapeHtml(user.alias)}">Avisar</button>` : ""}
@@ -391,7 +411,7 @@ function matchStatusLabel(status) {
 
 function renderTeamCard(title, players, tone) {
   const rows = players.length
-    ? players.map((player) => `<li class="flex items-center gap-2.5 border-t border-ink/[.06] px-4 py-3 first:border-0"><span class="grid h-7 w-7 place-items-center rounded-lg bg-white/80 text-[10px] font-bold text-ink/55" aria-hidden="true">⚽</span><span class="text-sm font-semibold">${escapeHtml(player.alias)}</span></li>`).join("")
+    ? players.map((player) => `<li class="flex items-center gap-2.5 border-t border-ink/[.06] px-4 py-2.5 first:border-0"><span class="grid h-7 w-7 place-items-center rounded-lg bg-white/80 text-[10px] font-bold text-ink/55" aria-hidden="true">⚽</span><span class="min-w-0 flex-1 truncate text-sm font-semibold">${escapeHtml(player.alias)}</span>${profileButton(player.id, player.alias)}</li>`).join("")
     : `<li class="px-4 py-6 text-sm text-ink/45">Sin jugadores todavía.</li>`;
   return `<section class="overflow-hidden rounded-2xl border border-ink/[.07] ${tone}"><header class="flex items-center justify-between px-4 py-3"><h3 class="font-bold">${title}</h3><span class="rounded-full bg-white/75 px-2.5 py-1 text-xs font-bold">${players.length}</span></header><ul class="bg-white/70">${rows}</ul></section>`;
 }
@@ -514,7 +534,7 @@ function renderMatchFinanceControl(matchesData) {
 
 function renderStandingsBoard(data) {
   const rows = data.standings || [];
-  return `<section class="mb-7 overflow-hidden rounded-3xl border border-ink/[.07] bg-white shadow-sm"><div class="flex flex-col gap-3 border-b border-ink/[.07] p-5 sm:flex-row sm:items-center sm:justify-between sm:px-6"><div><p class="text-xs font-bold uppercase tracking-[.12em] text-pitch-700">Temporada</p><h2 class="display mt-1 text-2xl font-extrabold">Clasificación</h2><p class="mt-1 text-xs text-ink/50">Puntos globales por asistencia y resultado.</p></div><div class="rounded-2xl bg-lime/35 px-4 py-3"><p class="text-[10px] font-bold uppercase tracking-[.12em] text-pitch-900/60">Bote acumulado</p><p class="display text-xl font-extrabold text-pitch-900">${formatMoney(data.pot)}</p></div></div><div class="overflow-x-auto"><table class="w-full min-w-[560px] text-left"><thead class="bg-paper/70 text-[10px] font-bold uppercase tracking-[.12em] text-ink/45"><tr><th class="px-5 py-3">#</th><th class="px-4 py-3">Jugador</th><th class="px-4 py-3">Puntos</th><th class="px-4 py-3">PJ</th><th class="px-4 py-3">V-E-D</th></tr></thead><tbody class="divide-y divide-ink/[.06]">${rows.length ? rows.map((player, index) => `<tr><td class="px-5 py-3 text-sm font-bold text-pitch-700">${index + 1}</td><td class="px-4 py-3 text-sm font-semibold">${escapeHtml(player.alias)}</td><td class="px-4 py-3"><span class="rounded-full bg-pitch-100 px-2.5 py-1 text-xs font-extrabold text-pitch-900">${player.points}</span></td><td class="px-4 py-3 text-sm text-ink/55">${player.matches_played}</td><td class="px-4 py-3 text-sm text-ink/55">${player.wins}-${player.draws}-${player.losses}</td></tr>`).join("") : `<tr><td colspan="5" class="px-5 py-8 text-center text-sm text-ink/45">La clasificación empieza con el primer resultado.</td></tr>`}</tbody></table></div></section>`;
+  return `<section class="mb-7 overflow-hidden rounded-3xl border border-ink/[.07] bg-white shadow-sm"><div class="flex flex-col gap-3 border-b border-ink/[.07] p-5 sm:flex-row sm:items-center sm:justify-between sm:px-6"><div><p class="text-xs font-bold uppercase tracking-[.12em] text-pitch-700">Temporada</p><h2 class="display mt-1 text-2xl font-extrabold">Clasificación</h2><p class="mt-1 text-xs text-ink/50">Puntos globales por asistencia y resultado.</p></div><div class="rounded-2xl bg-lime/35 px-4 py-3"><p class="text-[10px] font-bold uppercase tracking-[.12em] text-pitch-900/60">Bote acumulado</p><p class="display text-xl font-extrabold text-pitch-900">${formatMoney(data.pot)}</p></div></div><div class="overflow-x-auto"><table class="w-full min-w-[600px] text-left"><thead class="bg-paper/70 text-[10px] font-bold uppercase tracking-[.12em] text-ink/45"><tr><th class="px-5 py-3">#</th><th class="px-4 py-3">Jugador</th><th class="px-4 py-3">Puntos</th><th class="px-4 py-3">PJ</th><th class="px-4 py-3">V-E-D</th></tr></thead><tbody class="divide-y divide-ink/[.06]">${rows.length ? rows.map((player, index) => `<tr><td class="px-5 py-3 text-sm font-bold text-pitch-700">${index + 1}</td><td class="px-4 py-2"><div class="flex items-center gap-1"><span class="text-sm font-semibold">${escapeHtml(player.alias)}</span>${profileButton(player.id, player.alias)}</div></td><td class="px-4 py-3"><span class="rounded-full bg-pitch-100 px-2.5 py-1 text-xs font-extrabold text-pitch-900">${player.points}</span></td><td class="px-4 py-3 text-sm text-ink/55">${player.matches_played}</td><td class="px-4 py-3 text-sm text-ink/55">${player.wins}-${player.draws}-${player.losses}</td></tr>`).join("") : `<tr><td colspan="5" class="px-5 py-8 text-center text-sm text-ink/45">La clasificación empieza con el primer resultado.</td></tr>`}</tbody></table></div></section>`;
 }
 
 function renderStandingsAdjustmentPanel(data, adjustments = []) {
@@ -551,7 +571,7 @@ function renderApprovalPanel(pending) {
 
 function renderPlayerManagementPanel(players, pending) {
   const rows = players.map((user) => `<tr class="hover:bg-paper/50" data-player-search="${escapeHtml(`${user.name} ${user.alias}`.toLocaleLowerCase("es"))}">
-    <td class="px-4 py-3 sm:px-5"><div class="font-semibold">${escapeHtml(user.name)}</div><div class="mt-0.5 text-xs text-ink/45">@${escapeHtml(user.alias)}</div></td>
+    <td class="px-4 py-3 sm:px-5"><div class="font-semibold">${escapeHtml(user.name)}</div><div class="mt-0.5 flex items-center gap-1 text-xs text-ink/45"><span>@${escapeHtml(user.alias)}</span>${profileButton(user.id, user.alias)}</div></td>
     <td class="px-4 py-3 text-sm">${user.base_role === "principal" ? "Principal" : "Suplente"}</td>
     <td class="px-4 py-3 text-sm">${user.ranking_position ? `#${user.ranking_position}` : "—"}</td>
     <td class="px-4 py-3 text-sm font-semibold">${formatMoney(user.balance)}</td>
@@ -1481,6 +1501,146 @@ async function renderPlayer() {
 
 function formatMoney(amount) {
   return new Intl.NumberFormat("es-ES", { style: "currency", currency: "EUR" }).format(Number(amount) || 0);
+}
+
+async function compressProfilePhoto(file) {
+  if (!file.type.startsWith("image/")) throw new Error("Selecciona una imagen válida.");
+  if (file.size > 12 * 1024 * 1024) throw new Error("La imagen original debe pesar menos de 12 MB.");
+  const image = await createImageBitmap(file);
+  try {
+    let maxSide = 480;
+    let quality = 0.78;
+    let dataUrl = "";
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      const scale = Math.min(1, maxSide / Math.max(image.width, image.height));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(image.width * scale));
+      canvas.height = Math.max(1, Math.round(image.height * scale));
+      canvas.getContext("2d").drawImage(image, 0, 0, canvas.width, canvas.height);
+      dataUrl = canvas.toDataURL("image/webp", quality);
+      if (!dataUrl.startsWith("data:image/webp,")) dataUrl = canvas.toDataURL("image/jpeg", quality);
+      const base64Length = dataUrl.length - dataUrl.indexOf(",") - 1;
+      const estimatedBytes = Math.floor(base64Length * 3 / 4);
+      if (estimatedBytes <= 256 * 1024) return dataUrl;
+      if (attempt % 2 === 0) quality = Math.max(0.48, quality - 0.1);
+      else maxSide = Math.max(240, maxSide - 80);
+    }
+    throw new Error("La imagen no se pudo comprimir por debajo de 256 KB. Elige otra foto.");
+  } finally {
+    image.close();
+  }
+}
+
+async function openPlayerProfile(userId) {
+  let profile;
+  try {
+    ({ profile } = await api(`/api/users/${userId}/profile`));
+  } catch (error) {
+    showToast(error.message);
+    return;
+  }
+
+  const canEdit = currentUser?.role === "admin" || currentUser?.id === profile.id;
+  const overlay = document.createElement("div");
+  overlay.className = "fixed inset-0 z-50 grid place-items-center overflow-y-auto bg-pitch-950/65 p-3 backdrop-blur-sm sm:p-5";
+  overlay.innerHTML = `
+    <section class="my-auto max-h-[calc(100dvh-1.5rem)] w-full max-w-xl overflow-y-auto rounded-3xl bg-paper shadow-2xl sm:max-h-[calc(100dvh-2.5rem)]" role="dialog" aria-modal="true" aria-labelledby="profile-modal-title">
+      <header class="relative overflow-hidden bg-pitch-900 px-5 pb-5 pt-4 text-white sm:px-7 sm:pb-6">
+        <div class="absolute -right-8 -top-16 h-48 w-48 rounded-full border border-white/10"></div>
+        <div class="relative flex items-start justify-between gap-4">
+          <div><p class="text-[10px] font-bold uppercase tracking-[.16em] text-lime">${canEdit ? "Ficha de jugador" : "Perfil de jugador"}</p><h2 id="profile-modal-title" class="display mt-1 text-2xl font-extrabold">Perfil de ${escapeHtml(profile.alias)}</h2><p class="mt-1 text-xs text-white/60">${canEdit ? "Tu perfil, tu forma de jugar." : "Ficha técnica del jugador."}</p></div>
+          <button type="button" class="close-profile grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-white/10 text-white transition hover:bg-white/20" aria-label="Cerrar perfil">✕</button>
+        </div>
+        <div class="relative mt-5 flex items-center gap-4">
+          ${profileAvatar(profile.photo_url, profile.alias)}
+          <div class="min-w-0"><p class="truncate text-lg font-extrabold">@${escapeHtml(profile.alias)}</p><p class="mt-1 text-xs text-white/60">${canEdit ? "Perfil visible para el equipo" : "Información compartida con el equipo"}</p></div>
+        </div>
+      </header>
+      <form id="profile-form" class="space-y-4 p-5 sm:p-7">
+        ${canEdit ? `<div class="rounded-2xl border border-ink/[.07] bg-white p-4"><label class="block text-xs font-bold text-ink/60">Foto de perfil<input id="profile-photo-file" type="file" accept="image/*" capture="user" class="mt-2 block w-full text-xs file:mr-3 file:rounded-lg file:border-0 file:bg-pitch-100 file:px-3 file:py-2 file:font-bold file:text-pitch-900"/></label><div class="mt-2 flex items-center justify-between gap-3"><span class="text-[11px] text-ink/45">Recorte cuadrado, se muestra redondeada. Máximo 256 KB tras comprimir.</span><button type="button" id="clear-profile-photo" class="shrink-0 text-[11px] font-bold text-red-700 ${profile.photo_url ? "" : "hidden"}">Quitar foto</button></div><p id="profile-photo-error" class="mt-2 hidden text-xs font-semibold text-red-700" role="alert"></p></div>` : ""}
+        <label class="block text-xs font-bold text-ink/60">Alias público<input name="alias" required minlength="3" maxlength="24" pattern="[A-Za-zÀ-ÿ0-9._-]{3,24}" value="${escapeHtml(profile.alias)}" ${canEdit ? "" : "readonly"} class="mt-1.5 w-full rounded-xl border border-ink/10 bg-white px-3.5 py-3 text-sm font-semibold text-ink outline-none focus:border-pitch-700 ${canEdit ? "" : "text-ink/70"}"/></label>
+        <div class="grid gap-3 sm:grid-cols-2">
+          <label class="block text-xs font-bold text-ink/60">Dónde juega<input name="preferred_position" list="profile-position-options" maxlength="60" value="${escapeHtml(profile.preferred_position || "")}" placeholder="Ej. Extremo izquierdo" ${canEdit ? "" : "readonly"} class="mt-1.5 w-full rounded-xl border border-ink/10 bg-white px-3.5 py-3 text-sm font-normal outline-none focus:border-pitch-700"/></label>
+          <datalist id="profile-position-options"><option value="Portero"><option value="Defensa"><option value="Centrocampista"><option value="Delantero"><option value="Extremo"><option value="Lateral"><option value="Mediocentro"></datalist>
+        </div>
+        <label class="block text-xs font-bold text-ink/60">Puntos fuertes<textarea name="strong_points" maxlength="1000" rows="2" placeholder="Ej. Gran disparo con la zurda, buen pase" ${canEdit ? "" : "readonly"} class="mt-1.5 w-full resize-y rounded-xl border border-ink/10 bg-white px-3.5 py-3 text-sm font-normal leading-5 outline-none focus:border-pitch-700">${escapeHtml(profile.strong_points || "")}</textarea></label>
+        <label class="block text-xs font-bold text-ink/60">Puntos débiles<textarea name="weak_points" maxlength="1000" rows="2" placeholder="Ej. Juego aéreo, repliegue defensivo" ${canEdit ? "" : "readonly"} class="mt-1.5 w-full resize-y rounded-xl border border-ink/10 bg-white px-3.5 py-3 text-sm font-normal leading-5 outline-none focus:border-pitch-700">${escapeHtml(profile.weak_points || "")}</textarea></label>
+        <label class="block text-xs font-bold text-ink/60">Otros datos<textarea name="other_details" maxlength="2000" rows="3" placeholder="Ej. Prefiere jugar en la banda izquierda" ${canEdit ? "" : "readonly"} class="mt-1.5 w-full resize-y rounded-xl border border-ink/10 bg-white px-3.5 py-3 text-sm font-normal leading-5 outline-none focus:border-pitch-700">${escapeHtml(profile.other_details || "")}</textarea></label>
+        <div id="profile-form-error" class="hidden rounded-xl bg-red-50 px-3 py-2.5 text-sm text-red-700" role="alert"></div>
+        ${canEdit
+          ? `<button type="submit" class="w-full rounded-xl bg-pitch-900 px-4 py-3 text-sm font-extrabold text-white transition hover:bg-pitch-800 disabled:opacity-50">Guardar perfil</button>`
+          : `<p class="rounded-xl bg-white px-4 py-3 text-center text-xs text-ink/45">Solo el jugador y el Administrador pueden editar esta ficha.</p>`}
+      </form>
+    </section>`;
+  document.body.append(overlay);
+
+  const close = () => overlay.remove();
+  overlay.querySelector(".close-profile").addEventListener("click", close);
+  overlay.addEventListener("click", (event) => { if (event.target === overlay) close(); });
+  overlay.addEventListener("keydown", (event) => { if (event.key === "Escape") close(); });
+
+  if (!canEdit) return;
+  const form = overlay.querySelector("#profile-form");
+  const avatar = overlay.querySelector("[data-profile-avatar]");
+  const photoInput = overlay.querySelector("#profile-photo-file");
+  const clearPhoto = overlay.querySelector("#clear-profile-photo");
+  const photoError = overlay.querySelector("#profile-photo-error");
+  let photoUrl = profile.photo_url || null;
+
+  const renderAvatarPreview = () => {
+    avatar.innerHTML = photoUrl
+      ? `<img src="${escapeHtml(photoUrl)}" alt="Vista previa de ${escapeHtml(profile.alias)}" class="h-full w-full object-cover"/>`
+      : escapeHtml(profile.alias.slice(0, 2).toUpperCase());
+    clearPhoto.classList.toggle("hidden", !photoUrl);
+  };
+
+  photoInput.addEventListener("change", async () => {
+    const file = photoInput.files?.[0];
+    if (!file) return;
+    photoInput.disabled = true;
+    photoError.classList.add("hidden");
+    try {
+      photoUrl = await compressProfilePhoto(file);
+      renderAvatarPreview();
+    } catch (error) {
+      photoError.textContent = error.message || "No se pudo cargar la foto.";
+      photoError.classList.remove("hidden");
+      photoInput.value = "";
+    } finally {
+      photoInput.disabled = false;
+    }
+  });
+  clearPhoto.addEventListener("click", () => {
+    photoUrl = null;
+    photoInput.value = "";
+    renderAvatarPreview();
+  });
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const submit = form.querySelector('button[type="submit"]');
+    const errorBox = form.querySelector("#profile-form-error");
+    submit.disabled = true;
+    errorBox.classList.add("hidden");
+    const values = Object.fromEntries(new FormData(form).entries());
+    values.photo_url = photoUrl;
+    try {
+      const response = await api(`/api/users/${profile.id}/profile`, {
+        method: "PATCH",
+        body: JSON.stringify(values),
+      });
+      if (currentUser.id === profile.id) currentUser.alias = response.profile.alias;
+      close();
+      showToast("Perfil actualizado.");
+      await loadUsers();
+      await renderHome();
+    } catch (error) {
+      errorBox.textContent = error.message || "No se pudo guardar el perfil.";
+      errorBox.classList.remove("hidden");
+      submit.disabled = false;
+    }
+  });
+  form.elements.alias.focus();
 }
 
 function openPlayerModal(player = null) {

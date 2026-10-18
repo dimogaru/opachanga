@@ -10,6 +10,7 @@ const bcrypt = require("bcrypt");
 const app = express();
 const port = Number(process.env.PORT || 3000);
 const defaultSubstitutePassword = "Pachanga123#";
+const maxProfilePhotoBytes = 256 * 1024;
 const databasePath = process.env.DB_PATH
   ? path.resolve(process.env.DB_PATH)
   : path.resolve("./data/database.sqlite");
@@ -160,6 +161,11 @@ const userMigrations = [
   ["must_change_password", "INTEGER NOT NULL DEFAULT 0"],
   ["deleted_at", "TEXT"],
   ["created_at", "TEXT"],
+  ["photo_url", "TEXT"],
+  ["strong_points", "TEXT NOT NULL DEFAULT ''"],
+  ["weak_points", "TEXT NOT NULL DEFAULT ''"],
+  ["preferred_position", "TEXT NOT NULL DEFAULT ''"],
+  ["other_details", "TEXT NOT NULL DEFAULT ''"],
 ];
 for (const [name, definition] of userMigrations) {
   if (!userColumns.includes(name)) db.exec(`ALTER TABLE users ADD COLUMN ${name} ${definition}`);
@@ -286,7 +292,7 @@ if (!pushConfigured) {
 }
 
 app.set("trust proxy", 1);
-app.use(express.json({ limit: "32kb" }));
+app.use(express.json({ limit: "512kb" }));
 app.use(
   session({
     name: "pachanga.sid",
@@ -1029,6 +1035,112 @@ app.get("/api/users", requireUser, (_req, res) => {
     ORDER BY role, ranking_position IS NULL, ranking_position, name COLLATE NOCASE
   `).all();
   res.json(users);
+});
+
+app.get("/api/users/:id/profile", requireUser, (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1) {
+    return res.status(400).json({ error: "El jugador seleccionado no es válido." });
+  }
+  const profile = db.prepare(`
+    SELECT id, alias, photo_url, strong_points, weak_points, preferred_position, other_details
+    FROM users WHERE id = ? AND role != 'admin'
+  `).get(id);
+  if (!profile) return res.status(404).json({ error: "No se encontró la ficha de ese jugador." });
+  res.json({ profile });
+});
+
+app.patch("/api/users/:id/profile", requireUser, (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1) {
+    return res.status(400).json({ error: "El jugador seleccionado no es válido." });
+  }
+  const isAdmin = req.session.user.role === "admin";
+  if (!isAdmin && req.session.user.id !== id) {
+    return res.status(403).json({ error: "Solo puedes editar tu propia ficha de jugador." });
+  }
+  const current = db.prepare(`
+    SELECT id, alias, photo_url, strong_points, weak_points, preferred_position, other_details
+    FROM users WHERE id = ? AND role != 'admin'
+  `).get(id);
+  if (!current) return res.status(404).json({ error: "No se encontró la ficha de ese jugador." });
+
+  const body = req.body || {};
+  const alias = body.alias === undefined
+    ? current.alias
+    : typeof body.alias === "string" ? body.alias.trim().normalize("NFKC").toLowerCase() : null;
+  if (!/^[\p{L}\p{N}._-]{3,24}$/u.test(alias || "")) {
+    return res.status(400).json({ error: "El alias debe tener entre 3 y 24 caracteres." });
+  }
+  if (db.prepare("SELECT id FROM users WHERE alias = ? COLLATE NOCASE AND id != ?").get(alias, id)) {
+    return res.status(409).json({ error: "Ese alias ya está en uso." });
+  }
+
+  const fields = [
+    ["strong_points", 1000, "Los puntos fuertes"],
+    ["weak_points", 1000, "Los puntos débiles"],
+    ["preferred_position", 60, "La posición preferida"],
+    ["other_details", 2000, "Otros datos"],
+  ];
+  const profileValues = {};
+  for (const [field, limit, label] of fields) {
+    const value = body[field] === undefined
+      ? current[field]
+      : typeof body[field] === "string" ? body[field].trim() : null;
+    if (value === null || value.length > limit) {
+      return res.status(400).json({ error: `${label} debe ser texto de ${limit} caracteres o menos.` });
+    }
+    profileValues[field] = value;
+  }
+
+  let photoUrl = current.photo_url;
+  if (body.photo_url !== undefined) {
+    photoUrl = body.photo_url === null || body.photo_url === "" ? null : body.photo_url;
+    if (photoUrl !== null) {
+      const match = typeof photoUrl === "string"
+        ? photoUrl.match(/^data:image\/(webp|jpeg|png);base64,([A-Za-z0-9+/]+={0,2})$/)
+        : null;
+      if (!match) {
+        return res.status(400).json({ error: "La foto debe ser una imagen WebP, JPEG o PNG válida." });
+      }
+      const imageBytes = Buffer.from(match[2], "base64");
+      const hasValidHeader = match[1] === "webp"
+        ? imageBytes.length >= 12 && imageBytes.toString("ascii", 0, 4) === "RIFF" && imageBytes.toString("ascii", 8, 12) === "WEBP"
+        : match[1] === "jpeg"
+          ? imageBytes.length >= 3 && imageBytes[0] === 0xff && imageBytes[1] === 0xd8 && imageBytes[2] === 0xff
+          : imageBytes.length >= 8 && imageBytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+      if (imageBytes.length > maxProfilePhotoBytes || !hasValidHeader) {
+        return res.status(400).json({ error: "La foto no es válida o supera el límite de 256 KB." });
+      }
+    }
+  }
+
+  try {
+    db.prepare(`
+      UPDATE users
+      SET alias = ?, photo_url = ?, strong_points = ?, weak_points = ?,
+        preferred_position = ?, other_details = ?
+      WHERE id = ?
+    `).run(
+      alias,
+      photoUrl,
+      profileValues.strong_points,
+      profileValues.weak_points,
+      profileValues.preferred_position,
+      profileValues.other_details,
+      id,
+    );
+  } catch (error) {
+    if (String(error.code || "").includes("CONSTRAINT")) {
+      return res.status(409).json({ error: "Ese alias ya está en uso." });
+    }
+    throw error;
+  }
+  const profile = db.prepare(`
+    SELECT id, alias, photo_url, strong_points, weak_points, preferred_position, other_details
+    FROM users WHERE id = ?
+  `).get(id);
+  res.json({ profile });
 });
 
 app.get("/api/admin/pending-users", requireAdmin, (_req, res) => {
