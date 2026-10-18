@@ -884,6 +884,7 @@ async function renderAdmin() {
       ${renderPlayerManagementPanel(players, pendingUsers)}
     </section>`;
   shell(adminContent, "Equipo");
+  bindPlayerProfileButtons();
   document.querySelectorAll(".admin-tab-button").forEach((button) => {
     button.addEventListener("click", () => {
       activeAdminTab = button.dataset.adminTab;
@@ -1490,11 +1491,13 @@ async function renderPlayer() {
     ${renderConvocationBoard(convocationData, false)}
     ${renderMatchPanel(matchData, false)}
     ${renderStandingsBoard(standingsData)}
-    <div class="mt-5 grid gap-4 sm:grid-cols-2">
+    <div class="mt-5 grid gap-4 sm:grid-cols-3">
+      <section class="rounded-2xl border border-ink/[.07] bg-white p-6 shadow-sm"><p class="text-xs font-bold uppercase tracking-[.12em] text-ink/45">Tu ficha técnica</p><p class="mt-2 text-sm leading-5 text-ink/55">Añade tu posición, tus puntos fuertes y una foto.</p><div class="mt-3">${profileButton(currentUser.id, currentUser.alias)}</div></section>
       <section class="rounded-2xl border border-ink/[.07] bg-white p-6 shadow-sm"><p class="text-xs font-bold uppercase tracking-[.12em] text-ink/45">Tu rol base</p><p class="display mt-3 text-2xl font-extrabold">${player?.base_role === "principal" ? "Principal" : "Suplente"}</p></section>
       <section class="rounded-2xl border border-ink/[.07] bg-white p-6 shadow-sm"><p class="text-xs font-bold uppercase tracking-[.12em] text-ink/45">Saldo</p><p class="display mt-3 text-2xl font-extrabold">${formatMoney(player?.balance)}</p></section>
     </div>`;
   shell(content);
+  bindPlayerProfileButtons();
   bindConvocationActions();
   bindMatchActions();
 }

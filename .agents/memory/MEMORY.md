@@ -1,1 +1,1 @@
-- [Reglas de O Pachanga](pachanga-rules.md) — reglas deportivas, ajustes auditables y arranque de SQLite sin borrado automático.
+- [Reglas de O Pachanga](pachanga-rules.md) — reglas deportivas, perfiles, almacenamiento de fotos y arranque de SQLite sin borrado automático.

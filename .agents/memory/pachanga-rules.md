@@ -26,3 +26,11 @@ description: Reglas de negocio semanales para convocatorias, equipos, cobros y c
 **Why:** el usuario definió este permiso para convocatorias; exigir el cambio de la contraseña compartida reduce el riesgo de que la credencial inicial siga en uso.
 
 **How to apply:** validar en backend el estado abierto, la disponibilidad y unicidad del alias; crear/inscribir la cuenta en una transacción, asignar ranking al final, guardar el ID del invitador en la respuesta sin sobrescribirlo al cambiar de lista, y mantener la ruta de promoción detrás de `requireAdmin`.
+
+## Fotos de perfil
+
+**Regla:** Las fotos de perfil se comprimen en el navegador y se guardan como data URL en SQLite, con un límite de 256 KB por imagen. Las respuestas de listas no incluyen estos datos; se consultan al abrir la ficha.
+
+**Why:** La app está pensada para un grupo pequeño en un servidor propio. Guardar imágenes pequeñas en la misma base evita añadir un directorio de medios y dependencias de almacenamiento que también habría que respaldar.
+
+**How to apply:** Mantener la compresión y validación estricta de tipo y tamaño; si el tamaño de la plantilla crece de forma sustancial, migrar las fotos a un almacenamiento persistente y mantener solo la URL/ruta en SQLite.

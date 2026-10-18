@@ -63,6 +63,18 @@ async function post(pathname, cookie, body) {
   return { response, payload };
 }
 
+async function patch(pathname, cookie, body) {
+  const response = await fetch(`${context.baseUrl}${pathname}`, {
+    method: "PATCH",
+    headers: {
+      "content-type": "application/json",
+      cookie,
+    },
+    body: JSON.stringify(body),
+  });
+  return { response, payload: await response.json() };
+}
+
 async function get(pathname, cookie) {
   const response = await fetch(`${context.baseUrl}${pathname}`, {
     headers: { cookie },
@@ -179,6 +191,7 @@ before(async () => {
       const result = addPlayer.run(`Jugador ${rankingPosition}`, alias, hash, rankingPosition);
       return { id: Number(result.lastInsertRowid), alias };
     });
+    context.playerIds = players.map((player) => player.id);
     context.captainACookie = await login(players[0].alias);
     context.captainBCookie = await login(players[1].alias);
     context.adminCookie = await login("DIMOGARU");
@@ -616,4 +629,49 @@ test("el draft equilibra plantillas de 14 y 16 jugadores y valida los turnos", a
     assert.equal(result.response.status, 409);
     assert.match(result.payload.error, /no puede superar la mitad/);
   });
+});
+
+test("las fichas de jugador se pueden consultar, editar por su titular y administrar con permisos", async () => {
+  const ownPath = `/api/users/${context.playerIds[1]}/profile`;
+  const publicProfile = await get(ownPath, context.captainACookie);
+  assert.equal(publicProfile.response.status, 200);
+  assert.equal(publicProfile.payload.profile.alias, "draft2");
+  assert.equal(publicProfile.payload.profile.strong_points, "");
+  assert.equal("name" in publicProfile.payload.profile, false);
+
+  const deniedEdit = await patch(ownPath, context.captainACookie, {
+    alias: "draft2",
+    strong_points: "Desborde y pase",
+  });
+  assert.equal(deniedEdit.response.status, 403);
+
+  const duplicateAlias = await patch(`/api/users/${context.playerIds[0]}/profile`, context.captainACookie, {
+    alias: "draft2",
+  });
+  assert.equal(duplicateAlias.response.status, 409);
+
+  const ownUpdate = await patch(`/api/users/${context.playerIds[0]}/profile`, context.captainACookie, {
+    alias: "draft1",
+    strong_points: "Buen pase",
+    weak_points: "Juego aéreo",
+    preferred_position: "Extremo",
+    other_details: "Prefiere la banda izquierda",
+    photo_url: "data:image/webp;base64,UklGRnh4eHhXRUJQ",
+  });
+  assert.equal(ownUpdate.response.status, 200, JSON.stringify(ownUpdate.payload));
+  assert.equal(ownUpdate.payload.profile.photo_url, "data:image/webp;base64,UklGRnh4eHhXRUJQ");
+  assert.equal(ownUpdate.payload.profile.strong_points, "Buen pase");
+
+  const adminUpdate = await patch(`/api/users/${context.playerIds[2]}/profile`, context.adminCookie, {
+    alias: "draft3",
+    preferred_position: "Portero",
+  });
+  assert.equal(adminUpdate.response.status, 200, JSON.stringify(adminUpdate.payload));
+  assert.equal(adminUpdate.payload.profile.preferred_position, "Portero");
+
+  const invalidPhoto = await patch(`/api/users/${context.playerIds[0]}/profile`, context.captainACookie, {
+    alias: "draft1",
+    photo_url: "data:image/svg+xml;base64,PHN2Zz4=",
+  });
+  assert.equal(invalidPhoto.response.status, 400);
 });
