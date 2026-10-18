@@ -20,3 +20,9 @@ description: Reglas de negocio semanales para convocatorias, equipos, cobros y c
 **Why:** el usuario pidió un arranque idempotente que nunca borre ni sobrescriba los datos del archivo SQLite existente.
 
 **How to apply:** mantener los reinicios de pruebas fuera del arranque de producción y de Replit; limitar la inicialización a crear el esquema, añadir columnas necesarias y crear el Admin solo si falta.
+
+**Alta de suplentes:** cualquier jugador activo puede añadir a la convocatoria abierta una cuenta de suplente sin respuesta o crear una cuenta activa nueva de rol suplente; solo Admin puede promover de suplente a principal. Las cuentas nuevas usan la contraseña inicial compartida y deben cambiarla en su primer acceso.
+
+**Why:** el usuario definió este permiso para convocatorias; exigir el cambio de la contraseña compartida reduce el riesgo de que la credencial inicial siga en uso.
+
+**How to apply:** validar en backend el estado abierto, la disponibilidad y unicidad del alias; crear/inscribir la cuenta en una transacción, asignar ranking al final y mantener la ruta de promoción detrás de `requireAdmin`.

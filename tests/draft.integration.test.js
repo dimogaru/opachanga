@@ -320,6 +320,84 @@ test("no se crea una convocatoria automáticamente y Admin debe elegir la fecha"
   assert.equal(created.payload.match.end_date, `${matchDate}T19:30:00`);
   assert.match(created.payload.match.match_date_label, /^(Lunes|Martes|Miércoles|Jueves|Viernes|Sábado|Domingo), \d{1,2} de [A-ZÁÉÍÓÚ][a-záéíóú]+$/);
 
+  const substituteSeedDb = new Database(context.databasePath);
+  let availableSubId;
+  try {
+    const hash = bcrypt.hashSync(password, 4);
+    const addSubstitute = substituteSeedDb.prepare(`
+      INSERT INTO users (name, first_name, last_name, alias, password_hash, account_status,
+        role, base_role, ranking_position, balance)
+      VALUES (?, ?, ?, ?, ?, 'active', 'suplente', 'suplente', ?, 0)
+    `);
+    availableSubId = Number(addSubstitute.run("Sub Libre", "Sub", "Libre", "sublibre", hash, 100).lastInsertRowid);
+    const alreadyRespondedId = Number(addSubstitute.run("Sub Ya", "Sub", "Ya", "subya", hash, 101).lastInsertRowid);
+    substituteSeedDb.prepare("INSERT INTO convocations (match_id, user_id, status) VALUES (?, ?, 'no_va')")
+      .run(created.payload.match.id, alreadyRespondedId);
+  } finally {
+    substituteSeedDb.close();
+  }
+  const availableSubs = await get("/api/convocations/current/available-suplentes", context.captainACookie);
+  assert.equal(availableSubs.response.status, 200);
+  assert.deepEqual(availableSubs.payload.players.map(({ alias }) => alias), ["sublibre"]);
+  const deniedAdminList = await get("/api/convocations/current/available-suplentes", context.adminCookie);
+  assert.equal(deniedAdminList.response.status, 403);
+  const deniedAdminAdd = await post("/api/convocations/current/add-existing-suplente", context.adminCookie, {
+    user_id: availableSubId,
+  });
+  assert.equal(deniedAdminAdd.response.status, 403);
+
+  const addedExisting = await post("/api/convocations/current/add-existing-suplente", context.captainACookie, {
+    user_id: availableSubId,
+  });
+  assert.equal(addedExisting.response.status, 200, JSON.stringify(addedExisting.payload));
+  assert.ok(addedExisting.payload.lists.suplentes.some(({ alias }) => alias === "sublibre"));
+  const duplicateExisting = await post("/api/convocations/current/add-existing-suplente", context.captainBCookie, {
+    user_id: availableSubId,
+  });
+  assert.equal(duplicateExisting.response.status, 409);
+  const deniedPromotion = await post(`/api/admin/convocations/${availableSubId}/promote`, context.captainACookie, {});
+  assert.equal(deniedPromotion.response.status, 403);
+  const promotedByAdmin = await post(`/api/admin/convocations/${availableSubId}/promote`, context.adminCookie, {});
+  assert.equal(promotedByAdmin.response.status, 200, JSON.stringify(promotedByAdmin.payload));
+  assert.ok(promotedByAdmin.payload.lists.principal.some(({ alias }) => alias === "sublibre"));
+  const availableAfterAdd = await get("/api/convocations/current/available-suplentes", context.captainACookie);
+  assert.deepEqual(availableAfterAdd.payload.players, []);
+
+  const addedNew = await post("/api/convocations/current/add-new-suplente", context.captainBCookie, {
+    first_name: "Iñigo",
+    last_name: "Nuevo",
+    alias: "NuevoSub",
+  });
+  assert.equal(addedNew.response.status, 201, JSON.stringify(addedNew.payload));
+  assert.equal(addedNew.payload.added_player.alias, "nuevosub");
+  assert.ok(addedNew.payload.lists.suplentes.some(({ alias }) => alias === "nuevosub"));
+  const duplicateAlias = await post("/api/convocations/current/add-new-suplente", context.captainACookie, {
+    first_name: "Otro",
+    last_name: "Jugador",
+    alias: "DRAFT1",
+  });
+  assert.equal(duplicateAlias.response.status, 409);
+
+  const newAccountDb = new Database(context.databasePath, { readonly: true });
+  try {
+    const newAccount = newAccountDb.prepare(`
+      SELECT first_name, last_name, alias, password_hash, account_status, must_change_password,
+        role, base_role, ranking_position, balance
+      FROM users WHERE alias = 'nuevosub'
+    `).get();
+    assert.equal(newAccount.first_name, "Iñigo");
+    assert.equal(newAccount.last_name, "Nuevo");
+    assert.equal(newAccount.account_status, "active");
+    assert.equal(newAccount.must_change_password, 1);
+    assert.equal(newAccount.role, "suplente");
+    assert.equal(newAccount.base_role, "suplente");
+    assert.equal(newAccount.ranking_position, 102);
+    assert.equal(newAccount.balance, 0);
+    assert.equal(await bcrypt.compare("Pachanga123#", newAccount.password_hash), true);
+  } finally {
+    newAccountDb.close();
+  }
+
   const current = await get("/api/convocations/current", context.adminCookie);
   assert.equal(current.payload.match.match_date, matchDate);
   assert.equal(current.payload.match.status, "open");
@@ -340,6 +418,10 @@ test("no se crea una convocatoria automáticamente y Admin debe elegir la fecha"
   assert.equal(cancelled.response.status, 200, JSON.stringify(cancelled.payload));
   assert.equal(cancelled.payload.match.status, "cancelled");
   assert.equal(cancelled.payload.notification.status, "disabled");
+  const addAfterClose = await post("/api/convocations/current/add-existing-suplente", context.captainACookie, {
+    user_id: availableSubId,
+  });
+  assert.equal(addAfterClose.response.status, 409);
 
   const playerView = await get("/api/convocations/current", context.captainACookie);
   assert.equal(playerView.payload.match, null);
