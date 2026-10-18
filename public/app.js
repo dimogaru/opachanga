@@ -355,6 +355,12 @@ function renderConvocationBoard(data, isAdmin = false, history = []) {
           <button id="response-no" ${!open ? "disabled" : ""} class="flex-1 rounded-xl ${data.currentResponse === "no_va" ? "bg-red-300 text-pitch-950" : "border border-white/20 bg-white/5 text-white"} px-4 py-2.5 text-xs font-extrabold tracking-wide transition hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-40 sm:flex-none">NO VOY</button>
         </div>
       </div>`}
+      ${!isAdmin && open ? `<div class="border-t border-white/10 bg-white/[.03] p-4 sm:px-7">
+        <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <p class="text-xs leading-5 text-white/60">¿Falta alguien en la lista? Añade a un suplente registrado o invita a uno nuevo.</p>
+          <button id="add-substitute" type="button" class="w-full rounded-xl border border-lime/50 bg-lime px-4 py-3 text-sm font-extrabold text-pitch-950 transition hover:bg-lime/90 focus:outline-none focus:ring-2 focus:ring-lime focus:ring-offset-2 focus:ring-offset-pitch-900 sm:w-auto">+ Añadir Suplente</button>
+        </div>
+      </div>` : ""}
     </section>
     ${isAdmin && (readOnly || data.match.status === "played") ? renderConvocationHistorySummary(data.match) : ""}
      <div class="mb-3"><h2 class="display text-xl font-extrabold tracking-tight">${isAdmin ? "Listas del grupo" : "Respuestas del grupo"}</h2><p class="mt-1 text-xs text-ink/50">La lista se actualiza para todo el equipo.</p></div>
@@ -1158,6 +1164,7 @@ async function renderAdmin() {
 }
 
 function bindConvocationActions(isAdmin = false) {
+  document.querySelector("#add-substitute")?.addEventListener("click", openSubstituteModal);
   for (const [id, response] of [["response-yes", "yes"], ["response-no", "no"]]) {
     document.querySelector(`#${id}`)?.addEventListener("click", async () => {
       try {
@@ -1329,6 +1336,126 @@ function bindMatchActions(isAdmin = false) {
       form.querySelector("button").disabled = false;
     }
   });
+}
+
+async function openSubstituteModal() {
+  const overlay = document.createElement("div");
+  overlay.className = "fixed inset-0 z-50 grid place-items-center overflow-y-auto bg-pitch-950/60 p-3 backdrop-blur-sm sm:p-4";
+  overlay.innerHTML = `
+    <section class="my-auto max-h-[calc(100dvh-1.5rem)] w-full max-w-lg overflow-y-auto rounded-3xl bg-white p-5 shadow-2xl sm:max-h-[calc(100dvh-2rem)] sm:p-7" role="dialog" aria-modal="true" aria-labelledby="substitute-modal-title">
+      <div class="mb-5 flex items-start justify-between gap-3">
+        <div><p class="text-xs font-bold uppercase tracking-[.13em] text-pitch-700">CONVOCATORIA ABIERTA</p><h2 id="substitute-modal-title" class="display mt-1 text-2xl font-extrabold">Añadir suplente</h2><p class="mt-1 text-sm text-ink/55">Elige una cuenta existente o registra a alguien nuevo.</p></div>
+        <button type="button" class="close-substitute grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-paper text-ink/55 hover:bg-ink/10" aria-label="Cerrar">✕</button>
+      </div>
+      <div class="mb-4 grid grid-cols-2 gap-2 rounded-2xl bg-paper p-1.5" role="tablist" aria-label="Tipo de suplente">
+        <button type="button" data-substitute-mode="existing" role="tab" aria-selected="true" class="rounded-xl bg-pitch-900 px-3 py-3 text-xs font-bold text-white">Suplente registrado</button>
+        <button type="button" data-substitute-mode="new" role="tab" aria-selected="false" class="rounded-xl px-3 py-3 text-xs font-bold text-ink/60">Nuevo suplente</button>
+      </div>
+      <form id="existing-substitute-form" class="space-y-4">
+        <label class="block"><span class="mb-1.5 block text-sm font-semibold">Jugador disponible</span><select name="user_id" required class="w-full rounded-xl border border-ink/15 bg-white px-4 py-3 text-sm outline-none focus:border-pitch-700"><option value="">Cargando suplentes…</option></select></label>
+        <p id="existing-substitute-empty" class="hidden rounded-xl bg-paper px-3 py-3 text-sm text-ink/55">No hay suplentes registrados pendientes de responder.</p>
+        <div id="existing-substitute-error" class="hidden rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700" role="alert"></div>
+        <button type="submit" class="w-full rounded-xl bg-pitch-900 px-4 py-3 text-sm font-bold text-white transition hover:bg-pitch-800 disabled:cursor-not-allowed disabled:opacity-50">Añadir a la lista de suplentes</button>
+      </form>
+      <form id="new-substitute-form" class="hidden space-y-4">
+        <div class="grid gap-3 sm:grid-cols-2">
+          <label class="block"><span class="mb-1.5 block text-sm font-semibold">Nombre</span><input name="first_name" required maxlength="60" autocomplete="given-name" class="w-full rounded-xl border border-ink/15 px-4 py-3 text-sm outline-none focus:border-pitch-700"/></label>
+          <label class="block"><span class="mb-1.5 block text-sm font-semibold">Apellidos</span><input name="last_name" required maxlength="80" autocomplete="family-name" class="w-full rounded-xl border border-ink/15 px-4 py-3 text-sm outline-none focus:border-pitch-700"/></label>
+        </div>
+        <label class="block"><span class="mb-1.5 block text-sm font-semibold">Alias único</span><input name="alias" required minlength="3" maxlength="24" pattern="[A-Za-zÀ-ÿ0-9._-]{3,24}" autocomplete="username" placeholder="Ej. Alex10" class="w-full rounded-xl border border-ink/15 px-4 py-3 text-sm outline-none focus:border-pitch-700"/><span class="mt-1 block text-xs text-ink/45">Entre 3 y 24 caracteres; debe estar libre.</span></label>
+        <p class="rounded-xl bg-lime/20 px-3 py-3 text-xs leading-5 text-ink/70">Contraseña inicial: <b>Pachanga123#</b>. La cuenta se activa al momento y el nuevo jugador deberá cambiarla al entrar.</p>
+        <div id="new-substitute-error" class="hidden rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700" role="alert"></div>
+        <button type="submit" class="w-full rounded-xl bg-pitch-900 px-4 py-3 text-sm font-bold text-white transition hover:bg-pitch-800 disabled:cursor-not-allowed disabled:opacity-50">Crear y añadir suplente</button>
+      </form>
+    </section>`;
+  document.body.append(overlay);
+  const close = () => overlay.remove();
+  overlay.querySelectorAll(".close-substitute").forEach((button) => button.addEventListener("click", close));
+  overlay.addEventListener("click", (event) => { if (event.target === overlay) close(); });
+  overlay.addEventListener("keydown", (event) => { if (event.key === "Escape") close(); });
+
+  const existingForm = overlay.querySelector("#existing-substitute-form");
+  const newForm = overlay.querySelector("#new-substitute-form");
+  const modeButtons = [...overlay.querySelectorAll("[data-substitute-mode]")];
+  for (const button of modeButtons) {
+    button.addEventListener("click", () => {
+      const isExisting = button.dataset.substituteMode === "existing";
+      existingForm.classList.toggle("hidden", !isExisting);
+      newForm.classList.toggle("hidden", isExisting);
+      for (const modeButton of modeButtons) {
+        const selected = modeButton === button;
+        modeButton.setAttribute("aria-selected", String(selected));
+        modeButton.classList.toggle("bg-pitch-900", selected);
+        modeButton.classList.toggle("text-white", selected);
+        modeButton.classList.toggle("text-ink/60", !selected);
+      }
+      overlay.querySelectorAll('[role="alert"]').forEach((error) => {
+        error.textContent = "";
+        error.classList.add("hidden");
+      });
+    });
+  }
+
+  const select = existingForm.elements.user_id;
+  const existingEmpty = overlay.querySelector("#existing-substitute-empty");
+  const existingButton = existingForm.querySelector('button[type="submit"]');
+  try {
+    const { players: availablePlayers } = await api("/api/convocations/current/available-suplentes");
+    select.innerHTML = availablePlayers.length
+      ? `<option value="">Selecciona un alias</option>${availablePlayers.map((player) => `<option value="${player.id}">${escapeHtml(player.alias)}</option>`).join("")}`
+      : `<option value="">No hay suplentes disponibles</option>`;
+    existingEmpty.classList.toggle("hidden", availablePlayers.length > 0);
+    existingButton.disabled = availablePlayers.length === 0;
+  } catch (error) {
+    select.innerHTML = `<option value="">No se pudieron cargar los suplentes</option>`;
+    existingButton.disabled = true;
+    const errorBox = overlay.querySelector("#existing-substitute-error");
+    errorBox.textContent = error.message;
+    errorBox.classList.remove("hidden");
+  }
+
+  existingForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (!select.value) return;
+    existingButton.disabled = true;
+    try {
+      await api("/api/convocations/current/add-existing-suplente", {
+        method: "POST",
+        body: JSON.stringify({ user_id: select.value }),
+      });
+      close();
+      showToast("Suplente añadido a la convocatoria.");
+      await renderHome();
+    } catch (error) {
+      const errorBox = overlay.querySelector("#existing-substitute-error");
+      errorBox.textContent = error.message;
+      errorBox.classList.remove("hidden");
+      existingButton.disabled = false;
+    }
+  });
+
+  const newButton = newForm.querySelector('button[type="submit"]');
+  newForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    newButton.disabled = true;
+    try {
+      const body = Object.fromEntries(new FormData(newForm).entries());
+      const response = await api("/api/convocations/current/add-new-suplente", {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+      const alias = response.added_player?.alias || body.alias;
+      close();
+      showToast(`Cuenta ${alias} creada. Contraseña inicial: Pachanga123#`);
+      await renderHome();
+    } catch (error) {
+      const errorBox = overlay.querySelector("#new-substitute-error");
+      errorBox.textContent = error.message;
+      errorBox.classList.remove("hidden");
+      newButton.disabled = false;
+    }
+  });
+  overlay.querySelector('[data-substitute-mode="existing"]').focus();
 }
 
 async function renderPlayer() {

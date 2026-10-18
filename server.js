@@ -9,6 +9,7 @@ const bcrypt = require("bcrypt");
 
 const app = express();
 const port = Number(process.env.PORT || 3000);
+const defaultSubstitutePassword = "Pachanga123#";
 const dataDirectory = process.env.DATA_DIR
   ? path.resolve(process.env.DATA_DIR)
   : path.join(__dirname, "data");
@@ -1804,6 +1805,125 @@ app.post("/api/convocations/me", requirePlayer, (req, res) => {
     DO UPDATE SET status = excluded.status, updated_at = CURRENT_TIMESTAMP
   `).run(match.id, user.id, status);
   res.json(getConvocationData(match, user.id));
+});
+
+app.get("/api/convocations/current/available-suplentes", requirePlayer, (req, res) => {
+  const match = getCurrentMatch();
+  if (!match || match.status !== "open") {
+    return res.status(409).json({ error: "No hay una convocatoria abierta." });
+  }
+  const players = db.prepare(`
+    SELECT u.id, u.alias
+    FROM users u
+    LEFT JOIN convocations c ON c.match_id = ? AND c.user_id = u.id
+    WHERE u.role = 'suplente' AND u.base_role = 'suplente'
+      AND u.account_status = 'active' AND u.deleted_at IS NULL
+      AND c.user_id IS NULL
+    ORDER BY u.ranking_position IS NULL, u.ranking_position, u.alias COLLATE NOCASE
+  `).all(match.id);
+  res.json({ players });
+});
+
+app.post("/api/convocations/current/add-existing-suplente", requirePlayer, (req, res) => {
+  const userId = Number(req.body?.user_id);
+  if (!Number.isInteger(userId) || userId < 1) {
+    return res.status(400).json({ error: "Selecciona un suplente válido." });
+  }
+  const match = getCurrentMatch();
+  if (!match || match.status !== "open") {
+    return res.status(409).json({ error: "No hay una convocatoria abierta." });
+  }
+  try {
+    db.transaction(() => {
+      const current = getCurrentMatch();
+      if (!current || current.id !== match.id || current.status !== "open") {
+        const error = new Error("La convocatoria ya no está abierta.");
+        error.status = 409;
+        throw error;
+      }
+      const candidate = db.prepare(`
+        SELECT id FROM users
+        WHERE id = ? AND role = 'suplente' AND base_role = 'suplente'
+          AND account_status = 'active' AND deleted_at IS NULL
+      `).get(userId);
+      if (!candidate) {
+        const error = new Error("No se encontró un suplente activo válido.");
+        error.status = 409;
+        throw error;
+      }
+      if (db.prepare("SELECT 1 FROM convocations WHERE match_id = ? AND user_id = ?").get(match.id, userId)) {
+        const error = new Error("Ese jugador ya respondió a esta convocatoria.");
+        error.status = 409;
+        throw error;
+      }
+      db.prepare(`
+        INSERT INTO convocations (match_id, user_id, status, updated_at)
+        VALUES (?, ?, 'suplente', CURRENT_TIMESTAMP)
+      `).run(match.id, userId);
+    })();
+    res.json(getConvocationData(match, req.session.user.id));
+  } catch (error) {
+    res.status(error.status || 500).json({ error: error.status ? error.message : "No se pudo añadir al suplente." });
+  }
+});
+
+app.post("/api/convocations/current/add-new-suplente", requirePlayer, async (req, res) => {
+  const firstName = String(req.body?.first_name || "").trim().replace(/\s+/g, " ");
+  const lastName = String(req.body?.last_name || "").trim().replace(/\s+/g, " ");
+  const alias = String(req.body?.alias || "").trim().normalize("NFKC").toLowerCase();
+  if (!firstName || firstName.length > 60 || !lastName || lastName.length > 80) {
+    return res.status(400).json({ error: "Indica un nombre y unos apellidos válidos." });
+  }
+  if (!/^[\p{L}\p{N}._-]{3,24}$/u.test(alias)) {
+    return res.status(400).json({ error: "El alias debe tener entre 3 y 24 letras, números, puntos, guiones o guiones bajos." });
+  }
+  const match = getCurrentMatch();
+  if (!match || match.status !== "open") {
+    return res.status(409).json({ error: "No hay una convocatoria abierta." });
+  }
+  try {
+    const passwordHash = await bcrypt.hash(defaultSubstitutePassword, 12);
+    const createdUserId = db.transaction(() => {
+      const current = getCurrentMatch();
+      if (!current || current.id !== match.id || current.status !== "open") {
+        const error = new Error("La convocatoria ya no está abierta.");
+        error.status = 409;
+        throw error;
+      }
+      if (db.prepare("SELECT 1 FROM users WHERE alias = ? COLLATE NOCASE").get(alias)) {
+        const error = new Error("Ese alias ya está en uso.");
+        error.status = 409;
+        throw error;
+      }
+      const name = `${firstName} ${lastName}`;
+      const rankingPosition = db.prepare(`
+        SELECT COALESCE(MAX(ranking_position), 0) + 1 AS next_position
+        FROM users WHERE role != 'admin'
+      `).get().next_position;
+      const created = db.prepare(`
+        INSERT INTO users (name, first_name, last_name, alias, password_hash, account_status,
+          must_change_password, role, base_role, ranking_position, balance, created_at)
+        VALUES (?, ?, ?, ?, ?, 'active', 1, 'suplente', 'suplente', ?, 0, CURRENT_TIMESTAMP)
+      `).run(name, firstName, lastName, alias, passwordHash, rankingPosition);
+      const userId = Number(created.lastInsertRowid);
+      db.prepare(`
+        INSERT INTO convocations (match_id, user_id, status, updated_at)
+        VALUES (?, ?, 'suplente', CURRENT_TIMESTAMP)
+      `).run(match.id, userId);
+      return userId;
+    })();
+    res.status(201).json({
+      ...getConvocationData(match, req.session.user.id),
+      added_player: db.prepare("SELECT id, alias FROM users WHERE id = ?").get(createdUserId),
+    });
+  } catch (error) {
+    if (error.status) return res.status(error.status).json({ error: error.message });
+    if (String(error.code || "").includes("CONSTRAINT")) {
+      return res.status(409).json({ error: "Ese alias ya está en uso." });
+    }
+    console.error("No se pudo añadir el suplente:", error.message);
+    res.status(500).json({ error: "No se pudo crear la cuenta de suplente." });
+  }
 });
 
 app.post("/api/admin/convocations/:userId/promote", requireAdmin, (req, res) => {
