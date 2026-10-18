@@ -131,7 +131,7 @@ before(async () => {
     cwd: projectDirectory,
     env: {
       ...process.env,
-      DATA_DIR: context.dataDirectory,
+      DB_PATH: context.databasePath,
       PORT: String(port),
       NODE_ENV: "test",
       REPL_ID: "",

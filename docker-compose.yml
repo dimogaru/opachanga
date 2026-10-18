@@ -4,16 +4,19 @@ services:
     container_name: o-pachanga
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      - "${PORT:-3000}:${PORT:-3000}"
     environment:
       NODE_ENV: production
-      PORT: 3000
-      DATA_DIR: /app/data
+      PORT: ${PORT:-3000}
+      DB_PATH: ${DB_PATH:-/app/data/o-pachanga.sqlite}
       SESSION_SECRET: ${SESSION_SECRET:?Define SESSION_SECRET en el entorno}
       INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:-}
       VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
       VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
-      VAPID_SUBJECT: ${VAPID_SUBJECT:-mailto:admin@opachanga.example}
+      VAPID_SUBJECT: ${VAPID_SUBJECT:-}
+      PUBLIC_VAPID_KEY: ${PUBLIC_VAPID_KEY:-}
+      PRIVATE_VAPID_KEY: ${PRIVATE_VAPID_KEY:-}
+      VAPID_EMAIL: ${VAPID_EMAIL:-}
     volumes:
       - pachanga-data:/app/data
 

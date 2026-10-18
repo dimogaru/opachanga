@@ -1,5 +1,9 @@
 node_modules/
-data/*.sqlite
-data/*.sqlite-*
 .env
+.env.*
+!.env.example
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
 .DS_Store

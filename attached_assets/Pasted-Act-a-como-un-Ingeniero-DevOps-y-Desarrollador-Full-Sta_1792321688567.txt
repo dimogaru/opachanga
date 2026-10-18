@@ -1,0 +1,23 @@
+Actúa como un Ingeniero DevOps y Desarrollador Full-Stack Senior. Necesito preparar y optimizar todo el proyecto para desplegarlo sin errores en un servidor propio mediante Coolify (Docker).
+
+Por favor, realiza y verifica los siguientes ajustes en la estructura del proyecto:
+
+1. CREAR DOCKERFILE OPTIMIZADO:
+Crea un archivo `Dockerfile` en la raíz del proyecto para un entorno Node.js 20. Debe incluir las dependencias de compilación necesarias para `better-sqlite3` (python3, make, g++, etc. si usas alpine, o node:20-slim) para evitar errores de binarios nativos de C++ al compilar. Debe exponer el puerto configurado por la variable de entorno PORT (por defecto 3000) y ejecutar la aplicación.
+
+2. CREAR ARCHIVO .dockerignore:
+Crea un archivo `.dockerignore` que excluya `node_modules`, `.git`, `.replit`, `database.sqlite` (o archivos .db/.sqlite), logs y archivos de entorno local (`.env`), para no sobrecargar la imagen de Docker ni sobrescribir la base de datos de producción durante el build.
+
+3. SOPORTE DE BASE DE DATOS SQLITE Y VOLUMEN PERSISTENTE:
+- Asegúrate de que la ruta del archivo SQLite (database.sqlite) pueda configurarse mediante la variable de entorno `DB_PATH` (por ejemplo: `process.env.DB_PATH || './database.sqlite'`) o que esté centralizada en una carpeta dedicada (ej. `./data/database.sqlite`) para facilitar el montaje de volúmenes persistentes en Coolify.
+- Asegúrate de que el código cree automáticamente el directorio o el archivo de la base de datos SQLite al arrancar si este no existe.
+
+4. VARIABLES DE ENTORNO Y CLAVES VAPID (WEB PUSH):
+- Revisa que el backend lea correctamente las variables de entorno para las notificaciones Web Push: `PUBLIC_VAPID_KEY`, `PRIVATE_VAPID_KEY` y `VAPID_SUBJECT` (o `VAPID_EMAIL`).
+- Añade un archivo `.env.example` en el repositorio con todas las variables requeridas indicadas como plantilla.
+
+5. VERIFICACIÓN DE SCRIPTS Y PUERTO:
+- Revisa el archivo `package.json` para asegurarte de que exista el script `"start": "node index.js"` (o el archivo de entrada correspondiente).
+- Asegúrate de que el servidor Express escuche en `process.env.PORT || 3000` y en el host `'0.0.0.0'` para recibir tráfico dentro del contenedor Docker.
+
+Revisa los archivos generados/modificados y confirma cuando esté listo para hacer commit y subir a GitHub.

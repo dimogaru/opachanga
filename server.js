@@ -8,12 +8,17 @@ const webPush = require("web-push");
 const bcrypt = require("bcrypt");
 
 const app = express();
-const port = Number(process.env.PORT || 5000);
-const dataDirectory = process.env.DATA_DIR || path.join(__dirname, "data");
+const port = Number(process.env.PORT || 3000);
+const dataDirectory = process.env.DATA_DIR
+  ? path.resolve(process.env.DATA_DIR)
+  : path.join(__dirname, "data");
+const databasePath = process.env.DB_PATH
+  ? path.resolve(process.env.DB_PATH)
+  : path.join(dataDirectory, "o-pachanga.sqlite");
 const timeZone = "Europe/Madrid";
-fs.mkdirSync(dataDirectory, { recursive: true });
+fs.mkdirSync(path.dirname(databasePath), { recursive: true });
 
-const db = new Database(path.join(dataDirectory, "o-pachanga.sqlite"));
+const db = new Database(databasePath);
 db.pragma("journal_mode = WAL");
 db.pragma("foreign_keys = ON");
 db.exec(`
@@ -307,9 +312,9 @@ if (replitWorkspace) {
   }
 }
 
-const vapidPublicKey = process.env.VAPID_PUBLIC_KEY || "";
-const vapidPrivateKey = process.env.VAPID_PRIVATE_KEY || "";
-const vapidSubject = process.env.VAPID_SUBJECT || "mailto:admin@opachanga.local";
+const vapidPublicKey = process.env.VAPID_PUBLIC_KEY || process.env.PUBLIC_VAPID_KEY || "";
+const vapidPrivateKey = process.env.VAPID_PRIVATE_KEY || process.env.PRIVATE_VAPID_KEY || "";
+const vapidSubject = process.env.VAPID_SUBJECT || process.env.VAPID_EMAIL || "mailto:admin@opachanga.local";
 let pushConfigured = false;
 if (vapidPublicKey && vapidPrivateKey) {
   try {
@@ -320,7 +325,7 @@ if (vapidPublicKey && vapidPrivateKey) {
   }
 }
 if (!pushConfigured) {
-  console.warn("VAPID_PUBLIC_KEY/VAPID_PRIVATE_KEY no configuradas; notificaciones push desactivadas.");
+  console.warn("Claves VAPID no configuradas; notificaciones push desactivadas.");
 }
 
 app.set("trust proxy", 1);

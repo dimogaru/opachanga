@@ -15,7 +15,7 @@ npm install
 SESSION_SECRET="cambia-este-valor" npm start
 ```
 
-Abre `http://localhost:5000`. En una instalación nueva se crea el usuario administrador DIMOGARU con rol Admin, activo y sin participación en la competición. Para usar una contraseña inicial propia, configura `INITIAL_ADMIN_PASSWORD` antes del primer arranque. La base se guarda en `data/o-pachanga.sqlite` (o en `DATA_DIR`).
+Abre `http://localhost:3000` (Replit configura el puerto 5000 para su vista previa). En una instalación nueva se crea el usuario administrador DIMOGARU con rol Admin, activo y sin participación en la competición. Para usar una contraseña inicial propia, configura `INITIAL_ADMIN_PASSWORD` antes del primer arranque. La base se guarda en `data/o-pachanga.sqlite`; `DB_PATH` permite indicar una ruta de archivo completa y tiene prioridad sobre `DATA_DIR`. El directorio padre se crea automáticamente.
 
 En el workspace de Replit, el primer inicio después de esta migración limpia una sola vez la actividad de pruebas (jugadores, partidos, convocatorias, movimientos, puntos, suscripciones y bote), conserva y configura la cuenta Admin y deja la base lista para una temporada nueva. El marcador de migración evita repetir el borrado en reinicios posteriores; la limpieza no se ejecuta en deployments publicados.
 
@@ -26,12 +26,13 @@ Ejecuta `npm run seed` para crear o actualizar los 14 jugadores de prueba. El co
 ## Docker
 
 ```sh
+cp .env.example .env
 export SESSION_SECRET="$(openssl rand -hex 32)"
-# Genera una pareja VAPID y configura las tres variables VAPID_* en tu entorno.
+# Edita .env para usar las claves VAPID generadas con npm run generate:vapid.
 docker compose up --build -d
 ```
 
-El servicio escucha en el puerto `3000`; el volumen `pachanga-data` mantiene la base SQLite al recrear el contenedor. Configura un proxy inverso con HTTPS y reenvío de `X-Forwarded-Proto` para uso público.
+La imagen usa Node.js 20; compila `better-sqlite3` en una etapa separada y mantiene el contenedor final sin herramientas de compilación. El servicio escucha en `PORT` (3000 por defecto); el volumen `pachanga-data` mantiene `/app/data` al recrear el contenedor. Para Coolify, monta un volumen persistente en `/app/data` y expón el mismo puerto configurado en `PORT`. Configura un proxy inverso con HTTPS y reenvío de `X-Forwarded-Proto` para uso público.
 
 Puedes copiar `.env.example` a `.env` y sustituir los valores localmente. `.env` está excluido de Git; no compartas ni subas la clave privada.
 
@@ -40,6 +41,8 @@ Para crear claves VAPID una sola vez, ejecuta `npm run generate:vapid` y guarda 
 - `VAPID_PUBLIC_KEY`
 - `VAPID_PRIVATE_KEY`
 - `VAPID_SUBJECT` (por ejemplo, `mailto:admin@tu-dominio`)
+
+También se aceptan los alias `PUBLIC_VAPID_KEY`, `PRIVATE_VAPID_KEY` y `VAPID_EMAIL`.
 
 El servidor no arranca el envío push si faltan las claves; la interfaz muestra ese estado. La clave privada nunca se envía al navegador. En Replit, configura `VAPID_PRIVATE_KEY` en Secrets y las otras variables en el entorno del proyecto.
 
