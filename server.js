@@ -445,6 +445,7 @@ function getConvocationData(match, userId, { historical = false } = {}) {
       draft: readJson(match.draft_state, {}),
       canReopen: !historical && now < match.end_date,
       readOnly: historical,
+      transactions: historical || match.status === "played" ? getMatchTransactions(match.id) : [],
     },
     lists: { principal, suplentes, no_va: noVan, pending },
     currentResponse: roster.find((user) => user.id === userId)?.response || null,
@@ -453,6 +454,17 @@ function getConvocationData(match, userId, { historical = false } = {}) {
     responseCount: activePlayers.filter((user) => user.response !== null).length,
     totalPlayers: activePlayers.length,
   };
+}
+
+function getMatchTransactions(matchId) {
+  return db.prepare(`
+    SELECT t.id, t.user_id, u.alias, t.amount, t.concept, t.date,
+      t.transaction_type, t.adjustment_of, t.status
+    FROM transactions t
+    JOIN users u ON u.id = t.user_id
+    WHERE t.match_id = ? AND u.role != 'admin'
+    ORDER BY t.id
+  `).all(matchId);
 }
 
 function moneyCents(value) {
@@ -824,7 +836,7 @@ async function sendCampaign(match, type) {
         WHERE c.user_id IS NULL OR c.status IS NULL
       `).all(match.id);
   const message = type === "opening"
-    ? { title: "Convocatoria abierta", body: "Confirma si vienes al partido de esta semana.", url: "/" }
+    ? { title: "Convocatoria abierta", body: "Confirma si vienes al próximo partido.", url: "/" }
     : { title: "Aún no te has apuntado al partido", body: "Confirma si vienes antes del lunes a las 20:00.", url: "/" };
   const results = await Promise.allSettled(subscriptions.map((subscription) =>
     webPush.sendNotification({

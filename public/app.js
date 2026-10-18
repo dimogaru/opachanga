@@ -7,6 +7,7 @@ let toastTimer;
 let convocationData = null;
 let convocationHistory = [];
 let selectedConvocationId = null;
+let viewingHistoricalConvocation = false;
 let pushConfig = { enabled: false, publicKey: null };
 let selectedMatchId = null;
 let matchData = { matches: [], pot: 0 };
@@ -171,22 +172,34 @@ function renderConvocationHistorySummary(match) {
   const financeSummary = finance
     ? `<div class="mt-4 grid gap-2 rounded-xl bg-paper p-3 text-xs text-ink/60 sm:grid-cols-2 lg:grid-cols-4"><span>Coste de pista: <b class="text-ink">${formatMoney(finance.pitch_cost)}</b></span><span>Cuota por jugador: <b class="text-ink">${formatMoney(finance.fee_per_player)}</b></span><span>Total cobrado: <b class="text-ink">${formatMoney(finance.total_collected)}</b></span><span>Añadido al bote: <b class="text-pitch-800">${formatMoney(finance.pot_added)}</b></span></div>`
     : `<p class="mt-4 rounded-xl bg-paper p-3 text-xs text-ink/50">No hay un cobro de partido registrado para esta jornada.</p>`;
+  const transactions = match.transactions || [];
+  const transactionsSummary = `<details class="mt-3 overflow-hidden rounded-xl border border-ink/[.07] bg-white">
+    <summary class="cursor-pointer list-none px-3 py-3 text-xs font-bold">Movimientos de cobro y ajustes <span class="ml-1 rounded-full bg-paper px-2 py-1 text-[10px] text-ink/50">${transactions.length}</span></summary>
+    ${transactions.length
+      ? `<ul class="divide-y divide-ink/[.06] border-t border-ink/[.06]">${transactions.map((transaction) => {
+        const status = transaction.status === "adjusted" ? "Ajustado" : transaction.status === "refunded" ? "Devuelto" : "Aplicado";
+        const reference = transaction.adjustment_of ? ` · Ajuste del asiento #${transaction.adjustment_of}` : "";
+        return `<li class="flex flex-col gap-1 px-3 py-3 sm:flex-row sm:items-center sm:justify-between"><span class="min-w-0"><b class="text-ink">${escapeHtml(transaction.alias)}</b><span class="ml-2 text-ink/50">${escapeHtml(transaction.concept)}${escapeHtml(reference)}</span></span><span class="flex shrink-0 items-center gap-2 text-xs"><b class="text-ink">${formatMoney(transaction.amount)}</b><span class="rounded-full bg-paper px-2 py-1 text-[10px] font-semibold text-ink/55">${status}</span></span></li>`;
+      }).join("")}</ul>`
+      : `<p class="border-t border-ink/[.06] px-3 py-3 text-xs text-ink/45">No se guardaron movimientos de cobro.</p>`}
+  </details>`;
   return `<section class="mb-5 rounded-2xl border border-ink/[.07] bg-white p-4 shadow-sm sm:p-5">
     <div class="flex flex-wrap items-center justify-between gap-2"><div><p class="text-[10px] font-extrabold uppercase tracking-[.12em] text-pitch-700">Resumen guardado</p><h3 class="mt-1 font-bold">Partido · ${escapeHtml(resultLabel)}</h3></div><span class="rounded-full bg-paper px-3 py-1.5 text-xs font-bold text-ink/55">${teamA.length + teamB.length} jugadores en equipos</span></div>
     ${captains}
     <div class="mt-4 grid gap-3 sm:grid-cols-2">${renderTeamCard("Equipo A", teamA, "bg-pitch-100 text-pitch-900")}${renderTeamCard("Equipo B", teamB, "bg-amber-50 text-amber-900")}</div>
     ${financeSummary}
+    ${transactionsSummary}
   </section>`;
 }
 
-function listPanel(title, usersInList, colorClass, icon, isAdmin = false) {
+function listPanel(title, usersInList, colorClass, icon, isAdmin = false, showBaseRole = true) {
   const list = usersInList || [];
   const playerCount = list.length;
   const rows = list.length
     ? list.map((user) => `<li class="flex items-center gap-3 px-4 py-3 ${isAdmin && title === "Lista de suplentes" ? "pr-2" : ""}">
         <span class="grid h-8 w-8 shrink-0 place-items-center rounded-xl ${colorClass} text-[11px] font-bold">${escapeHtml(String(user.alias || "").slice(0, 2).toUpperCase())}</span>
         <span class="min-w-0 flex-1 truncate text-sm font-semibold">${escapeHtml(user.alias)}</span>
-        <span class="hidden text-[11px] text-ink/40 sm:inline">${`${user.base_role === "principal" ? "Principal" : "Suplente"}${user.base_role === "suplente" && user.response === "principal" ? " · promovido" : ""}`}</span>
+        ${showBaseRole ? `<span class="hidden text-[11px] text-ink/40 sm:inline">${`${user.base_role === "principal" ? "Principal" : "Suplente"}${user.base_role === "suplente" && user.response === "principal" ? " · promovido" : ""}`}</span>` : ""}
         ${isAdmin && title === "Lista de suplentes" ? `<button class="promote-player shrink-0 rounded-lg border border-pitch-700/20 px-2.5 py-1.5 text-[11px] font-bold text-pitch-800 transition hover:bg-pitch-100" data-user-id="${user.id}" aria-label="Promover a ${escapeHtml(user.alias)} a principal">↑ Principal</button>` : ""}
         ${isAdmin && title === "Lista principal" ? `<button class="notify-promoted shrink-0 rounded-lg border border-ink/10 px-2.5 py-1.5 text-[11px] font-bold text-ink/65 transition hover:bg-paper" data-user-id="${user.id}" aria-label="Enviar aviso a ${escapeHtml(user.alias)}">Avisar</button>` : ""}
       </li>`).join("")
@@ -256,9 +269,9 @@ function renderConvocationBoard(data, isAdmin = false, history = []) {
     ${isAdmin && (readOnly || data.match.status === "played") ? renderConvocationHistorySummary(data.match) : ""}
      <div class="mb-3"><h2 class="display text-xl font-extrabold tracking-tight">${isAdmin ? "Listas del grupo" : "Respuestas del grupo"}</h2><p class="mt-1 text-xs text-ink/50">La lista se actualiza para todo el equipo.</p></div>
     <div class="grid gap-4 lg:grid-cols-3">
-      ${listPanel("Lista principal", data.lists.principal, "bg-pitch-100 text-pitch-800", "✓", isAdmin && !readOnly)}
-      ${listPanel("Lista de suplentes", data.lists.suplentes, "bg-amber-50 text-amber-700", "↗", isAdmin && !readOnly)}
-      ${listPanel("Lista NO VAN", data.lists.no_va, "bg-stone-100 text-stone-500", "—", isAdmin && !readOnly)}
+      ${listPanel("Lista principal", data.lists.principal, "bg-pitch-100 text-pitch-800", "✓", isAdmin && !readOnly, !readOnly)}
+      ${listPanel("Lista de suplentes", data.lists.suplentes, "bg-amber-50 text-amber-700", "↗", isAdmin && !readOnly, !readOnly)}
+      ${listPanel("Lista NO VAN", data.lists.no_va, "bg-stone-100 text-stone-500", "—", isAdmin && !readOnly, !readOnly)}
     </div>
     <details class="mt-4 rounded-2xl border border-ink/[.07] bg-white px-4 py-3">
        <summary class="cursor-pointer list-none text-sm font-semibold">${readOnly ? "Respuestas archivadas" : "Sin responder"} <span class="ml-1 rounded-full bg-paper px-2 py-0.5 text-xs text-ink/55">${readOnly ? data.responseCount : data.lists.pending.length}</span></summary>
@@ -655,7 +668,10 @@ async function renderAdmin() {
   convocationHistory = historyResponse.matches || [];
   const activeMatchId = activeConvocation.match.id;
   const hasSelectedMatch = convocationHistory.some((match) => match.id === Number(selectedConvocationId));
-  if (selectedConvocationId == null || !hasSelectedMatch) selectedConvocationId = activeMatchId;
+  if (!viewingHistoricalConvocation || selectedConvocationId == null || !hasSelectedMatch) {
+    selectedConvocationId = activeMatchId;
+    viewingHistoricalConvocation = false;
+  }
   if (Number(selectedConvocationId) === activeMatchId) {
     convocationData = activeConvocation;
   } else {
@@ -689,7 +705,7 @@ async function renderAdmin() {
       ${renderConvocationBoard(convocationData, true, convocationHistory)}
     </section>
     <section class="admin-tab-panel ${activeAdminTab === "avisos" ? "" : "hidden"}" data-admin-panel="avisos">
-      ${renderNotificationPanel(convocationData, users, pushConfig, notificationStatus)}
+      ${renderNotificationPanel(activeConvocation, users, pushConfig, notificationStatus)}
     </section>
     <section class="admin-tab-panel ${activeAdminTab === "finanzas" ? "" : "hidden"}" data-admin-panel="finanzas">
       ${renderFinancePanel(financeData, matchData)}
@@ -750,6 +766,7 @@ async function renderAdmin() {
   bindConvocationActions(true);
   document.querySelector("#convocation-history-picker")?.addEventListener("change", async (event) => {
     selectedConvocationId = Number(event.target.value);
+    viewingHistoricalConvocation = selectedConvocationId !== historyResponse.active_match_id;
     await renderAdmin();
   });
   document.querySelector("#new-convocation")?.addEventListener("click", async (event) => {
@@ -761,6 +778,7 @@ async function renderAdmin() {
         body: JSON.stringify({ match_id: Number(button.dataset.matchId) }),
       });
       selectedConvocationId = response.match.id;
+      viewingHistoricalConvocation = false;
       if (response.created) {
         const pushMessage = response.notification?.status === "disabled"
           ? " Web Push no está configurado."
@@ -1239,6 +1257,8 @@ async function logout() {
   }
   await api("/api/session", { method: "DELETE" }).catch(() => {});
   currentUser = null;
+  selectedConvocationId = null;
+  viewingHistoricalConvocation = false;
   renderLogin();
 }
 
@@ -1257,7 +1277,10 @@ async function refreshConvocationIfChanged() {
   if (!currentUser || document.visibilityState !== "visible" || pollingConvocation || document.querySelector('[role="dialog"]')) return;
   pollingConvocation = true;
   try {
-    const latest = await api("/api/convocations/current");
+    const selectedEndpoint = currentUser.role === "admin" && selectedConvocationId
+      ? `/api/convocations/${selectedConvocationId}`
+      : "/api/convocations/current";
+    const latest = await api(selectedEndpoint);
     if (JSON.stringify(latest) !== JSON.stringify(convocationData)) {
       convocationData = latest;
       await renderHome();
