@@ -151,16 +151,6 @@ db.exec(`
     sent_at TEXT
   );
 `);
-db.exec(`
-  UPDATE push_campaigns
-  SET status = 'failed', error = 'Reintento disponible tras reiniciar el servidor'
-  WHERE status = 'sending' AND created_at < datetime('now', '-15 minutes')
-  ;
-  UPDATE balance_alert_campaigns
-  SET status = 'failed', error = 'Reintento disponible tras reiniciar el servidor'
-  WHERE status = 'sending' AND created_at < datetime('now', '-15 minutes')
-`);
-
 const userColumns = db.prepare("PRAGMA table_info(users)").all().map((column) => column.name);
 const userMigrations = [
   ["first_name", "TEXT"],
@@ -792,8 +782,16 @@ async function sendNegativeBalanceAlert(match) {
     db.prepare("INSERT OR IGNORE INTO balance_alert_campaigns (match_id, status) VALUES (?, 'sending')")
       .run(match.id);
     const campaign = db.prepare("SELECT * FROM balance_alert_campaigns WHERE match_id = ?").get(match.id);
-    if (campaign.status === "sent" || campaign.status === "sending") return { claimed: false, campaign };
-    db.prepare("UPDATE balance_alert_campaigns SET status = 'sending', error = NULL WHERE match_id = ?").run(match.id);
+    if (campaign.status === "sent") return { claimed: false, campaign };
+    if (campaign.status === "sending") {
+      const stale = db.prepare("SELECT ? < datetime('now', '-15 minutes') AS value").get(campaign.created_at).value;
+      if (!stale) return { claimed: false, campaign };
+    }
+    db.prepare(`
+      UPDATE balance_alert_campaigns
+      SET status = 'sending', error = NULL, created_at = CURRENT_TIMESTAMP
+      WHERE match_id = ?
+    `).run(match.id);
     return { claimed: true, campaign };
   })();
   if (!claim.claimed) {
@@ -856,10 +854,18 @@ async function sendCampaign(match, type) {
       .run(match.id, type);
     const campaign = db.prepare("SELECT * FROM push_campaigns WHERE match_id = ? AND type = ?")
       .get(match.id, type);
-    if (campaign.status === "sent" || campaign.status === "sending") {
+    if (campaign.status === "sent") {
       return { claimed: false, campaign };
     }
-    db.prepare("UPDATE push_campaigns SET status = 'sending', error = NULL WHERE id = ?").run(campaign.id);
+    if (campaign.status === "sending") {
+      const stale = db.prepare("SELECT ? < datetime('now', '-15 minutes') AS value").get(campaign.created_at).value;
+      if (!stale) return { claimed: false, campaign };
+    }
+    db.prepare(`
+      UPDATE push_campaigns
+      SET status = 'sending', error = NULL, created_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(campaign.id);
     return { claimed: true, campaign };
   })();
 

@@ -144,6 +144,7 @@ before(async () => {
       PORT: String(port),
       NODE_ENV: "test",
       REPL_ID: "test-replit-workspace",
+      REPLIT_DEPLOYMENT: "",
       INITIAL_ADMIN_PASSWORD: password,
       SESSION_SECRET: "draft-integration-test-session-secret",
     },
