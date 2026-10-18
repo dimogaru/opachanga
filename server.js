@@ -63,6 +63,7 @@ db.exec(`
     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     status TEXT NOT NULL CHECK (status IN ('principal', 'suplente', 'no_va')),
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    invited_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
     UNIQUE (match_id, user_id)
   );
 
@@ -171,6 +172,10 @@ if (!userColumns.includes("base_role")) {
     "ALTER TABLE users ADD COLUMN base_role TEXT NOT NULL DEFAULT 'principal' CHECK (base_role IN ('principal', 'suplente'))",
   );
   db.exec("UPDATE users SET base_role = role WHERE role IN ('principal', 'suplente')");
+}
+const convocationColumns = db.prepare("PRAGMA table_info(convocations)").all().map((column) => column.name);
+if (!convocationColumns.includes("invited_by_user_id")) {
+  db.exec("ALTER TABLE convocations ADD COLUMN invited_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL");
 }
 const matchColumns = db.prepare("PRAGMA table_info(matches)").all().map((column) => column.name);
 if (!matchColumns.includes("pitch_price")) db.exec("ALTER TABLE matches ADD COLUMN pitch_price REAL");
@@ -432,18 +437,22 @@ function emptyConvocationData() {
 function getConvocationData(match, userId, { historical = false } = {}) {
   const roster = historical
     ? db.prepare(`
-        SELECT u.id, u.name, u.alias, u.role, u.base_role, u.ranking_position, c.status AS response
+        SELECT u.id, u.name, u.alias, u.role, u.base_role, u.ranking_position,
+          c.status AS response, c.invited_by_user_id, inviter.alias AS invited_by_alias
         FROM convocations c
         JOIN users u ON u.id = c.user_id
+        LEFT JOIN users inviter ON inviter.id = c.invited_by_user_id
         WHERE c.match_id = ? AND u.role != 'admin'
         ORDER BY
           CASE c.status WHEN 'principal' THEN 1 WHEN 'suplente' THEN 2 ELSE 3 END,
           u.ranking_position IS NULL, u.ranking_position, u.name COLLATE NOCASE
       `).all(match.id)
     : db.prepare(`
-        SELECT u.id, u.name, u.alias, u.role, u.base_role, u.ranking_position, c.status AS response
+        SELECT u.id, u.name, u.alias, u.role, u.base_role, u.ranking_position,
+          c.status AS response, c.invited_by_user_id, inviter.alias AS invited_by_alias
         FROM users u
         LEFT JOIN convocations c ON c.user_id = u.id AND c.match_id = ?
+        LEFT JOIN users inviter ON inviter.id = c.invited_by_user_id
         WHERE u.account_status = 'active' AND u.role != 'admin' AND u.deleted_at IS NULL
         ORDER BY
           CASE COALESCE(c.status, u.base_role)
@@ -1857,9 +1866,9 @@ app.post("/api/convocations/current/add-existing-suplente", requirePlayer, (req,
         throw error;
       }
       db.prepare(`
-        INSERT INTO convocations (match_id, user_id, status, updated_at)
-        VALUES (?, ?, 'suplente', CURRENT_TIMESTAMP)
-      `).run(match.id, userId);
+        INSERT INTO convocations (match_id, user_id, status, updated_at, invited_by_user_id)
+        VALUES (?, ?, 'suplente', CURRENT_TIMESTAMP, ?)
+      `).run(match.id, userId, req.session.user.id);
     })();
     res.json(getConvocationData(match, req.session.user.id));
   } catch (error) {
@@ -1907,9 +1916,9 @@ app.post("/api/convocations/current/add-new-suplente", requirePlayer, async (req
       `).run(name, firstName, lastName, alias, passwordHash, rankingPosition);
       const userId = Number(created.lastInsertRowid);
       db.prepare(`
-        INSERT INTO convocations (match_id, user_id, status, updated_at)
-        VALUES (?, ?, 'suplente', CURRENT_TIMESTAMP)
-      `).run(match.id, userId);
+        INSERT INTO convocations (match_id, user_id, status, updated_at, invited_by_user_id)
+        VALUES (?, ?, 'suplente', CURRENT_TIMESTAMP, ?)
+      `).run(match.id, userId, req.session.user.id);
       return userId;
     })();
     res.status(201).json({

@@ -240,7 +240,7 @@ function listPanel(title, usersInList, colorClass, icon, isAdmin = false, showBa
   const rows = list.length
     ? list.map((user) => `<li class="flex items-center gap-3 px-4 py-3 ${isAdmin && title === "Lista de suplentes" ? "pr-2" : ""}">
         <span class="grid h-8 w-8 shrink-0 place-items-center rounded-xl ${colorClass} text-[11px] font-bold">${escapeHtml(String(user.alias || "").slice(0, 2).toUpperCase())}</span>
-        <span class="min-w-0 flex-1 truncate text-sm font-semibold">${escapeHtml(user.alias)}</span>
+        <span class="min-w-0 flex-1 truncate text-sm font-semibold">${escapeHtml(user.alias)}${title === "Lista de suplentes" && user.invited_by_alias ? `<span class="ml-1 font-normal text-ink/50">(${escapeHtml(user.invited_by_alias)})</span>` : ""}</span>
         ${showBaseRole ? `<span class="hidden text-[11px] text-ink/40 sm:inline">${`${user.base_role === "principal" ? "Principal" : "Suplente"}${user.base_role === "suplente" && user.response === "principal" ? " · promovido" : ""}`}</span>` : ""}
         ${isAdmin && title === "Lista de suplentes" ? `<button class="promote-player shrink-0 rounded-lg border border-pitch-700/20 px-2.5 py-1.5 text-[11px] font-bold text-pitch-800 transition hover:bg-pitch-100" data-user-id="${user.id}" aria-label="Promover a ${escapeHtml(user.alias)} a principal">↑ Principal</button>` : ""}
         ${isAdmin && title === "Lista principal" ? `<button class="notify-promoted shrink-0 rounded-lg border border-ink/10 px-2.5 py-1.5 text-[11px] font-bold text-ink/65 transition hover:bg-paper" data-user-id="${user.id}" aria-label="Enviar aviso a ${escapeHtml(user.alias)}">Avisar</button>` : ""}

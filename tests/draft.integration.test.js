@@ -130,6 +130,15 @@ before(async () => {
       );
       INSERT INTO matches (start_date, end_date, status)
       VALUES ('2026-10-13', '2026-10-20T20:00:00', 'played');
+      CREATE TABLE convocations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        match_id INTEGER NOT NULL REFERENCES matches(id) ON DELETE CASCADE,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        status TEXT NOT NULL CHECK (status IN ('principal', 'suplente', 'no_va')),
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE (match_id, user_id)
+      );
+      INSERT INTO convocations (match_id, user_id, status) VALUES (1, 1, 'principal');
     `);
   } finally {
     legacyDb.close();
@@ -282,6 +291,8 @@ test("no se crea una convocatoria automáticamente y Admin debe elegir la fecha"
     ]) {
       assert.ok(tables.has(table), `Falta la tabla requerida ${table}.`);
     }
+    const convocationColumns = new Set(db.pragma("table_info(convocations)").map(({ name }) => name));
+    assert.ok(convocationColumns.has("invited_by_user_id"));
     const schema = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'matches'").get().sql;
     assert.match(schema, /'cancelled'/, "La migración debe ampliar los estados permitidos sin perder la tabla.");
     const oldMatch = db.prepare("SELECT status, match_date, match_time FROM matches WHERE id = 1").get();
@@ -295,6 +306,11 @@ test("no se crea una convocatoria automáticamente y Admin debe elegir la fecha"
       ranking_position: 99,
       balance: 7.5,
     });
+    assert.equal(
+      db.prepare("SELECT invited_by_user_id FROM convocations WHERE match_id = 1 AND user_id = 1").get().invited_by_user_id,
+      null,
+      "La migración debe añadir el invitador sin asignarlo a respuestas antiguas.",
+    );
     assert.deepEqual(db.pragma("foreign_key_check"), [], "La migración debe conservar las relaciones de la base.");
   } finally {
     db.close();
@@ -350,7 +366,8 @@ test("no se crea una convocatoria automáticamente y Admin debe elegir la fecha"
     user_id: availableSubId,
   });
   assert.equal(addedExisting.response.status, 200, JSON.stringify(addedExisting.payload));
-  assert.ok(addedExisting.payload.lists.suplentes.some(({ alias }) => alias === "sublibre"));
+  const invitedExisting = addedExisting.payload.lists.suplentes.find(({ alias }) => alias === "sublibre");
+  assert.equal(invitedExisting?.invited_by_alias, "draft1");
   const duplicateExisting = await post("/api/convocations/current/add-existing-suplente", context.captainBCookie, {
     user_id: availableSubId,
   });
@@ -370,7 +387,11 @@ test("no se crea una convocatoria automáticamente y Admin debe elegir la fecha"
   });
   assert.equal(addedNew.response.status, 201, JSON.stringify(addedNew.payload));
   assert.equal(addedNew.payload.added_player.alias, "nuevosub");
-  assert.ok(addedNew.payload.lists.suplentes.some(({ alias }) => alias === "nuevosub"));
+  const invitedNew = addedNew.payload.lists.suplentes.find(({ alias }) => alias === "nuevosub");
+  assert.equal(invitedNew?.invited_by_alias, "draft2");
+  const adminConvocation = await get("/api/convocations/current", context.adminCookie);
+  const adminInvitedNew = adminConvocation.payload.lists.suplentes.find(({ alias }) => alias === "nuevosub");
+  assert.equal(adminInvitedNew?.invited_by_alias, "draft2");
   const duplicateAlias = await post("/api/convocations/current/add-new-suplente", context.captainACookie, {
     first_name: "Otro",
     last_name: "Jugador",
@@ -418,6 +439,9 @@ test("no se crea una convocatoria automáticamente y Admin debe elegir la fecha"
   assert.equal(cancelled.response.status, 200, JSON.stringify(cancelled.payload));
   assert.equal(cancelled.payload.match.status, "cancelled");
   assert.equal(cancelled.payload.notification.status, "disabled");
+  const historicalInvitations = await get(`/api/convocations/${cancelled.payload.match.id}`, context.adminCookie);
+  const historicalNewSub = historicalInvitations.payload.lists.suplentes.find(({ alias }) => alias === "nuevosub");
+  assert.equal(historicalNewSub?.invited_by_alias, "draft2");
   const addAfterClose = await post("/api/convocations/current/add-existing-suplente", context.captainACookie, {
     user_id: availableSubId,
   });
