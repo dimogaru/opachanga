@@ -5,6 +5,8 @@ let currentUser = null;
 let installPrompt = null;
 let toastTimer;
 let convocationData = null;
+let convocationHistory = [];
+let selectedConvocationId = null;
 let pushConfig = { enabled: false, publicKey: null };
 let selectedMatchId = null;
 let matchData = { matches: [], pot: 0 };
@@ -131,6 +133,52 @@ function formatConvocationDate(match) {
   return `${fmt(start)} — ${fmt(end)}, 20:00`;
 }
 
+function formatConvocationRange(match) {
+  const start = new Date(`${match.start_date}T12:00:00Z`);
+  const end = new Date(`${match.end_date.slice(0, 10)}T12:00:00Z`);
+  const fmt = (date) => date.toLocaleDateString("es-ES", { day: "numeric", month: "short", timeZone: "UTC" });
+  return `Jornada ${fmt(start)} - ${fmt(end)}`;
+}
+
+function convocationStatusLabel(status) {
+  return status === "played" ? "Partido jugado" : status === "closed" ? "Cerrada" : "Abierta";
+}
+
+function renderConvocationHistorySelector(data, history) {
+  const rows = history.length ? history : [data.match];
+  return `<div class="mb-4 rounded-2xl border border-ink/[.07] bg-white p-4 shadow-sm">
+    <label for="convocation-history-picker" class="mb-2 block text-xs font-bold uppercase tracking-[.1em] text-ink/50">Historial de convocatorias</label>
+    <select id="convocation-history-picker" class="w-full rounded-xl border border-ink/10 bg-paper px-3 py-3 text-sm font-semibold text-ink outline-none transition focus:border-pitch-700 sm:max-w-xl">
+      ${rows.map((match) => {
+        const isActive = match.is_active === true || (match.id === data.match.id && !data.match.readOnly);
+        const label = `${isActive ? "Convocatoria activa / " : ""}${formatConvocationRange(match)} · ${convocationStatusLabel(match.status)}`;
+        return `<option value="${match.id}" ${match.id === data.match.id ? "selected" : ""}>${escapeHtml(label)}</option>`;
+      }).join("")}
+    </select>
+  </div>`;
+}
+
+function renderConvocationHistorySummary(match) {
+  const teamA = match.teamA || [];
+  const teamB = match.teamB || [];
+  const allPlayers = [...teamA, ...teamB];
+  const aliasFor = (id) => allPlayers.find((player) => player.id === id)?.alias || "—";
+  const captains = match.draft?.captainA && match.draft?.captainB
+    ? `<div class="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-xs text-ink/55"><span>Capitán A: <b class="text-ink">${escapeHtml(aliasFor(match.draft.captainA))}</b></span><span>Capitán B: <b class="text-ink">${escapeHtml(aliasFor(match.draft.captainB))}</b></span></div>`
+    : "";
+  const resultLabel = match.result === "draw" ? "Empate" : match.result ? `Ganó el Equipo ${match.result}` : "Sin resultado registrado";
+  const finance = match.finance;
+  const financeSummary = finance
+    ? `<div class="mt-4 grid gap-2 rounded-xl bg-paper p-3 text-xs text-ink/60 sm:grid-cols-2 lg:grid-cols-4"><span>Coste de pista: <b class="text-ink">${formatMoney(finance.pitch_cost)}</b></span><span>Cuota por jugador: <b class="text-ink">${formatMoney(finance.fee_per_player)}</b></span><span>Total cobrado: <b class="text-ink">${formatMoney(finance.total_collected)}</b></span><span>Añadido al bote: <b class="text-pitch-800">${formatMoney(finance.pot_added)}</b></span></div>`
+    : `<p class="mt-4 rounded-xl bg-paper p-3 text-xs text-ink/50">No hay un cobro de partido registrado para esta jornada.</p>`;
+  return `<section class="mb-5 rounded-2xl border border-ink/[.07] bg-white p-4 shadow-sm sm:p-5">
+    <div class="flex flex-wrap items-center justify-between gap-2"><div><p class="text-[10px] font-extrabold uppercase tracking-[.12em] text-pitch-700">Resumen guardado</p><h3 class="mt-1 font-bold">Partido · ${escapeHtml(resultLabel)}</h3></div><span class="rounded-full bg-paper px-3 py-1.5 text-xs font-bold text-ink/55">${teamA.length + teamB.length} jugadores en equipos</span></div>
+    ${captains}
+    <div class="mt-4 grid gap-3 sm:grid-cols-2">${renderTeamCard("Equipo A", teamA, "bg-pitch-100 text-pitch-900")}${renderTeamCard("Equipo B", teamB, "bg-amber-50 text-amber-900")}</div>
+    ${financeSummary}
+  </section>`;
+}
+
 function listPanel(title, usersInList, colorClass, icon, isAdmin = false) {
   const list = usersInList || [];
   const playerCount = list.length;
@@ -152,8 +200,9 @@ function listPanel(title, usersInList, colorClass, icon, isAdmin = false) {
   </section>`;
 }
 
-function renderConvocationBoard(data, isAdmin = false) {
+function renderConvocationBoard(data, isAdmin = false, history = []) {
   const open = data.match.status === "open";
+  const readOnly = data.match.readOnly === true;
   const readinessText = data.validForMatch
     ? "Plantilla válida para jugar"
     : data.principalCount < 14
@@ -168,8 +217,10 @@ function renderConvocationBoard(data, isAdmin = false) {
   const captainOptionsB = principalList.map((player, index) =>
     `<option value="${player.id}" ${index === 1 ? "selected" : ""}>${escapeHtml(player.alias)}</option>`,
   ).join("");
-  const canReopen = data.match.canReopen && data.match.status !== "played" && !["in_progress", "complete"].includes(data.match.draft?.status);
-  const adminControls = !isAdmin ? "" : open
+  const canReopen = !readOnly && data.match.canReopen && data.match.status !== "played" && !["in_progress", "complete"].includes(data.match.draft?.status);
+  const adminControls = !isAdmin ? "" : readOnly
+    ? `<div class="border-t border-white/10 bg-white/[.03] p-4 text-xs text-white/60 sm:px-7">Jornada histórica · vista de solo consulta.</div>`
+    : open
     ? `<form id="close-convocation-form" class="grid gap-3 border-t border-white/10 bg-white/[.03] p-4 sm:grid-cols-[1fr_1fr_auto] sm:items-end sm:px-7">
         ${data.validForMatch ? `<label class="text-xs font-semibold text-white/70">Capitán A<select name="captainA" required class="mt-1.5 w-full rounded-xl border border-white/15 bg-pitch-800 px-3 py-2.5 text-sm text-white">${captainOptionsA}</select></label><label class="text-xs font-semibold text-white/70">Capitán B<select name="captainB" required class="mt-1.5 w-full rounded-xl border border-white/15 bg-pitch-800 px-3 py-2.5 text-sm text-white">${captainOptionsB}</select></label>` : `<p class="text-xs text-white/60 sm:col-span-2">Se puede cerrar con cualquier recuento; el draft equilibrado solo se habilita con 14 o 16 principales.</p>`}
         <button class="rounded-xl bg-lime px-4 py-2.5 text-xs font-extrabold text-pitch-950">${data.validForMatch ? "Cerrar y guardar capitanes" : "Cerrar convocatoria"}</button>
@@ -178,18 +229,20 @@ function renderConvocationBoard(data, isAdmin = false) {
       ? `<div class="border-t border-white/10 bg-white/[.03] p-4 text-xs text-white/60 sm:px-7">Partido jugado; la convocatoria no se puede reabrir.</div>`
       : `<div class="flex flex-col gap-3 border-t border-white/10 bg-white/[.03] p-4 sm:flex-row sm:items-center sm:justify-between sm:px-7"><span class="text-xs text-white/60">Convocatoria cerrada. ${data.match.draft?.status === "in_progress" ? `Capitanes designados; turno del Equipo ${data.match.draft.currentTurn}.` : data.validForMatch ? "Revisa los capitanes en Partidos." : "No se puede iniciar el draft con este recuento."}</span>${canReopen ? `<button id="open-convocation" class="rounded-xl border border-white/20 px-4 py-2.5 text-xs font-bold text-white transition hover:bg-white/10">Abrir convocatoria</button>` : ""}</div>`;
   return `
+    ${isAdmin ? renderConvocationHistorySelector(data, history) : ""}
     <section class="mb-7 overflow-hidden rounded-3xl bg-pitch-900 text-white shadow-card">
       <div class="flex flex-col gap-6 p-5 sm:p-7 lg:flex-row lg:items-center lg:justify-between">
         <div class="max-w-xl">
-          <div class="flex flex-wrap items-center gap-2"><span class="rounded-full ${open ? "bg-lime/15 text-lime" : "bg-white/15 text-white/70"} px-3 py-1.5 text-[10px] font-bold tracking-[.12em]">${open ? "CONVOCATORIA ABIERTA" : "CONVOCATORIA CERRADA"}</span><span class="text-xs text-white/50">Martes ${formatConvocationDate(data.match)}</span></div>
-          <h2 class="display mt-4 text-2xl font-extrabold tracking-tight sm:text-3xl">${isAdmin ? "Control de convocatoria" : "¿Cuentas con nosotros?"}</h2>
+          <div class="flex flex-wrap items-center gap-2"><span class="rounded-full ${open ? "bg-lime/15 text-lime" : "bg-white/15 text-white/70"} px-3 py-1.5 text-[10px] font-bold tracking-[.12em]">${data.match.status === "played" ? "PARTIDO JUGADO" : open ? "CONVOCATORIA ABIERTA" : "CONVOCATORIA CERRADA"}</span><span class="text-xs text-white/50">${formatConvocationDate(data.match)}</span></div>
+          <h2 class="display mt-4 text-2xl font-extrabold tracking-tight sm:text-3xl">${isAdmin ? readOnly ? "Historial de convocatoria" : "Control de convocatoria" : "¿Cuentas con nosotros?"}</h2>
           <p class="mt-1 text-sm text-white/60">${isAdmin ? "Administra el plazo y revisa las respuestas del grupo." : "Responde antes del lunes a las 20:00."}</p>
           <div class="mt-4 flex items-center gap-2 text-sm font-semibold ${data.validForMatch ? "text-lime" : "text-white/80"}"><span class="grid h-6 w-6 place-items-center rounded-full ${data.validForMatch ? "bg-lime/15 text-lime" : "bg-white/10"}">${data.validForMatch ? "✓" : "!"}</span>${readinessText}</div>
         </div>
         <div class="flex min-w-[210px] flex-col gap-3 rounded-2xl border border-white/10 bg-white/[.06] p-4">
            <div class="flex items-end justify-between"><span class="text-xs font-semibold text-white/60">Lista principal</span><span class="display text-3xl font-extrabold ${data.validForMatch ? "text-lime" : "text-white"}">${data.principalCount}<span class="text-base font-semibold text-white/40"> / 14 o 16</span></span></div>
           <div class="h-2 overflow-hidden rounded-full bg-white/10"><div class="h-full rounded-full ${data.validForMatch ? "bg-lime" : "bg-white/70"} transition-all" style="width:${Math.min(100, Math.round((data.principalCount / 16) * 100))}%"></div></div>
-          <span class="text-[11px] text-white/45">${data.responseCount} respuestas · ${data.totalPlayers - data.responseCount} sin responder</span>
+           <span class="text-[11px] text-white/45">${readOnly ? `${data.responseCount} respuestas guardadas` : `${data.responseCount} respuestas · ${data.totalPlayers - data.responseCount} sin responder`}</span>
+           ${isAdmin && data.match.status === "played" ? `<button id="new-convocation" data-match-id="${data.match.id}" class="mt-2 w-full rounded-xl bg-lime px-4 py-3 text-sm font-extrabold text-pitch-950 shadow-sm transition hover:bg-lime/90 focus:outline-none focus:ring-2 focus:ring-lime focus:ring-offset-2 focus:ring-offset-pitch-900">Abrir Nueva Convocatoria</button>` : ""}
         </div>
       </div>
       ${isAdmin ? adminControls : `<div class="flex flex-col gap-3 border-t border-white/10 bg-white/[.03] p-4 sm:flex-row sm:items-center sm:justify-between sm:px-7">
@@ -200,15 +253,16 @@ function renderConvocationBoard(data, isAdmin = false) {
         </div>
       </div>`}
     </section>
+    ${isAdmin && (readOnly || data.match.status === "played") ? renderConvocationHistorySummary(data.match) : ""}
      <div class="mb-3"><h2 class="display text-xl font-extrabold tracking-tight">${isAdmin ? "Listas del grupo" : "Respuestas del grupo"}</h2><p class="mt-1 text-xs text-ink/50">La lista se actualiza para todo el equipo.</p></div>
     <div class="grid gap-4 lg:grid-cols-3">
-      ${listPanel("Lista principal", data.lists.principal, "bg-pitch-100 text-pitch-800", "✓", isAdmin)}
-      ${listPanel("Lista de suplentes", data.lists.suplentes, "bg-amber-50 text-amber-700", "↗", isAdmin)}
-      ${listPanel("Lista NO VAN", data.lists.no_va, "bg-stone-100 text-stone-500", "—", isAdmin)}
+      ${listPanel("Lista principal", data.lists.principal, "bg-pitch-100 text-pitch-800", "✓", isAdmin && !readOnly)}
+      ${listPanel("Lista de suplentes", data.lists.suplentes, "bg-amber-50 text-amber-700", "↗", isAdmin && !readOnly)}
+      ${listPanel("Lista NO VAN", data.lists.no_va, "bg-stone-100 text-stone-500", "—", isAdmin && !readOnly)}
     </div>
     <details class="mt-4 rounded-2xl border border-ink/[.07] bg-white px-4 py-3">
-       <summary class="cursor-pointer list-none text-sm font-semibold">Sin responder <span class="ml-1 rounded-full bg-paper px-2 py-0.5 text-xs text-ink/55">${data.lists.pending.length}</span></summary>
-      <p class="mt-2 text-xs text-ink/50">${data.lists.pending.length ? data.lists.pending.map((user) => escapeHtml(user.alias)).join(" · ") : "Todo el grupo ha respondido."}</p>
+       <summary class="cursor-pointer list-none text-sm font-semibold">${readOnly ? "Respuestas archivadas" : "Sin responder"} <span class="ml-1 rounded-full bg-paper px-2 py-0.5 text-xs text-ink/55">${readOnly ? data.responseCount : data.lists.pending.length}</span></summary>
+      <p class="mt-2 text-xs text-ink/50">${readOnly ? "El historial conserva las respuestas registradas para esta jornada." : data.lists.pending.length ? data.lists.pending.map((user) => escapeHtml(user.alias)).join(" · ") : "Todo el grupo ha respondido."}</p>
     </details>`;
 }
 
@@ -596,7 +650,22 @@ function renderLogin() {
 
 async function renderAdmin() {
   await loadUsers();
-  convocationData = await api("/api/convocations/current");
+  const activeConvocation = await api("/api/convocations/current");
+  const historyResponse = await api("/api/admin/convocations/history");
+  convocationHistory = historyResponse.matches || [];
+  const activeMatchId = activeConvocation.match.id;
+  const hasSelectedMatch = convocationHistory.some((match) => match.id === Number(selectedConvocationId));
+  if (selectedConvocationId == null || !hasSelectedMatch) selectedConvocationId = activeMatchId;
+  if (Number(selectedConvocationId) === activeMatchId) {
+    convocationData = activeConvocation;
+  } else {
+    try {
+      convocationData = await api(`/api/convocations/${Number(selectedConvocationId)}`);
+    } catch {
+      selectedConvocationId = activeMatchId;
+      convocationData = activeConvocation;
+    }
+  }
   matchData = await api("/api/matches");
   standingsData = await api("/api/standings");
   pendingUsers = await api("/api/admin/pending-users");
@@ -617,7 +686,7 @@ async function renderAdmin() {
       ${tabs.map(([id, label]) => `<button class="admin-tab-button shrink-0 rounded-xl px-4 py-2.5 text-sm font-bold transition ${activeAdminTab === id ? "bg-pitch-900 text-white" : "text-ink/55 hover:bg-paper"}" data-admin-tab="${id}" aria-pressed="${activeAdminTab === id}">${label}</button>`).join("")}
     </nav>
     <section class="admin-tab-panel ${activeAdminTab === "convocatoria" ? "" : "hidden"}" data-admin-panel="convocatoria">
-      ${renderConvocationBoard(convocationData, true)}
+      ${renderConvocationBoard(convocationData, true, convocationHistory)}
     </section>
     <section class="admin-tab-panel ${activeAdminTab === "avisos" ? "" : "hidden"}" data-admin-panel="avisos">
       ${renderNotificationPanel(convocationData, users, pushConfig, notificationStatus)}
@@ -679,6 +748,38 @@ async function renderAdmin() {
     });
   });
   bindConvocationActions(true);
+  document.querySelector("#convocation-history-picker")?.addEventListener("change", async (event) => {
+    selectedConvocationId = Number(event.target.value);
+    await renderAdmin();
+  });
+  document.querySelector("#new-convocation")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    try {
+      const response = await api("/api/admin/convocations/new", {
+        method: "POST",
+        body: JSON.stringify({ match_id: Number(button.dataset.matchId) }),
+      });
+      selectedConvocationId = response.match.id;
+      if (response.created) {
+        const pushMessage = response.notification?.status === "disabled"
+          ? " Web Push no está configurado."
+          : response.notification?.status === "failed"
+            ? " No se pudieron enviar todas las notificaciones."
+            : response.notification?.inProgress
+              ? " Los avisos están en proceso."
+              : " Aviso de apertura procesado.";
+        showToast(`Nueva convocatoria abierta.${pushMessage}`);
+      } else {
+        showToast("Ya existe una jornada abierta; se ha seleccionado.");
+      }
+      activeAdminTab = "convocatoria";
+      await renderAdmin();
+    } catch (error) {
+      showToast(error.message);
+      button.disabled = false;
+    }
+  });
   bindApprovalActions();
   document.querySelector("#close-convocation-form")?.addEventListener("submit", async (event) => {
     event.preventDefault();

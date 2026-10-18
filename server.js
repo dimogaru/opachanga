@@ -370,6 +370,21 @@ function ensureCurrentMatch(date = new Date()) {
   const endDate = `${shiftDate(startDate, 6)}T20:00:00`;
   let match = db.prepare("SELECT * FROM matches WHERE start_date = ?").get(startDate);
   let created = false;
+
+  if (match?.status === "played") {
+    match = db.prepare(`
+      SELECT * FROM matches
+      WHERE start_date > ? AND status IN ('open', 'closed')
+      ORDER BY start_date, id LIMIT 1
+    `).get(startDate) || match;
+  }
+  if (!match) {
+    match = db.prepare(`
+      SELECT * FROM matches
+      WHERE start_date >= ? AND status IN ('open', 'closed')
+      ORDER BY start_date, id LIMIT 1
+    `).get(startDate);
+  }
   if (!match) {
     const result = db
       .prepare("INSERT INTO matches (start_date, end_date, status) VALUES (?, ?, 'open')")
@@ -389,33 +404,48 @@ function ensureCurrentMatch(date = new Date()) {
   return match;
 }
 
-function getConvocationData(match, userId) {
-  const roster = db.prepare(`
-    SELECT u.id, u.name, u.alias, u.role, u.base_role, u.ranking_position, c.status AS response
-    FROM users u
-    LEFT JOIN convocations c ON c.user_id = u.id AND c.match_id = ?
-    WHERE u.account_status = 'active' AND u.role != 'admin' AND u.deleted_at IS NULL
-    ORDER BY
-      CASE COALESCE(c.status, u.base_role)
-        WHEN 'principal' THEN 1
-        WHEN 'suplente' THEN 2
-        WHEN 'no_va' THEN 3
-        ELSE 4
-      END,
-      u.ranking_position IS NULL,
-      u.ranking_position,
-      u.name COLLATE NOCASE
-  `).all(match.id);
+function getConvocationData(match, userId, { historical = false } = {}) {
+  const roster = historical
+    ? db.prepare(`
+        SELECT u.id, u.name, u.alias, u.role, u.base_role, u.ranking_position, c.status AS response
+        FROM convocations c
+        JOIN users u ON u.id = c.user_id
+        WHERE c.match_id = ? AND u.role != 'admin'
+        ORDER BY
+          CASE c.status WHEN 'principal' THEN 1 WHEN 'suplente' THEN 2 ELSE 3 END,
+          u.ranking_position IS NULL, u.ranking_position, u.name COLLATE NOCASE
+      `).all(match.id)
+    : db.prepare(`
+        SELECT u.id, u.name, u.alias, u.role, u.base_role, u.ranking_position, c.status AS response
+        FROM users u
+        LEFT JOIN convocations c ON c.user_id = u.id AND c.match_id = ?
+        WHERE u.account_status = 'active' AND u.role != 'admin' AND u.deleted_at IS NULL
+        ORDER BY
+          CASE COALESCE(c.status, u.base_role)
+            WHEN 'principal' THEN 1
+            WHEN 'suplente' THEN 2
+            WHEN 'no_va' THEN 3
+            ELSE 4
+          END,
+          u.ranking_position IS NULL,
+          u.ranking_position,
+          u.name COLLATE NOCASE
+      `).all(match.id);
   const principal = roster.filter((user) => user.response === "principal");
   const suplentes = roster.filter((user) => user.response === "suplente");
   const noVan = roster.filter((user) => user.response === "no_va");
   const activePlayers = roster;
-  const pending = activePlayers.filter((user) => user.response === null);
+  const pending = historical ? [] : activePlayers.filter((user) => user.response === null);
   const principalCount = principal.length;
   const parts = madridParts();
   const now = `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:00`;
   return {
-    match: { ...match, draft: readJson(match.draft_state, {}), canReopen: now < match.end_date },
+    match: {
+      ...matchDetails(match),
+      draft: readJson(match.draft_state, {}),
+      canReopen: !historical && now < match.end_date,
+      readOnly: historical,
+    },
     lists: { principal, suplentes, no_va: noVan, pending },
     currentResponse: roster.find((user) => user.id === userId)?.response || null,
     principalCount,
@@ -1022,6 +1052,30 @@ app.get("/api/convocations/current", requireUser, (_req, res) => {
   res.json(getConvocationData(match, _req.session.user.id));
 });
 
+app.get("/api/admin/convocations/history", requireAdmin, (_req, res) => {
+  const activeMatch = ensureCurrentMatch();
+  const matches = db.prepare(`
+    SELECT m.id, m.start_date, m.end_date, m.status, m.result,
+      COUNT(CASE WHEN u.role != 'admin' THEN c.user_id END) AS response_count,
+      COUNT(CASE WHEN c.status = 'principal' AND u.role != 'admin' THEN 1 END) AS principal_count
+    FROM matches m
+    LEFT JOIN convocations c ON c.match_id = m.id
+    LEFT JOIN users u ON u.id = c.user_id
+    GROUP BY m.id
+    ORDER BY m.start_date DESC, m.id DESC
+  `).all().map((match) => ({ ...match, is_active: match.id === activeMatch.id }));
+  res.json({ active_match_id: activeMatch.id, matches });
+});
+
+app.get("/api/convocations/:matchId", requireUser, (req, res) => {
+  const matchId = Number(req.params.matchId);
+  if (!Number.isInteger(matchId)) return res.status(400).json({ error: "Identificador de jornada no válido." });
+  const match = db.prepare("SELECT * FROM matches WHERE id = ?").get(matchId);
+  if (!match) return res.status(404).json({ error: "No se encontró la convocatoria." });
+  const activeMatch = ensureCurrentMatch();
+  res.json(getConvocationData(match, req.session.user.id, { historical: match.id !== activeMatch.id }));
+});
+
 app.post("/api/admin/convocations/current/open", requireAdmin, (req, res) => {
   const match = ensureCurrentMatch();
   const parts = madridParts();
@@ -1070,6 +1124,64 @@ app.post("/api/admin/convocations/current/close", requireAdmin, (req, res) => {
   db.prepare("UPDATE matches SET status = 'closed', draft_state = ?, team_a = ?, team_b = ? WHERE id = ?")
     .run(JSON.stringify(draft), JSON.stringify(teamA), JSON.stringify(teamB), match.id);
   res.json(getConvocationData(db.prepare("SELECT * FROM matches WHERE id = ?").get(match.id), req.session.user.id));
+});
+
+app.post("/api/admin/convocations/new", requireAdmin, async (req, res) => {
+  const sourceMatchId = Number(req.body?.match_id);
+  if (!Number.isInteger(sourceMatchId)) {
+    return res.status(400).json({ error: "Selecciona un partido finalizado para abrir la siguiente jornada." });
+  }
+  const sourceMatch = db.prepare("SELECT id, status FROM matches WHERE id = ?").get(sourceMatchId);
+  if (!sourceMatch) return res.status(404).json({ error: "No se encontró el partido seleccionado." });
+  if (sourceMatch.status !== "played") {
+    return res.status(409).json({ error: "Solo se puede abrir la siguiente jornada después de finalizar el partido seleccionado." });
+  }
+
+  ensureCurrentMatch();
+  let schedule;
+  try {
+    schedule = db.transaction(() => {
+      const latest = db.prepare("SELECT * FROM matches ORDER BY start_date DESC, id DESC LIMIT 1").get();
+      if (latest && latest.status !== "played") return { match: latest, created: false };
+
+      const currentWeek = currentTuesday();
+      const nextAfterLatest = latest ? shiftDate(latest.start_date, 7) : currentWeek;
+      const startDate = nextAfterLatest > currentWeek ? nextAfterLatest : currentWeek;
+      const existing = db.prepare("SELECT * FROM matches WHERE start_date = ? ORDER BY id DESC LIMIT 1").get(startDate);
+      if (existing) return { match: existing, created: false };
+
+      const endDate = `${shiftDate(startDate, 6)}T20:00:00`;
+      const insert = db.prepare("INSERT INTO matches (start_date, end_date, status) VALUES (?, ?, 'open')")
+        .run(startDate, endDate);
+      return {
+        match: db.prepare("SELECT * FROM matches WHERE id = ?").get(insert.lastInsertRowid),
+        created: true,
+      };
+    }).immediate();
+  } catch (error) {
+    console.error("No se pudo abrir la siguiente convocatoria:", error.message);
+    return res.status(500).json({ error: "No se pudo crear la nueva convocatoria." });
+  }
+
+  if (schedule.match.status !== "open") {
+    return res.status(409).json({ error: "La jornada más reciente aún no está finalizada. No se abrirá otra convocatoria." });
+  }
+
+  let notification;
+  if (!pushConfigured) {
+    notification = { status: "disabled", error: "Web Push no está configurado en el servidor." };
+  } else {
+    try {
+      notification = await sendCampaign(schedule.match, "opening");
+    } catch (error) {
+      notification = { status: "failed", error: error.message };
+    }
+  }
+  res.status(schedule.created ? 201 : 200).json({
+    ...getConvocationData(schedule.match, req.session.user.id),
+    created: schedule.created,
+    notification,
+  });
 });
 
 app.get("/api/matches", requireUser, (_req, res) => {
