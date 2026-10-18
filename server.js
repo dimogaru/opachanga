@@ -41,8 +41,9 @@ db.exec(`
     start_date TEXT NOT NULL,
     end_date TEXT NOT NULL,
     match_date TEXT,
+    match_time TEXT NOT NULL DEFAULT '20:00',
     status TEXT NOT NULL DEFAULT 'open'
-      CHECK (status IN ('open', 'closed', 'played')),
+      CHECK (status IN ('open', 'closed', 'played', 'cancelled')),
     draft_state TEXT NOT NULL DEFAULT '{}',
     team_a TEXT NOT NULL DEFAULT '[]',
     team_b TEXT NOT NULL DEFAULT '[]',
@@ -164,7 +165,51 @@ if (!matchColumns.includes("pitch_price")) db.exec("ALTER TABLE matches ADD COLU
 if (!matchColumns.includes("match_date")) {
   db.exec("ALTER TABLE matches ADD COLUMN match_date TEXT");
 }
+if (!matchColumns.includes("match_time")) db.exec("ALTER TABLE matches ADD COLUMN match_time TEXT");
 db.exec("UPDATE matches SET match_date = date(start_date, '+7 days') WHERE match_date IS NULL");
+db.exec(`
+  UPDATE matches SET match_time = CASE
+    WHEN length(substr(end_date, 12, 5)) = 5 AND substr(end_date, 14, 1) = ':'
+      THEN substr(end_date, 12, 5)
+    ELSE '20:00'
+  END
+  WHERE match_time IS NULL OR trim(match_time) = ''
+`);
+const matchTableSql = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'matches'").get()?.sql || "";
+if (!matchTableSql.includes("'cancelled'")) {
+  const restoreForeignKeys = db.pragma("foreign_keys", { simple: true }) === 1;
+  db.pragma("foreign_keys = OFF");
+  try {
+    db.transaction(() => {
+      db.exec(`
+        DROP TABLE IF EXISTS matches_status_migration;
+        CREATE TABLE matches_status_migration (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          start_date TEXT NOT NULL,
+          end_date TEXT NOT NULL,
+          match_date TEXT,
+          match_time TEXT NOT NULL DEFAULT '20:00',
+          status TEXT NOT NULL DEFAULT 'open'
+            CHECK (status IN ('open', 'closed', 'played', 'cancelled')),
+          draft_state TEXT NOT NULL DEFAULT '{}',
+          team_a TEXT NOT NULL DEFAULT '[]',
+          team_b TEXT NOT NULL DEFAULT '[]',
+          pitch_price REAL,
+          result TEXT CHECK (result IN ('A', 'B', 'draw') OR result IS NULL)
+        );
+        INSERT INTO matches_status_migration
+          (id, start_date, end_date, match_date, match_time, status, draft_state, team_a, team_b, pitch_price, result)
+        SELECT id, start_date, end_date, match_date, COALESCE(match_time, '20:00'), status,
+          draft_state, team_a, team_b, pitch_price, result
+        FROM matches;
+        DROP TABLE matches;
+        ALTER TABLE matches_status_migration RENAME TO matches;
+      `);
+    }).immediate();
+  } finally {
+    db.pragma(`foreign_keys = ${restoreForeignKeys ? "ON" : "OFF"}`);
+  }
+}
 db.exec("CREATE INDEX IF NOT EXISTS idx_matches_match_date ON matches(match_date, status)");
 const transactionColumns = db.prepare("PRAGMA table_info(transactions)").all().map((column) => column.name);
 const transactionMigrations = [
@@ -375,6 +420,10 @@ function isValidDateOnly(value) {
   return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
 }
 
+function isValidTime(value) {
+  return typeof value === "string" && /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value);
+}
+
 function formatSpanishDate(dateString) {
   if (!isValidDateOnly(dateString)) return null;
   const parts = new Intl.DateTimeFormat("es-ES", {
@@ -398,9 +447,19 @@ function getCurrentMatch() {
   `).get() || null;
 }
 
+function latestCancellation() {
+  const latest = db.prepare(`
+    SELECT * FROM matches
+    ORDER BY COALESCE(match_date, start_date) DESC, id DESC
+    LIMIT 1
+  `).get();
+  return latest?.status === "cancelled" ? latest : null;
+}
+
 function emptyConvocationData() {
   return {
     match: null,
+    cancellation: null,
     lists: { principal: [], suplentes: [], no_va: [], pending: [] },
     currentResponse: null,
     principalCount: 0,
@@ -694,6 +753,9 @@ repairCurrentLegacyDraftBalance();
 function matchDetails(match) {
   if (!match) return null;
   const matchDate = match.match_date || shiftDate(match.start_date, 7);
+  const matchTime = isValidTime(match.match_time)
+    ? match.match_time
+    : isValidTime(match.end_date?.slice(11, 16)) ? match.end_date.slice(11, 16) : "20:00";
   const storedTeamA = readJson(match.team_a, []);
   const storedTeamB = readJson(match.team_b, []);
   const teamAIds = Array.isArray(storedTeamA) ? storedTeamA : [];
@@ -737,6 +799,8 @@ function matchDetails(match) {
     ...match,
     match_date: matchDate,
     match_date_label: formatSpanishDate(matchDate),
+    match_time: matchTime,
+    match_time_label: `${matchTime} h`,
     draft,
     draftValidationError,
     teamA: getTeam(teamAIds),
