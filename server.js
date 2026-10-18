@@ -10,12 +10,9 @@ const bcrypt = require("bcrypt");
 const app = express();
 const port = Number(process.env.PORT || 3000);
 const defaultSubstitutePassword = "Pachanga123#";
-const dataDirectory = process.env.DATA_DIR
-  ? path.resolve(process.env.DATA_DIR)
-  : path.join(__dirname, "data");
 const databasePath = process.env.DB_PATH
   ? path.resolve(process.env.DB_PATH)
-  : path.join(dataDirectory, "o-pachanga.sqlite");
+  : path.resolve("./data/database.sqlite");
 const timeZone = "Europe/Madrid";
 fs.mkdirSync(path.dirname(databasePath), { recursive: true });
 

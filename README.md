@@ -15,7 +15,7 @@ npm install
 SESSION_SECRET="cambia-este-valor" npm start
 ```
 
-Abre `http://localhost:3000` (Replit configura el puerto 5000 para su vista previa). En una instalación nueva se crea el usuario administrador DIMOGARU con rol Admin, activo y sin participación en la competición. Para usar una contraseña inicial propia, configura `INITIAL_ADMIN_PASSWORD` antes del primer arranque. La base se guarda en `data/o-pachanga.sqlite`; `DB_PATH` permite indicar una ruta de archivo completa y tiene prioridad sobre `DATA_DIR`. El directorio padre se crea automáticamente.
+Abre `http://localhost:3000` (Replit configura el puerto 5000 para su vista previa). En una instalación nueva se crea el usuario administrador DIMOGARU con rol Admin, activo y sin participación en la competición. Para usar una contraseña inicial propia, configura `INITIAL_ADMIN_PASSWORD` antes del primer arranque. La base se guarda en `data/database.sqlite`; `DB_PATH` permite indicar una ruta de archivo completa y tiene prioridad sobre la ruta predeterminada. El directorio padre se crea automáticamente.
 
 Al arrancar, el servidor crea las tablas e índices que falten con `IF NOT EXISTS`; no elimina ni reinicia registros existentes. Las migraciones de esquema conservan las filas y solo completan columnas nuevas que estaban vacías.
 
