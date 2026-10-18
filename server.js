@@ -419,7 +419,7 @@ function getConvocationData(match, userId) {
     lists: { principal, suplentes, no_va: noVan, pending },
     currentResponse: roster.find((user) => user.id === userId)?.response || null,
     principalCount,
-    validForMatch: principalCount >= 14 && principalCount <= 16,
+    validForMatch: principalCount === 14 || principalCount === 16,
     responseCount: activePlayers.filter((user) => user.response !== null).length,
     totalPlayers: activePlayers.length,
   };
@@ -475,9 +475,9 @@ function validateDraftState(matchId, draft, teamA, teamB) {
     ...(Array.isArray(draft.remaining) ? draft.remaining : []),
   ].map(Number).filter(Number.isInteger);
   const roster = Array.isArray(draft.roster) ? draft.roster.map(Number) : [...new Set(inferredRoster)];
-  if (roster.length < 14 || roster.length > 16 || new Set(roster).size !== roster.length ||
+  if (![14, 16].includes(roster.length) || new Set(roster).size !== roster.length ||
       roster.some((id) => !confirmedIds.has(id))) {
-    return "La lista original de jugadores confirmados no coincide con el draft.";
+    return "El draft requiere exactamente 14 o 16 jugadores confirmados para formar equipos iguales.";
   }
   if (!Number.isInteger(draft.captainA) || !Number.isInteger(draft.captainB) ||
       draft.captainA === draft.captainB || !roster.includes(draft.captainA) || !roster.includes(draft.captainB)) {
@@ -490,6 +490,9 @@ function validateDraftState(matchId, draft, teamA, teamB) {
       (draft.status === "complete" && automaticPicks.length !== 1) ||
       (draft.status === "in_progress" && automaticPicks.length !== 0)) {
     return "La asignación automática del último jugador no coincide con el estado del draft.";
+  }
+  if (draft.status === "complete" && draft.picks.at(-1)?.automatic !== true) {
+    return "La asignación automática debe ser la última acción del draft.";
   }
 
   const chosen = new Set();
@@ -517,11 +520,11 @@ function validateDraftState(matchId, draft, teamA, teamB) {
     const automaticPick = automaticPicks[0];
     const automaticId = Number(automaticPick?.userId);
     if (manualPicks.length !== pool.length - 1 || unpicked.length !== 1 ||
-        !Number.isInteger(automaticId) || automaticId !== unpicked[0] || automaticPick.team !== "A" ||
+        !Number.isInteger(automaticId) || automaticId !== unpicked[0] || automaticPick.team !== "B" ||
         draft.currentTurn !== null || (draft.remaining || []).length !== 0) {
       return "No se puede confirmar la alineación: la elección final o el último jugador asignado no son válidos.";
     }
-    expectedA.push(automaticId);
+    expectedB.push(automaticId);
   } else {
     const remaining = Array.isArray(draft.remaining) ? draft.remaining.map(Number) : [];
     const remainingSet = new Set(remaining);
@@ -540,6 +543,14 @@ function validateDraftState(matchId, draft, teamA, teamB) {
   const numericTeamA = teamA.map(Number);
   const numericTeamB = teamB.map(Number);
   const allTeamIds = [...numericTeamA, ...numericTeamB];
+  const maxTeamSize = roster.length / 2;
+  if (numericTeamA.length > maxTeamSize || numericTeamB.length > maxTeamSize) {
+    return "Un equipo no puede superar la mitad de los jugadores confirmados.";
+  }
+  if (draft.status === "complete" &&
+      (numericTeamA.length !== maxTeamSize || numericTeamB.length !== maxTeamSize)) {
+    return "El draft debe terminar con el mismo número de jugadores en ambos equipos.";
+  }
   if (new Set(allTeamIds).size !== allTeamIds.length ||
       numericTeamA.length !== expectedA.length || numericTeamA.some((id, index) => id !== expectedA[index]) ||
       numericTeamB.length !== expectedB.length || numericTeamB.some((id, index) => id !== expectedB[index])) {
@@ -547,6 +558,91 @@ function validateDraftState(matchId, draft, teamA, teamB) {
   }
   return null;
 }
+
+function recalculateMatchPoints(matchId, result, teamA, teamB) {
+  db.prepare("DELETE FROM match_points WHERE match_id = ?").run(matchId);
+  const insertPoints = db.prepare(`
+    INSERT INTO match_points (match_id, user_id, points, result) VALUES (?, ?, ?, ?)
+  `);
+  for (const [team, outcome] of [
+    [teamA, result === "draw" ? "draw" : result === "A" ? "win" : "loss"],
+    [teamB, result === "draw" ? "draw" : result === "B" ? "win" : "loss"],
+  ]) {
+    const points = 1 + (outcome === "win" ? 3 : outcome === "draw" ? 1 : 0);
+    for (const userId of team) insertPoints.run(matchId, userId, points, outcome);
+  }
+}
+
+function repairCurrentLegacyDraftBalance() {
+  const currentMatch = db.prepare("SELECT * FROM matches WHERE start_date = ?").get(currentTuesday());
+  if (!currentMatch) return false;
+  const draft = readJson(currentMatch.draft_state, {});
+  if (draft.status !== "complete" || !Array.isArray(draft.picks)) return false;
+
+  const automaticPicks = draft.picks
+    .map((pick, index) => ({ pick, index }))
+    .filter(({ pick }) => pick?.automatic === true);
+  if (automaticPicks.length !== 1 || automaticPicks[0].pick.team !== "A" ||
+      automaticPicks[0].index !== draft.picks.length - 1) return false;
+
+  const roster = Array.isArray(draft.roster) ? draft.roster.map(Number) : [];
+  if (![14, 16].includes(roster.length) || new Set(roster).size !== roster.length) return false;
+  const captainA = Number(draft.captainA);
+  const captainB = Number(draft.captainB);
+  if (!roster.includes(captainA) || !roster.includes(captainB) || captainA === captainB) return false;
+
+  const pool = roster.filter((id) => id !== captainA && id !== captainB);
+  const manualPicks = draft.picks.filter((pick) => pick?.automatic !== true);
+  if (manualPicks.length !== pool.length - 1) return false;
+  const chosen = new Set();
+  const legacyTeamA = [captainA];
+  const legacyTeamB = [captainB];
+  for (let index = 0; index < manualPicks.length; index += 1) {
+    const pick = manualPicks[index];
+    const playerId = Number(pick?.userId);
+    const remainingBeforePick = pool.length - index;
+    const expectedTeam = remainingBeforePick > 3
+      ? index % 2 === 0 ? "B" : "A"
+      : "A";
+    if (!Number.isInteger(playerId) || !pool.includes(playerId) || chosen.has(playerId) ||
+        pick.team !== expectedTeam) return false;
+    chosen.add(playerId);
+    (pick.team === "A" ? legacyTeamA : legacyTeamB).push(playerId);
+  }
+
+  const unpicked = pool.filter((id) => !chosen.has(id));
+  const automaticPick = automaticPicks[0].pick;
+  const automaticId = Number(automaticPick.userId);
+  if (unpicked.length !== 1 || automaticId !== unpicked[0]) return false;
+  legacyTeamA.push(automaticId);
+  const storedTeamA = readJson(currentMatch.team_a, []);
+  const storedTeamB = readJson(currentMatch.team_b, []);
+  if (JSON.stringify(storedTeamA) !== JSON.stringify(legacyTeamA) ||
+      JSON.stringify(storedTeamB) !== JSON.stringify(legacyTeamB) ||
+      legacyTeamA.length !== roster.length / 2 + 1 ||
+      legacyTeamB.length !== roster.length / 2 - 1) return false;
+
+  const teamA = legacyTeamA.slice(0, -1);
+  const teamB = [...legacyTeamB, automaticId];
+  draft.picks[automaticPicks[0].index] = { ...automaticPick, team: "B" };
+  const validationError = validateDraftState(currentMatch.id, draft, teamA, teamB);
+  if (validationError) {
+    console.error(`No se pudo reequilibrar el draft del partido #${currentMatch.id}: ${validationError}`);
+    return false;
+  }
+
+  db.transaction(() => {
+    db.prepare("UPDATE matches SET draft_state = ?, team_a = ?, team_b = ? WHERE id = ?")
+      .run(JSON.stringify(draft), JSON.stringify(teamA), JSON.stringify(teamB), currentMatch.id);
+    if (currentMatch.status === "played" && ["A", "B", "draw"].includes(currentMatch.result)) {
+      recalculateMatchPoints(currentMatch.id, currentMatch.result, teamA, teamB);
+    }
+  }).immediate();
+  console.log(`Draft del partido #${currentMatch.id} reequilibrado: ${teamA.length} en A y ${teamB.length} en B; cobro conservado.`);
+  return true;
+}
+
+repairCurrentLegacyDraftBalance();
 
 function matchDetails(match) {
   if (!match) return null;
@@ -954,7 +1050,7 @@ app.post("/api/admin/convocations/current/close", requireAdmin, (req, res) => {
   let draft = {};
   let teamA = [];
   let teamB = [];
-  if (roster.length >= 14 && roster.length <= 16) {
+  if (roster.length === 14 || roster.length === 16) {
     const ids = new Set(roster.map((player) => player.id));
     if (!Number.isInteger(captainA) || !Number.isInteger(captainB) || captainA === captainB || !ids.has(captainA) || !ids.has(captainB)) {
       return res.status(400).json({ error: "Selecciona dos jugadores distintos de la Lista Principal como capitanes A y B." });
@@ -1014,8 +1110,8 @@ app.post("/api/admin/matches/:id/draft/start", requireAdmin, (req, res) => {
       AND u.role != 'admin' AND u.account_status = 'active' AND u.deleted_at IS NULL
     ORDER BY u.ranking_position IS NULL, u.ranking_position, u.name COLLATE NOCASE
   `).all(matchId);
-  if (participants.length < 14 || participants.length > 16) {
-    return res.status(409).json({ error: "El draft requiere entre 14 y 16 jugadores confirmados en la lista principal." });
+  if (participants.length !== 14 && participants.length !== 16) {
+    return res.status(409).json({ error: "El draft requiere exactamente 14 o 16 jugadores confirmados para formar equipos iguales." });
   }
   const participantById = new Map(participants.map((player) => [player.id, player]));
   const captainAId = Number(req.body?.captainA || previousDraft.captainA);
@@ -1083,8 +1179,8 @@ app.post("/api/matches/:id/draft/pick", requirePlayer, (req, res) => {
     draft.status = "complete";
     draft.currentTurn = null;
   } else if (remaining.length === 1 && draft.currentTurn === "A") {
-    teamA.push(remaining[0]);
-    draft.picks.push({ userId: remaining[0], team: "A", automatic: true });
+    teamB.push(remaining[0]);
+    draft.picks.push({ userId: remaining[0], team: "B", automatic: true });
     remaining.length = 0;
     draft.status = "complete";
     draft.currentTurn = null;
@@ -1205,22 +1301,7 @@ app.post("/api/admin/matches/:id/result", requireAdmin, (req, res) => {
         charge.potAddedCents / 100,
       );
     }
-    db.prepare(`
-      DELETE FROM match_points WHERE match_id = ?
-        AND user_id IN (SELECT id FROM users WHERE role = 'admin')
-    `).run(matchId);
-    const insertPoints = db.prepare(`
-      INSERT INTO match_points (match_id, user_id, points, result) VALUES (?, ?, ?, ?)
-      ON CONFLICT(match_id, user_id) DO UPDATE SET points = excluded.points, result = excluded.result
-    `);
-    for (const userId of teamA) {
-      const outcome = result === "draw" ? "draw" : result === "A" ? "win" : "loss";
-      insertPoints.run(matchId, userId, 1 + (outcome === "win" ? 3 : outcome === "draw" ? 1 : 0), outcome);
-    }
-    for (const userId of teamB) {
-      const outcome = result === "draw" ? "draw" : result === "B" ? "win" : "loss";
-      insertPoints.run(matchId, userId, 1 + (outcome === "win" ? 3 : outcome === "draw" ? 1 : 0), outcome);
-    }
+    recalculateMatchPoints(matchId, result, teamA, teamB);
   });
   try {
     saveResult.immediate();

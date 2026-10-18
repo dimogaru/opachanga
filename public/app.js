@@ -158,7 +158,9 @@ function renderConvocationBoard(data, isAdmin = false) {
     ? "Plantilla válida para jugar"
     : data.principalCount < 14
       ? `Faltan ${14 - data.principalCount} para llegar a 14`
-      : "Hay más de 16 principales";
+      : data.principalCount === 15
+        ? "Ajusta la lista a 14 o 16 para repartir los equipos por igual"
+        : "Hay más de 16 principales";
   const principalList = data.lists.principal || [];
   const captainOptionsA = principalList.map((player, index) =>
     `<option value="${player.id}" ${index === 0 ? "selected" : ""}>${escapeHtml(player.alias)}</option>`,
@@ -169,7 +171,7 @@ function renderConvocationBoard(data, isAdmin = false) {
   const canReopen = data.match.canReopen && data.match.status !== "played" && !["in_progress", "complete"].includes(data.match.draft?.status);
   const adminControls = !isAdmin ? "" : open
     ? `<form id="close-convocation-form" class="grid gap-3 border-t border-white/10 bg-white/[.03] p-4 sm:grid-cols-[1fr_1fr_auto] sm:items-end sm:px-7">
-        ${data.validForMatch ? `<label class="text-xs font-semibold text-white/70">Capitán A<select name="captainA" required class="mt-1.5 w-full rounded-xl border border-white/15 bg-pitch-800 px-3 py-2.5 text-sm text-white">${captainOptionsA}</select></label><label class="text-xs font-semibold text-white/70">Capitán B<select name="captainB" required class="mt-1.5 w-full rounded-xl border border-white/15 bg-pitch-800 px-3 py-2.5 text-sm text-white">${captainOptionsB}</select></label>` : `<p class="text-xs text-white/60 sm:col-span-2">Se puede cerrar con cualquier recuento; el draft solo se habilita con 14–16 principales.</p>`}
+        ${data.validForMatch ? `<label class="text-xs font-semibold text-white/70">Capitán A<select name="captainA" required class="mt-1.5 w-full rounded-xl border border-white/15 bg-pitch-800 px-3 py-2.5 text-sm text-white">${captainOptionsA}</select></label><label class="text-xs font-semibold text-white/70">Capitán B<select name="captainB" required class="mt-1.5 w-full rounded-xl border border-white/15 bg-pitch-800 px-3 py-2.5 text-sm text-white">${captainOptionsB}</select></label>` : `<p class="text-xs text-white/60 sm:col-span-2">Se puede cerrar con cualquier recuento; el draft equilibrado solo se habilita con 14 o 16 principales.</p>`}
         <button class="rounded-xl bg-lime px-4 py-2.5 text-xs font-extrabold text-pitch-950">${data.validForMatch ? "Cerrar y guardar capitanes" : "Cerrar convocatoria"}</button>
       </form>`
     : data.match.status === "played"
@@ -185,7 +187,7 @@ function renderConvocationBoard(data, isAdmin = false) {
           <div class="mt-4 flex items-center gap-2 text-sm font-semibold ${data.validForMatch ? "text-lime" : "text-white/80"}"><span class="grid h-6 w-6 place-items-center rounded-full ${data.validForMatch ? "bg-lime/15 text-lime" : "bg-white/10"}">${data.validForMatch ? "✓" : "!"}</span>${readinessText}</div>
         </div>
         <div class="flex min-w-[210px] flex-col gap-3 rounded-2xl border border-white/10 bg-white/[.06] p-4">
-          <div class="flex items-end justify-between"><span class="text-xs font-semibold text-white/60">Lista principal</span><span class="display text-3xl font-extrabold ${data.validForMatch ? "text-lime" : "text-white"}">${data.principalCount}<span class="text-base font-semibold text-white/40"> / 14–16</span></span></div>
+           <div class="flex items-end justify-between"><span class="text-xs font-semibold text-white/60">Lista principal</span><span class="display text-3xl font-extrabold ${data.validForMatch ? "text-lime" : "text-white"}">${data.principalCount}<span class="text-base font-semibold text-white/40"> / 14 o 16</span></span></div>
           <div class="h-2 overflow-hidden rounded-full bg-white/10"><div class="h-full rounded-full ${data.validForMatch ? "bg-lime" : "bg-white/70"} transition-all" style="width:${Math.min(100, Math.round((data.principalCount / 16) * 100))}%"></div></div>
           <span class="text-[11px] text-white/45">${data.responseCount} respuestas · ${data.totalPlayers - data.responseCount} sin responder</span>
         </div>
@@ -233,14 +235,14 @@ function renderCaptainDraft(match) {
   const myTeam = currentUser.id === draft.captainA ? "A" : "B";
   const isMyTurn = draft.currentTurn === myTeam;
   const activeCaptainName = draft.currentTurn === "A"
-    ? users.find((player) => player.id === draft.captainA)?.name || "Capitán A"
-    : users.find((player) => player.id === draft.captainB)?.name || "Capitán B";
+    ? users.find((player) => player.id === draft.captainA)?.alias || "Capitán A"
+    : users.find((player) => player.id === draft.captainB)?.alias || "Capitán B";
   const available = match.available || [];
   const remaining = draft.remaining?.length || 0;
   const selectionHint = remaining === 3
-    ? "Quedan tres: el capitán A elige dos seguidos y el último jugador se asigna automáticamente al Equipo A."
+    ? "Quedan tres: el capitán A elige dos seguidos y el último jugador se asigna automáticamente al Equipo B."
     : remaining === 2 && draft.currentTurn === "A"
-      ? "Al capitán A le queda una elección antes de que el último jugador se asigne automáticamente a su equipo."
+      ? "Al capitán A le queda una elección antes de que el último jugador se asigne automáticamente al Equipo B."
       : "Los capitanes alternan una elección cada uno.";
   const playerCards = available.length
     ? available.map((player) => `<button type="button" class="captain-draft-pick flex min-h-14 w-full items-center justify-between gap-3 rounded-xl border border-ink/10 bg-white px-4 py-3 text-left shadow-sm transition ${isMyTurn ? "hover:border-pitch-700 hover:bg-pitch-50 active:scale-[.99]" : "cursor-not-allowed opacity-55"}" data-match-id="${match.id}" data-player-id="${player.id}" data-final-pick="${remaining === 2 && draft.currentTurn === "A"}" ${isMyTurn ? "" : "disabled"}><span class="min-w-0 truncate text-sm font-semibold">${escapeHtml(player.alias)}</span><span class="shrink-0 rounded-lg bg-pitch-100 px-2.5 py-1.5 text-[11px] font-extrabold text-pitch-800">${isMyTurn ? "Elegir" : "En espera"}</span></button>`).join("")
@@ -285,9 +287,9 @@ function renderMatchPanel(matchesData, isAdmin = false, showFinance = isAdmin) {
     adminControls = `<div class="mt-4 rounded-xl border border-red-700/20 bg-red-50 p-4 text-sm text-red-800" role="alert"><p class="font-bold">Validación del draft bloqueada</p><p class="mt-1">${escapeHtml(selected.draftValidationError)} No se podrá confirmar el resultado ni aplicar el cobro hasta revisar la alineación.</p></div>`;
   } else if (isAdmin && selected.status === "closed" && !["in_progress", "complete"].includes(draft.status)) {
     const count = selected.principalCount ?? convocationData?.principalCount ?? 0;
-    adminControls = count >= 14 && count <= 16
-      ? `<form id="start-draft-form" data-match-id="${selected.id}" class="mt-4 rounded-xl bg-paper p-4"><p class="text-sm font-bold">Convocatoria cerrada · ${count} principales</p><p class="mt-1 text-xs text-ink/50">Elige los capitanes A y B. El capitán B empieza; al quedar tres jugadores, el capitán A elige dos y recibe automáticamente al último.</p><div class="mt-3 grid gap-2 sm:grid-cols-[1fr_1fr_auto] sm:items-end"><label class="text-xs font-semibold text-ink/55">Capitán A<select name="captainA" required class="mt-1 block w-full rounded-xl border border-ink/10 bg-white px-3 py-2.5 text-sm">${captainOptionsA}</select></label><label class="text-xs font-semibold text-ink/55">Capitán B<select name="captainB" required class="mt-1 block w-full rounded-xl border border-ink/10 bg-white px-3 py-2.5 text-sm">${captainOptionsB}</select></label><button class="rounded-xl bg-pitch-900 px-4 py-2.5 text-sm font-bold text-white">Iniciar draft</button></div></form>`
-      : `<p class="mt-4 rounded-xl bg-amber-50 p-4 text-sm text-amber-800">No se puede iniciar el draft: hacen falta entre 14 y 16 confirmados principales; hay ${count}.</p>`;
+      adminControls = count === 14 || count === 16
+      ? `<form id="start-draft-form" data-match-id="${selected.id}" class="mt-4 rounded-xl bg-paper p-4"><p class="text-sm font-bold">Convocatoria cerrada · ${count} principales</p><p class="mt-1 text-xs text-ink/50">Elige los capitanes A y B. El capitán B empieza; al quedar tres jugadores, el capitán A elige dos y el último se asigna automáticamente al Equipo B para igualar las plantillas.</p><div class="mt-3 grid gap-2 sm:grid-cols-[1fr_1fr_auto] sm:items-end"><label class="text-xs font-semibold text-ink/55">Capitán A<select name="captainA" required class="mt-1 block w-full rounded-xl border border-ink/10 bg-white px-3 py-2.5 text-sm">${captainOptionsA}</select></label><label class="text-xs font-semibold text-ink/55">Capitán B<select name="captainB" required class="mt-1 block w-full rounded-xl border border-ink/10 bg-white px-3 py-2.5 text-sm">${captainOptionsB}</select></label><button class="rounded-xl bg-pitch-900 px-4 py-2.5 text-sm font-bold text-white">Iniciar draft</button></div></form>`
+      : `<p class="mt-4 rounded-xl bg-amber-50 p-4 text-sm text-amber-800">${count === 15 ? "No se puede iniciar un draft equilibrado con 15 jugadores. Ajusta la Lista Principal a 14 o 16." : `El draft requiere 14 o 16 confirmados principales; hay ${count}.`}</p>`;
   } else if (isAdmin && draft.status === "in_progress") {
     adminControls = `<div class="mt-4 rounded-xl bg-paper p-4"><p class="text-sm font-bold">Elección en curso · Turno del Equipo ${draft.currentTurn}</p><p class="mt-1 text-xs text-ink/50">Le toca a ${escapeHtml(turnName)}. Los capitanes eligen desde sus perfiles; la lista se actualiza automáticamente.</p></div>`;
   } else if (selected.status === "open") {
@@ -910,7 +912,7 @@ function bindMatchActions(isAdmin = false) {
   document.querySelectorAll(".captain-draft-pick").forEach((button) => {
     button.addEventListener("click", async () => {
       if (button.dataset.finalPick === "true" &&
-          !confirm("Esta es la última elección manual. El jugador restante pasará automáticamente al Equipo A. ¿Confirmar la alineación?")) return;
+          !confirm("Esta es la última elección manual. El jugador restante pasará automáticamente al Equipo B. ¿Confirmar la alineación?")) return;
       button.disabled = true;
       try {
         const match = await api(`/api/matches/${button.dataset.matchId}/draft/pick`, {
