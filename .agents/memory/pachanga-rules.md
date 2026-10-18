@@ -14,3 +14,9 @@ description: Reglas de negocio semanales para convocatorias, equipos, cobros y c
 **Why:** el usuario pidió corregir manualmente la clasificación sin alterar historiales individuales de partidos.
 
 **How to apply:** tratar los valores del formulario como totales deseados, calcular y guardar diferencias acumuladas, identificar jugadores por alias y proteger lectura de auditoría/escritura según rol Admin; las nuevas puntuaciones de partidos deben seguir sumándose sobre esos ajustes.
+
+**Arranque de SQLite:** crear las tablas e índices requeridos con `IF NOT EXISTS`, localizar la base mediante `DB_PATH` y no ejecutar limpiezas automáticas ni restablecer saldos o cuentas al iniciar una base existente. Las migraciones pueden completar columnas nuevas vacías, pero deben preservar las filas y valores existentes.
+
+**Why:** el usuario pidió un arranque idempotente que nunca borre ni sobrescriba los datos del archivo SQLite existente.
+
+**How to apply:** mantener los reinicios de pruebas fuera del arranque de producción y de Replit; limitar la inicialización a crear el esquema, añadir columnas necesarias y crear el Admin solo si falta.

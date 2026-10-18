@@ -1,1 +1,1 @@
-- [Reglas de O Pachanga](pachanga-rules.md) — calendario, draft, cobros, puntuación y ajustes auditables de clasificación son reglas de producto.
+- [Reglas de O Pachanga](pachanga-rules.md) — reglas deportivas, ajustes auditables y arranque de SQLite sin borrado automático.

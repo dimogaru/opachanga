@@ -108,6 +108,15 @@ before(async () => {
   const legacyDb = new Database(context.databasePath);
   try {
     legacyDb.exec(`
+      CREATE TABLE users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        role TEXT NOT NULL CHECK (role IN ('principal', 'suplente', 'admin')),
+        ranking_position INTEGER,
+        balance REAL NOT NULL DEFAULT 0
+      );
+      INSERT INTO users (name, role, ranking_position, balance)
+      VALUES ('Jugador existente', 'principal', 99, 7.5);
       CREATE TABLE matches (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         start_date TEXT NOT NULL,
@@ -134,7 +143,7 @@ before(async () => {
       DB_PATH: context.databasePath,
       PORT: String(port),
       NODE_ENV: "test",
-      REPL_ID: "",
+      REPL_ID: "test-replit-workspace",
       INITIAL_ADMIN_PASSWORD: password,
       SESSION_SECRET: "draft-integration-test-session-secret",
     },
@@ -264,10 +273,27 @@ test("solo Admin puede ajustar los totales de clasificación sin alterar resulta
 test("no se crea una convocatoria automáticamente y Admin debe elegir la fecha", async () => {
   const db = new Database(context.databasePath, { readonly: true });
   try {
+    const tables = new Set(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all().map(({ name }) => name));
+    for (const table of [
+      "users", "matches", "convocations", "transactions", "push_subscriptions",
+      "push_campaigns", "app_settings", "match_finances", "match_points",
+      "standing_adjustments", "balance_alert_campaigns",
+    ]) {
+      assert.ok(tables.has(table), `Falta la tabla requerida ${table}.`);
+    }
     const schema = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'matches'").get().sql;
     assert.match(schema, /'cancelled'/, "La migración debe ampliar los estados permitidos sin perder la tabla.");
     const oldMatch = db.prepare("SELECT status, match_date, match_time FROM matches WHERE id = 1").get();
     assert.deepEqual(oldMatch, { status: "played", match_date: "2026-10-20", match_time: "20:00" });
+    const existingUser = db.prepare(`
+      SELECT name, role, ranking_position, balance FROM users WHERE name = 'Jugador existente'
+    `).get();
+    assert.deepEqual(existingUser, {
+      name: "Jugador existente",
+      role: "principal",
+      ranking_position: 99,
+      balance: 7.5,
+    });
     assert.deepEqual(db.pragma("foreign_key_check"), [], "La migración debe conservar las relaciones de la base.");
   } finally {
     db.close();
