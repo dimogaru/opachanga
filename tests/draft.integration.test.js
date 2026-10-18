@@ -105,6 +105,26 @@ async function startDraft(matchId, playerIds) {
 before(async () => {
   context.dataDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "o-pachanga-draft-test-"));
   context.databasePath = path.join(context.dataDirectory, "o-pachanga.sqlite");
+  const legacyDb = new Database(context.databasePath);
+  try {
+    legacyDb.exec(`
+      CREATE TABLE matches (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        start_date TEXT NOT NULL,
+        end_date TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'open'
+          CHECK (status IN ('open', 'closed', 'played')),
+        draft_state TEXT NOT NULL DEFAULT '{}',
+        team_a TEXT NOT NULL DEFAULT '[]',
+        team_b TEXT NOT NULL DEFAULT '[]',
+        result TEXT CHECK (result IN ('A', 'B', 'draw') OR result IS NULL)
+      );
+      INSERT INTO matches (start_date, end_date, status)
+      VALUES ('2026-10-13', '2026-10-20T20:00:00', 'played');
+    `);
+  } finally {
+    legacyDb.close();
+  }
   const port = await findAvailablePort();
   context.baseUrl = `http://127.0.0.1:${port}`;
   context.process = spawn(process.execPath, ["server.js"], {
@@ -157,6 +177,17 @@ after(async () => {
 });
 
 test("no se crea una convocatoria automáticamente y Admin debe elegir la fecha", async () => {
+  const db = new Database(context.databasePath, { readonly: true });
+  try {
+    const schema = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'matches'").get().sql;
+    assert.match(schema, /'cancelled'/, "La migración debe ampliar los estados permitidos sin perder la tabla.");
+    const oldMatch = db.prepare("SELECT status, match_date, match_time FROM matches WHERE id = 1").get();
+    assert.deepEqual(oldMatch, { status: "played", match_date: "2026-10-20", match_time: "20:00" });
+    assert.deepEqual(db.pragma("foreign_key_check"), [], "La migración debe conservar las relaciones de la base.");
+  } finally {
+    db.close();
+  }
+
   const initial = await get("/api/convocations/current", context.adminCookie);
   assert.equal(initial.response.status, 200);
   assert.equal(initial.payload.match, null);
@@ -169,10 +200,12 @@ test("no se crea una convocatoria automáticamente y Admin debe elegir la fecha"
   const created = await post(
     "/api/admin/convocations/new",
     context.adminCookie,
-    { match_date: matchDate },
+    { match_date: matchDate, match_time: "19:30" },
   );
   assert.equal(created.response.status, 201, JSON.stringify(created.payload));
   assert.equal(created.payload.match.match_date, matchDate);
+  assert.equal(created.payload.match.match_time, "19:30");
+  assert.equal(created.payload.match.end_date, `${matchDate}T19:30:00`);
   assert.match(created.payload.match.match_date_label, /^(Lunes|Martes|Miércoles|Jueves|Viernes|Sábado|Domingo), \d{1,2} de [A-ZÁÉÍÓÚ][a-záéíóú]+$/);
 
   const current = await get("/api/convocations/current", context.adminCookie);
@@ -190,6 +223,62 @@ test("no se crea una convocatoria automáticamente y Admin debe elegir la fecha"
   const closedAgain = await post("/api/admin/convocations/current/close", context.adminCookie, {});
   assert.equal(closedAgain.response.status, 200, JSON.stringify(closedAgain.payload));
   assert.equal(closedAgain.payload.match.status, "closed");
+
+  const cancelled = await post("/api/admin/convocations/current/cancel", context.adminCookie, {});
+  assert.equal(cancelled.response.status, 200, JSON.stringify(cancelled.payload));
+  assert.equal(cancelled.payload.match.status, "cancelled");
+  assert.equal(cancelled.payload.notification.status, "disabled");
+
+  const playerView = await get("/api/convocations/current", context.captainACookie);
+  assert.equal(playerView.payload.match, null);
+  assert.equal(playerView.payload.cancellation.status, "cancelled");
+  assert.equal(playerView.payload.cancellation.match_date, matchDate);
+
+  const forbiddenPrice = await post(
+    `/api/admin/matches/${cancelled.payload.match.id}/price`,
+    context.adminCookie,
+    { price_total: 60 },
+  );
+  assert.equal(forbiddenPrice.response.status, 409);
+  const forbiddenResult = await post(
+    `/api/admin/matches/${cancelled.payload.match.id}/result`,
+    context.adminCookie,
+    { result: "A" },
+  );
+  assert.equal(forbiddenResult.response.status, 409);
+  const dbAfterCancel = new Database(context.databasePath, { readonly: true });
+  try {
+    assert.equal(dbAfterCancel.prepare("SELECT COUNT(*) AS count FROM match_finances WHERE match_id = ?").get(cancelled.payload.match.id).count, 0);
+    assert.equal(dbAfterCancel.prepare("SELECT COUNT(*) AS count FROM match_points WHERE match_id = ?").get(cancelled.payload.match.id).count, 0);
+  } finally {
+    dbAfterCancel.close();
+  }
+
+  const nextDate = new Date(Date.now() + 61 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const next = await post("/api/admin/convocations/new", context.adminCookie, {
+    source_match_id: cancelled.payload.match.id,
+    match_date: nextDate,
+    match_time: "",
+  });
+  assert.equal(next.response.status, 201, JSON.stringify(next.payload));
+  assert.equal(next.payload.match.match_time, "20:00", "La hora vacía debe conservar el valor predeterminado de 20:00.");
+
+  const rosterDb = new Database(context.databasePath);
+  try {
+    const playerIds = rosterDb.prepare(`
+      SELECT id FROM users WHERE role != 'admin' AND account_status = 'active'
+      ORDER BY ranking_position LIMIT 14
+    `).all().map(({ id }) => id);
+    const addResponse = rosterDb.prepare(`
+      INSERT INTO convocations (match_id, user_id, status) VALUES (?, ?, 'principal')
+    `);
+    rosterDb.transaction(() => playerIds.forEach((id) => addResponse.run(next.payload.match.id, id)))();
+  } finally {
+    rosterDb.close();
+  }
+  const cancellationAtMinimum = await post("/api/admin/convocations/current/cancel", context.adminCookie, {});
+  assert.equal(cancellationAtMinimum.response.status, 409);
+  assert.match(cancellationAtMinimum.payload.error, /al menos 14/);
 });
 
 test("el draft equilibra plantillas de 14 y 16 jugadores y valida los turnos", async (t) => {

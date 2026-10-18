@@ -450,7 +450,7 @@ function getCurrentMatch() {
 function latestCancellation() {
   const latest = db.prepare(`
     SELECT * FROM matches
-    ORDER BY COALESCE(match_date, start_date) DESC, id DESC
+    ORDER BY id DESC
     LIMIT 1
   `).get();
   return latest?.status === "cancelled" ? latest : null;
@@ -841,7 +841,7 @@ async function sendNegativeBalanceAlert(match) {
   `).all(match.id);
   const payload = JSON.stringify({
     title: "Saldo negativo antes de jugar",
-    body: `Tienes saldo negativo. El partido es ${formatSpanishDate(match.match_date || shiftDate(match.start_date, 7))}. Revisa tu cuenta.`,
+    body: `Tienes saldo negativo. El partido es ${formatSpanishDate(match.match_date || shiftDate(match.start_date, 7))} a las ${match.match_time || "20:00"} h. Revisa tu cuenta.`,
     url: "/",
   });
   const results = await Promise.allSettled(recipients.map((subscription) =>
@@ -908,8 +908,9 @@ async function sendCampaign(match, type) {
         WHERE c.user_id IS NULL OR c.status IS NULL
       `).all(match.id);
   const matchDateLabel = formatSpanishDate(match.match_date || shiftDate(match.start_date, 7));
+  const matchTimeLabel = match.match_time || match.end_date?.slice(11, 16) || "20:00";
   const message = type === "opening"
-    ? { title: "Convocatoria abierta", body: `Confirma si vienes al partido del ${matchDateLabel}.`, url: "/" }
+    ? { title: "Convocatoria abierta", body: `Confirma si vienes al partido del ${matchDateLabel} a las ${matchTimeLabel} h.`, url: "/" }
     : { title: "Aún no te has apuntado al partido", body: `Confirma si vienes antes del ${matchDateLabel} a las 20:00 h.`, url: "/" };
   const results = await Promise.allSettled(subscriptions.map((subscription) =>
     webPush.sendNotification({
@@ -959,6 +960,28 @@ async function sendUserNotification(userId, payload) {
   const removeExpired = db.prepare("DELETE FROM push_subscriptions WHERE endpoint = ?");
   expired.forEach((endpoint) => removeExpired.run(endpoint));
   return { delivered, failed: results.length - delivered };
+}
+
+async function sendCancellationNotifications(match) {
+  if (!pushConfigured) return { status: "disabled", delivered: 0 };
+  const recipients = db.prepare(`
+    SELECT DISTINCT u.id
+    FROM users u
+    JOIN push_subscriptions s ON s.user_id = u.id
+    WHERE u.role != 'admin' AND u.account_status = 'active' AND u.deleted_at IS NULL
+  `).all();
+  const payload = {
+    title: "Convocatoria cancelada",
+    body: "CONVOCATORIA CANCELADA por no alcanzar el mínimo de jugadores (14).",
+    url: "/",
+    tag: `cancelled-${match.id}`,
+  };
+  const results = await Promise.allSettled(recipients.map(({ id }) => sendUserNotification(id, payload)));
+  const delivered = results.reduce((total, result) =>
+    total + (result.status === "fulfilled" ? result.value.delivered || 0 : 0), 0);
+  const failed = results.reduce((total, result) =>
+    total + (result.status === "fulfilled" ? result.value.failed || 0 : 1), 0);
+  return { status: failed ? "failed" : "sent", delivered, failed };
 }
 
 app.post("/api/register", async (req, res) => {
@@ -1134,13 +1157,17 @@ app.delete("/api/session", (req, res) => {
 
 app.get("/api/convocations/current", requireUser, (_req, res) => {
   const match = getCurrentMatch();
-  res.json(match ? getConvocationData(match, _req.session.user.id) : emptyConvocationData());
+  if (match) return res.json(getConvocationData(match, _req.session.user.id));
+  const data = emptyConvocationData();
+  const cancellation = latestCancellation();
+  if (cancellation) data.cancellation = matchDetails(cancellation);
+  res.json(data);
 });
 
 app.get("/api/admin/convocations/history", requireAdmin, (_req, res) => {
   const activeMatch = getCurrentMatch();
   const matches = db.prepare(`
-    SELECT m.id, m.start_date, m.end_date, m.match_date, m.status, m.result,
+    SELECT m.id, m.start_date, m.end_date, m.match_date, m.match_time, m.status, m.result,
       COUNT(CASE WHEN u.role != 'admin' THEN c.user_id END) AS response_count,
       COUNT(CASE WHEN c.status = 'principal' AND u.role != 'admin' THEN 1 END) AS principal_count
     FROM matches m
@@ -1152,6 +1179,8 @@ app.get("/api/admin/convocations/history", requireAdmin, (_req, res) => {
     ...match,
     match_date: match.match_date || shiftDate(match.start_date, 7),
     match_date_label: formatSpanishDate(match.match_date || shiftDate(match.start_date, 7)),
+    match_time: match.match_time || match.end_date?.slice(11, 16) || "20:00",
+    match_time_label: `${match.match_time || match.end_date?.slice(11, 16) || "20:00"} h`,
     is_active: match.id === activeMatch?.id,
   }));
   res.json({ active_match_id: activeMatch?.id || null, matches });
@@ -1227,6 +1256,66 @@ app.post("/api/admin/convocations/current/close", requireAdmin, (req, res) => {
   res.json(getConvocationData(db.prepare("SELECT * FROM matches WHERE id = ?").get(match.id), req.session.user.id));
 });
 
+app.post("/api/admin/convocations/current/cancel", requireAdmin, async (req, res) => {
+  const match = getCurrentMatch();
+  if (!match) return res.status(404).json({ error: "No hay una convocatoria activa para cancelar." });
+  if (!["open", "closed"].includes(match.status)) {
+    return res.status(409).json({ error: "Solo se puede cancelar una convocatoria abierta o cerrada sin partido jugado." });
+  }
+
+  let cancelledMatch;
+  try {
+    cancelledMatch = db.transaction(() => {
+      const current = db.prepare("SELECT * FROM matches WHERE id = ?").get(match.id);
+      if (!current || !["open", "closed"].includes(current.status)) {
+        const error = new Error("La convocatoria ya no se puede cancelar.");
+        error.status = 409;
+        throw error;
+      }
+      const principalCount = db.prepare(`
+        SELECT COUNT(*) AS count
+        FROM convocations c
+        JOIN users u ON u.id = c.user_id
+        WHERE c.match_id = ? AND c.status = 'principal'
+          AND u.role != 'admin' AND u.account_status = 'active' AND u.deleted_at IS NULL
+      `).get(current.id).count;
+      if (principalCount >= 14) {
+        const error = new Error("No se puede cancelar: ya hay al menos 14 jugadores en la Lista Principal.");
+        error.status = 409;
+        throw error;
+      }
+      const hasSportsOrFinance = current.result ||
+        readJson(current.draft_state, {}).status ||
+        readJson(current.team_a, []).length ||
+        readJson(current.team_b, []).length ||
+        db.prepare("SELECT 1 FROM match_finances WHERE match_id = ?").get(current.id) ||
+        db.prepare("SELECT 1 FROM match_points WHERE match_id = ?").get(current.id) ||
+        db.prepare("SELECT 1 FROM transactions WHERE match_id = ?").get(current.id);
+      if (hasSportsOrFinance) {
+        const error = new Error("No se puede cancelar un evento con draft, resultado, puntos o movimientos financieros.");
+        error.status = 409;
+        throw error;
+      }
+      db.prepare("UPDATE matches SET status = 'cancelled' WHERE id = ?").run(current.id);
+      return db.prepare("SELECT * FROM matches WHERE id = ?").get(current.id);
+    }).immediate();
+  } catch (error) {
+    if (error.status) return res.status(error.status).json({ error: error.message });
+    console.error("No se pudo cancelar la convocatoria:", error.message);
+    return res.status(500).json({ error: "No se pudo cancelar la convocatoria." });
+  }
+
+  let notification = { status: "disabled", delivered: 0 };
+  if (pushConfigured) {
+    try {
+      notification = await sendCancellationNotifications(cancelledMatch);
+    } catch (error) {
+      notification = { status: "failed", delivered: 0, error: error.message };
+    }
+  }
+  res.json({ match: matchDetails(cancelledMatch), notification });
+});
+
 app.post("/api/admin/convocations/new", requireAdmin, async (req, res) => {
   const matchDate = typeof req.body?.match_date === "string" ? req.body.match_date.trim() : "";
   if (!isValidDateOnly(matchDate)) {
@@ -1235,6 +1324,11 @@ app.post("/api/admin/convocations/new", requireAdmin, async (req, res) => {
   if (matchDate < madridDate()) {
     return res.status(400).json({ error: "La fecha del partido no puede estar en el pasado." });
   }
+  const submittedTime = typeof req.body?.match_time === "string" ? req.body.match_time.trim() : "";
+  const matchTime = submittedTime || "20:00";
+  if (!isValidTime(matchTime)) {
+    return res.status(400).json({ error: "La hora del partido debe tener formato HH:MM." });
+  }
 
   const sourceValue = req.body?.source_match_id;
   const sourceMatchId = sourceValue == null || sourceValue === "" ? null : Number(sourceValue);
@@ -1242,8 +1336,8 @@ app.post("/api/admin/convocations/new", requireAdmin, async (req, res) => {
     if (!Number.isInteger(sourceMatchId)) return res.status(400).json({ error: "La jornada anterior no es válida." });
     const sourceMatch = db.prepare("SELECT id, status FROM matches WHERE id = ?").get(sourceMatchId);
     if (!sourceMatch) return res.status(404).json({ error: "No se encontró la jornada anterior." });
-    if (sourceMatch.status !== "played") {
-      return res.status(409).json({ error: "Finaliza el partido anterior antes de abrir una nueva convocatoria." });
+    if (!["played", "cancelled"].includes(sourceMatch.status)) {
+      return res.status(409).json({ error: "Finaliza o cancela la jornada anterior antes de abrir una nueva convocatoria." });
     }
   }
 
@@ -1267,18 +1361,18 @@ app.post("/api/admin/convocations/new", requireAdmin, async (req, res) => {
         throw error;
       }
       const latest = db.prepare("SELECT * FROM matches ORDER BY COALESCE(match_date, start_date) DESC, id DESC LIMIT 1").get();
-      if (latest && latest.status !== "played") {
+      if (latest && !["played", "cancelled"].includes(latest.status)) {
         const error = new Error("Finaliza la jornada anterior antes de abrir una convocatoria nueva.");
         error.status = 409;
         throw error;
       }
 
       const startDate = madridDate();
-      const endDate = `${matchDate}T20:00:00`;
+      const endDate = `${matchDate}T${matchTime}:00`;
       const insert = db.prepare(`
-        INSERT INTO matches (start_date, end_date, match_date, status)
-        VALUES (?, ?, ?, 'open')
-      `).run(startDate, endDate, matchDate);
+        INSERT INTO matches (start_date, end_date, match_date, match_time, status)
+        VALUES (?, ?, ?, ?, 'open')
+      `).run(startDate, endDate, matchDate, matchTime);
       return {
         match: db.prepare("SELECT * FROM matches WHERE id = ?").get(insert.lastInsertRowid),
         created: true,
@@ -1441,6 +1535,7 @@ app.post("/api/admin/matches/:id/price", requireAdmin, (req, res) => {
   const priceCents = moneyCents(price);
   const match = db.prepare("SELECT * FROM matches WHERE id = ?").get(matchId);
   if (!match) return res.status(404).json({ error: "No se encontró el partido." });
+  if (match.status === "cancelled") return res.status(409).json({ error: "Una convocatoria cancelada no admite precio ni cobros." });
   if (!Number.isFinite(price) || price < 0 || !Number.isSafeInteger(priceCents)) {
     return res.status(400).json({ error: "Introduce un precio total válido, igual o superior a cero." });
   }
@@ -1464,6 +1559,7 @@ app.post("/api/admin/matches/:id/result", requireAdmin, (req, res) => {
   const match = db.prepare("SELECT * FROM matches WHERE id = ?").get(matchId);
   if (!match) return res.status(404).json({ error: "No se encontró el partido." });
   if (!["A", "B", "draw"].includes(result)) return res.status(400).json({ error: "El resultado debe ser A, B o empate." });
+  if (match.status === "cancelled") return res.status(409).json({ error: "Una convocatoria cancelada no admite resultados, cobros ni puntos." });
   if (!["closed", "played"].includes(match.status) || readJson(match.draft_state, {}).status !== "complete") {
     return res.status(409).json({ error: "Cierra la convocatoria y completa el draft antes de guardar el resultado." });
   }

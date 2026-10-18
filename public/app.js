@@ -128,7 +128,7 @@ async function togglePushSubscription() {
 }
 
 function formatConvocationDate(match) {
-  if (match.match_date) return `Partido · ${formatMatchDate(match)}`;
+  if (match.match_date) return `Partido · ${formatMatchSchedule(match)}`;
   const start = new Date(`${match.start_date}T12:00:00Z`);
   const end = new Date(`${match.end_date.slice(0, 10)}T12:00:00Z`);
   const fmt = (date) => date.toLocaleDateString("es-ES", { day: "numeric", month: "short", timeZone: "UTC" });
@@ -136,7 +136,7 @@ function formatConvocationDate(match) {
 }
 
 function formatConvocationRange(match) {
-  if (match.match_date) return `Partido ${formatMatchDate(match)}`;
+  if (match.match_date) return `Partido ${formatMatchSchedule(match)}`;
   const start = new Date(`${match.start_date}T12:00:00Z`);
   const end = new Date(`${match.end_date.slice(0, 10)}T12:00:00Z`);
   const fmt = (date) => date.toLocaleDateString("es-ES", { day: "numeric", month: "short", timeZone: "UTC" });
@@ -162,6 +162,14 @@ function formatMatchDate(match) {
   return formatSpanishDate(match?.match_date) || match?.match_date_label || "Fecha por definir";
 }
 
+function formatMatchTime(match) {
+  return match?.match_time_label || `${match?.match_time || "20:00"} h`;
+}
+
+function formatMatchSchedule(match) {
+  return `${formatMatchDate(match)} · ${formatMatchTime(match)}`;
+}
+
 function madridDateInputValue(date = new Date()) {
   const parts = new Intl.DateTimeFormat("en-GB", {
     timeZone: "Europe/Madrid",
@@ -174,7 +182,7 @@ function madridDateInputValue(date = new Date()) {
 }
 
 function convocationStatusLabel(status) {
-  return status === "played" ? "Partido jugado" : status === "closed" ? "Cerrada" : "Abierta";
+  return status === "cancelled" ? "Cancelada" : status === "played" ? "Partido jugado" : status === "closed" ? "Cerrada" : "Abierta";
 }
 
 function renderConvocationHistorySelector(data, history) {
@@ -248,23 +256,36 @@ function listPanel(title, usersInList, colorClass, icon, isAdmin = false, showBa
 
 function renderNewConvocationControl(match, history = []) {
   const hasActiveMatch = history.some((item) => item.is_active);
-  if (hasActiveMatch || (match && match.status !== "played")) return "";
-  const sourceMatchId = match?.status === "played" ? match.id : "";
+  const isTerminal = !match || ["played", "cancelled"].includes(match.status);
+  if (hasActiveMatch || !isTerminal) return "";
+  const sourceMatchId = match?.id || "";
   return `<div class="mt-2 w-full">
     <button id="show-new-convocation-date" type="button" class="w-full rounded-xl bg-lime px-4 py-3 text-sm font-extrabold text-pitch-950 shadow-sm transition hover:bg-lime/90 focus:outline-none focus:ring-2 focus:ring-lime focus:ring-offset-2 focus:ring-offset-pitch-900">Abrir Nueva Convocatoria</button>
     <form id="new-convocation-form" data-source-match-id="${sourceMatchId}" class="mt-3 hidden rounded-xl border border-white/15 bg-white/[.08] p-3">
       <label class="block text-xs font-bold text-white/80">Fecha del Partido
         <input name="match_date" type="date" min="${madridDateInputValue()}" required class="mt-1.5 w-full rounded-lg border border-white/15 bg-white px-2.5 py-2.5 text-sm font-semibold text-ink"/>
       </label>
+      <label class="mt-3 block text-xs font-bold text-white/80">Hora del Partido <span class="font-normal text-white/45">(opcional)</span>
+        <input name="match_time" type="time" value="20:00" class="mt-1.5 w-full rounded-lg border border-white/15 bg-white px-2.5 py-2.5 text-sm font-semibold text-ink"/>
+      </label>
       <p class="mt-2 text-[11px] leading-4 text-white/55">El grupo verá esta fecha. La convocatoria solo se cerrará cuando la cierre Admin.</p>
-      <button class="mt-3 w-full rounded-lg bg-white px-3 py-2.5 text-xs font-extrabold text-pitch-900">Confirmar fecha y abrir</button>
+      <button class="mt-3 w-full rounded-lg bg-white px-3 py-2.5 text-xs font-extrabold text-pitch-900">Confirmar y Abrir Convocatoria</button>
     </form>
+  </div>`;
+}
+
+function renderCancellationAlert(cancellation) {
+  if (!cancellation) return "";
+  return `<div class="mb-5 rounded-2xl border border-red-700/25 bg-red-50 p-4 text-red-900 shadow-sm sm:p-5" role="alert">
+    <p class="text-sm font-extrabold tracking-wide">CONVOCATORIA CANCELADA por no alcanzar el mínimo de jugadores (14).</p>
+    <p class="mt-1 text-xs text-red-800/75">${escapeHtml(formatMatchSchedule(cancellation))}. No se aplican cobros ni puntos.</p>
   </div>`;
 }
 
 function renderConvocationBoard(data, isAdmin = false, history = []) {
   if (!data.match) {
-    return `${isAdmin ? renderConvocationHistorySelector(data, history) : ""}
+    return `${renderCancellationAlert(data.cancellation)}
+      ${isAdmin ? renderConvocationHistorySelector(data, history) : ""}
       <section class="mb-7 rounded-3xl bg-pitch-900 p-5 text-white shadow-card sm:p-7">
         <span class="inline-flex rounded-full bg-white/15 px-3 py-1.5 text-[10px] font-bold tracking-[.12em]">SIN CONVOCATORIA ABIERTA</span>
         <h2 class="display mt-4 text-2xl font-extrabold sm:text-3xl">${isAdmin ? "Abre la próxima convocatoria" : "Aún no hay convocatoria abierta"}</h2>
@@ -274,7 +295,9 @@ function renderConvocationBoard(data, isAdmin = false, history = []) {
   }
   const open = data.match.status === "open";
   const readOnly = data.match.readOnly === true;
-  const readinessText = data.validForMatch
+  const readinessText = data.match.status === "cancelled"
+    ? "Convocatoria cancelada"
+    : data.validForMatch
     ? "Plantilla válida para jugar"
     : data.principalCount < 14
       ? `Faltan ${14 - data.principalCount} para llegar a 14`
@@ -289,24 +312,32 @@ function renderConvocationBoard(data, isAdmin = false, history = []) {
     `<option value="${player.id}" ${index === 1 ? "selected" : ""}>${escapeHtml(player.alias)}</option>`,
   ).join("");
   const canReopen = !readOnly && data.match.canReopen && data.match.status !== "played" && !["in_progress", "complete"].includes(data.match.draft?.status);
+  const canCancel = !readOnly && ["open", "closed"].includes(data.match.status) &&
+    data.principalCount < 14 && !data.match.draft?.status;
+  const cancelButton = canCancel
+    ? `<button id="cancel-convocation" type="button" class="rounded-xl border border-red-300/50 px-4 py-2.5 text-xs font-bold text-red-100 transition hover:bg-red-400/15">Cancelar Convocatoria (Falta de Jugadores)</button>`
+    : "";
   const adminControls = !isAdmin ? "" : readOnly
     ? `<div class="border-t border-white/10 bg-white/[.03] p-4 text-xs text-white/60 sm:px-7">Jornada histórica · vista de solo consulta.</div>`
     : open
     ? `<form id="close-convocation-form" class="grid gap-3 border-t border-white/10 bg-white/[.03] p-4 sm:grid-cols-[1fr_1fr_auto] sm:items-end sm:px-7">
         ${data.validForMatch ? `<label class="text-xs font-semibold text-white/70">Capitán A<select name="captainA" required class="mt-1.5 w-full rounded-xl border border-white/15 bg-pitch-800 px-3 py-2.5 text-sm text-white">${captainOptionsA}</select></label><label class="text-xs font-semibold text-white/70">Capitán B<select name="captainB" required class="mt-1.5 w-full rounded-xl border border-white/15 bg-pitch-800 px-3 py-2.5 text-sm text-white">${captainOptionsB}</select></label>` : `<p class="text-xs text-white/60 sm:col-span-2">Se puede cerrar con cualquier recuento; el draft equilibrado solo se habilita con 14 o 16 principales.</p>`}
         <button class="rounded-xl bg-lime px-4 py-2.5 text-xs font-extrabold text-pitch-950">${data.validForMatch ? "Cerrar y guardar capitanes" : "Cerrar convocatoria"}</button>
-      </form>`
+      </form>${canCancel ? `<div class="border-t border-white/10 bg-white/[.03] px-4 pb-4 pt-3 sm:px-7">${cancelButton}</div>` : ""}`
+    : data.match.status === "cancelled"
+      ? `<div class="border-t border-white/10 bg-white/[.03] p-4 text-xs text-white/60 sm:px-7">Convocatoria cancelada: no se alcanzó el mínimo de 14 jugadores.</div>`
     : data.match.status === "played"
       ? `<div class="border-t border-white/10 bg-white/[.03] p-4 text-xs text-white/60 sm:px-7">Partido jugado; la convocatoria no se puede reabrir.</div>`
-      : `<div class="flex flex-col gap-3 border-t border-white/10 bg-white/[.03] p-4 sm:flex-row sm:items-center sm:justify-between sm:px-7"><span class="text-xs text-white/60">Convocatoria cerrada. ${data.match.draft?.status === "in_progress" ? `Capitanes designados; turno del Equipo ${data.match.draft.currentTurn}.` : data.validForMatch ? "Revisa los capitanes en Partidos." : "No se puede iniciar el draft con este recuento."}</span>${canReopen ? `<button id="open-convocation" class="rounded-xl border border-white/20 px-4 py-2.5 text-xs font-bold text-white transition hover:bg-white/10">Abrir convocatoria</button>` : ""}</div>`;
+      : `<div class="flex flex-col gap-3 border-t border-white/10 bg-white/[.03] p-4 sm:flex-row sm:items-center sm:justify-between sm:px-7"><span class="text-xs text-white/60">Convocatoria cerrada. ${data.match.draft?.status === "in_progress" ? `Capitanes designados; turno del Equipo ${data.match.draft.currentTurn}.` : data.validForMatch ? "Revisa los capitanes en Partidos." : "No se puede iniciar el draft con este recuento."}</span><div class="flex flex-wrap gap-2">${canReopen ? `<button id="open-convocation" class="rounded-xl border border-white/20 px-4 py-2.5 text-xs font-bold text-white transition hover:bg-white/10">Abrir convocatoria</button>` : ""}${cancelButton}</div></div>`;
   return `
+    ${data.match.status === "cancelled" ? renderCancellationAlert(data.match) : ""}
     ${isAdmin ? renderConvocationHistorySelector(data, history) : ""}
     <section class="mb-7 overflow-hidden rounded-3xl bg-pitch-900 text-white shadow-card">
       <div class="flex flex-col gap-6 p-5 sm:p-7 lg:flex-row lg:items-center lg:justify-between">
         <div class="max-w-xl">
-          <div class="flex flex-wrap items-center gap-2"><span class="rounded-full ${open ? "bg-lime/15 text-lime" : "bg-white/15 text-white/70"} px-3 py-1.5 text-[10px] font-bold tracking-[.12em]">${data.match.status === "played" ? "PARTIDO JUGADO" : open ? "CONVOCATORIA ABIERTA" : "CONVOCATORIA CERRADA"}</span><span class="text-xs text-white/50">${formatConvocationDate(data.match)}</span>${!isAdmin ? `<span class="rounded-full bg-lime px-3 py-1.5 text-[10px] font-extrabold tracking-[.08em] text-pitch-950">PRÓXIMO PARTIDO: ${escapeHtml(formatMatchDate(data.match))}</span>` : ""}</div>
+          <div class="flex flex-wrap items-center gap-2"><span class="rounded-full ${open ? "bg-lime/15 text-lime" : data.match.status === "cancelled" ? "bg-red-300 text-red-950" : "bg-white/15 text-white/70"} px-3 py-1.5 text-[10px] font-bold tracking-[.12em]">${data.match.status === "cancelled" ? "CONVOCATORIA CANCELADA" : data.match.status === "played" ? "PARTIDO JUGADO" : open ? "CONVOCATORIA ABIERTA" : "CONVOCATORIA CERRADA"}</span><span class="text-xs text-white/50">${formatConvocationDate(data.match)}</span>${!isAdmin && data.match.status !== "cancelled" ? `<span class="rounded-full bg-lime px-3 py-1.5 text-[10px] font-extrabold tracking-[.08em] text-pitch-950">PRÓXIMO PARTIDO: ${escapeHtml(formatMatchSchedule(data.match))}</span>` : ""}</div>
           <h2 class="display mt-4 text-2xl font-extrabold tracking-tight sm:text-3xl">${isAdmin ? readOnly ? "Historial de convocatoria" : "Control de convocatoria" : "¿Cuentas con nosotros?"}</h2>
-          <p class="mt-1 text-sm text-white/60">${isAdmin ? "La apertura y el cierre se realizan manualmente. Revisa las respuestas del grupo." : "Responde antes del día del partido a las 20:00 h para confirmar tu asistencia."}</p>
+          <p class="mt-1 text-sm text-white/60">${data.match.status === "cancelled" ? "No se registrará cobro ni puntuación para esta convocatoria." : isAdmin ? "La apertura y el cierre se realizan manualmente. Revisa las respuestas del grupo." : "Responde antes del día del partido a las 20:00 h para confirmar tu asistencia."}</p>
           <div class="mt-4 flex items-center gap-2 text-sm font-semibold ${data.validForMatch ? "text-lime" : "text-white/80"}"><span class="grid h-6 w-6 place-items-center rounded-full ${data.validForMatch ? "bg-lime/15 text-lime" : "bg-white/10"}">${data.validForMatch ? "✓" : "!"}</span>${readinessText}</div>
         </div>
         <div class="flex min-w-[210px] flex-col gap-3 rounded-2xl border border-white/10 bg-white/[.06] p-4">
@@ -338,7 +369,17 @@ function renderConvocationBoard(data, isAdmin = false, history = []) {
 }
 
 function matchLabel(match) {
-  return `Partido del ${formatMatchDate(match)}`;
+  return `Partido del ${formatMatchSchedule(match)}`;
+}
+
+function matchStatusLabel(status) {
+  return status === "cancelled"
+    ? "cancelada"
+    : status === "played"
+      ? "jugado"
+      : status === "closed"
+        ? "convocatoria cerrada"
+        : "convocatoria abierta";
 }
 
 function renderTeamCard(title, players, tone) {
@@ -404,7 +445,7 @@ function renderMatchPanel(matchesData, isAdmin = false, showFinance = isAdmin) {
   const turnName = draft.currentTurn === "A"
     ? users.find((player) => player.id === draft.captainA)?.alias || "Capitán 1"
     : users.find((player) => player.id === draft.captainB)?.alias || "Capitán 2";
-  const selection = `<label class="block"><span class="mb-1.5 block text-xs font-semibold text-ink/55">Seleccionar partido</span><select id="match-picker" class="w-full rounded-xl border border-ink/10 bg-white px-3 py-2.5 text-sm font-semibold outline-none focus:border-pitch-700">${matches.map((match) => `<option value="${match.id}" ${match.id === selected.id ? "selected" : ""}>${escapeHtml(matchLabel(match))} · ${match.status === "played" ? "jugado" : match.status === "closed" ? "convocatoria cerrada" : "convocatoria abierta"}</option>`).join("")}</select></label>`;
+  const selection = `<label class="block"><span class="mb-1.5 block text-xs font-semibold text-ink/55">Seleccionar partido</span><select id="match-picker" class="w-full rounded-xl border border-ink/10 bg-white px-3 py-2.5 text-sm font-semibold outline-none focus:border-pitch-700">${matches.map((match) => `<option value="${match.id}" ${match.id === selected.id ? "selected" : ""}>${escapeHtml(matchLabel(match))} · ${matchStatusLabel(match.status)}</option>`).join("")}</select></label>`;
   let adminControls = "";
   if (selected.draftValidationError) {
     adminControls = `<div class="mt-4 rounded-xl border border-red-700/20 bg-red-50 p-4 text-sm text-red-800" role="alert"><p class="font-bold">Validación del draft bloqueada</p><p class="mt-1">${escapeHtml(selected.draftValidationError)} No se podrá confirmar el resultado ni aplicar el cobro hasta revisar la alineación.</p></div>`;
@@ -415,6 +456,8 @@ function renderMatchPanel(matchesData, isAdmin = false, showFinance = isAdmin) {
       : `<p class="mt-4 rounded-xl bg-amber-50 p-4 text-sm text-amber-800">${count === 15 ? "No se puede iniciar un draft equilibrado con 15 jugadores. Ajusta la Lista Principal a 14 o 16." : `El draft requiere 14 o 16 confirmados principales; hay ${count}.`}</p>`;
   } else if (isAdmin && draft.status === "in_progress") {
     adminControls = `<div class="mt-4 rounded-xl bg-paper p-4"><p class="text-sm font-bold">Elección en curso · Turno del Equipo ${draft.currentTurn}</p><p class="mt-1 text-xs text-ink/50">Le toca a ${escapeHtml(turnName)}. Los capitanes eligen desde sus perfiles; la lista se actualiza automáticamente.</p></div>`;
+  } else if (selected.status === "cancelled") {
+    adminControls = `<div class="mt-4 rounded-xl border border-red-700/20 bg-red-50 p-4 text-sm text-red-800" role="alert"><p class="font-bold">Convocatoria cancelada</p><p class="mt-1">No se registrará resultado, cobro ni puntuación para este evento.</p></div>`;
   } else if (selected.status === "open") {
     adminControls = `<p class="mt-4 rounded-xl bg-paper p-4 text-sm text-ink/55">El draft estará disponible después de cerrar la convocatoria.</p>`;
   } else if (draft.status === "complete") {
@@ -423,12 +466,14 @@ function renderMatchPanel(matchesData, isAdmin = false, showFinance = isAdmin) {
   const scoreText = selected.result === "draw" ? "Empate" : selected.result ? `Victoria del Equipo ${selected.result}` : "";
   const finance = selected.finance;
   const financeControl = isAdmin && showFinance
-    ? finance
+    ? selected.status === "cancelled"
+      ? `<p class="mt-4 rounded-xl bg-red-50 p-4 text-sm text-red-800">Evento cancelado: no se permite configurar precio ni aplicar cobros.</p>`
+      : finance
       ? `<div class="mt-4 grid gap-2 rounded-xl bg-white p-4 text-xs text-ink/60 sm:grid-cols-4"><span>Precio total: <b class="text-ink">${formatMoney(finance.pitch_cost)}</b></span><span>Cuota inicial: <b class="text-ink">${formatMoney(finance.fee_per_player)}</b></span><span>Cobrado (${finance.participants}): <b class="text-ink">${formatMoney(finance.total_collected)}</b></span><span>Al bote: <b class="text-pitch-800">${formatMoney(finance.pot_added)}</b></span></div>`
       : `<p class="mt-4 rounded-xl bg-paper p-4 text-sm text-ink/55">${selected.pitch_price == null ? "Configura el Precio por Partido desde la pestaña Finanzas." : `Precio configurado: ${formatMoney(selected.pitch_price)}.`} El descuento se aplicará automáticamente al guardar el resultado.</p>`
     : "";
   const canSaveResult = selected.status === "played" || Boolean(finance) || selected.pitch_price != null;
-  const resultControl = isAdmin && completed && !selected.draftValidationError
+  const resultControl = isAdmin && completed && selected.status !== "cancelled" && !selected.draftValidationError
     ? canSaveResult
       ? `<form id="match-result-form" data-match-id="${selected.id}" data-existing="${selected.status === "played"}" class="mt-4 grid gap-3 rounded-xl bg-white p-4 sm:grid-cols-[1fr_auto] sm:items-end">
           <div class="sm:col-span-2"><h3 class="font-bold">Registrar Resultado del Partido</h3><p class="mt-1 text-xs text-ink/50">${selected.status === "played" ? "Si corriges el resultado, se sustituyen los puntos anteriores de este partido." : "La clasificación se actualizará al guardar el resultado."}</p></div>
@@ -438,7 +483,7 @@ function renderMatchPanel(matchesData, isAdmin = false, showFinance = isAdmin) {
         </form>`
       : `<p class="mt-4 rounded-xl bg-amber-50 p-4 text-sm text-amber-800">Antes de guardar el resultado, define el Precio por Partido en Finanzas.</p>`
     : selected.status === "played" ? `<p class="mt-4 rounded-xl bg-lime/20 p-4 text-sm font-bold text-pitch-900">Resultado: ${scoreText}. Puntuación guardada: asistencia +1, victoria +3 extra, empate +1 extra.</p>` : "";
-  return `<section class="mb-7 rounded-3xl border border-ink/[.07] bg-white p-5 shadow-sm sm:p-6"><div class="mb-4 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between"><div><p class="text-xs font-bold uppercase tracking-[.12em] text-pitch-700">Partidos</p><h2 class="display mt-1 text-2xl font-extrabold">${escapeHtml(matchLabel(selected))}</h2><p class="mt-1 text-xs text-ink/50">${selected.status === "played" ? "Partido jugado" : selected.status === "closed" ? "Convocatoria cerrada" : "Convocatoria abierta"}</p></div><div class="w-full sm:max-w-xs">${selection}</div></div><div class="grid gap-3 sm:grid-cols-2">${renderTeamCard("Equipo A", selected.teamA || [], "bg-pitch-100 text-pitch-900")}${renderTeamCard("Equipo B", selected.teamB || [], "bg-amber-50 text-amber-900")}</div>${isAdmin ? adminControls : renderCaptainDraft(selected)}${financeControl}${resultControl}</section>`;
+  return `<section class="mb-7 rounded-3xl border border-ink/[.07] bg-white p-5 shadow-sm sm:p-6"><div class="mb-4 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between"><div><p class="text-xs font-bold uppercase tracking-[.12em] text-pitch-700">Partidos</p><h2 class="display mt-1 text-2xl font-extrabold">${escapeHtml(matchLabel(selected))}</h2><p class="mt-1 text-xs text-ink/50">${selected.status === "cancelled" ? "Convocatoria cancelada" : selected.status === "played" ? "Partido jugado" : selected.status === "closed" ? "Convocatoria cerrada" : "Convocatoria abierta"}</p></div><div class="w-full sm:max-w-xs">${selection}</div></div><div class="grid gap-3 sm:grid-cols-2">${renderTeamCard("Equipo A", selected.teamA || [], "bg-pitch-100 text-pitch-900")}${renderTeamCard("Equipo B", selected.teamB || [], "bg-amber-50 text-amber-900")}</div>${isAdmin ? adminControls : renderCaptainDraft(selected)}${financeControl}${resultControl}</section>`;
 }
 
 function renderMatchFinanceControl(matchesData) {
@@ -448,10 +493,12 @@ function renderMatchFinanceControl(matchesData) {
   if (!selected) selected = matches.find((match) => match.draft?.status === "complete" && !match.finance) || matches[0];
   selectedMatchId = selected.id;
   const options = matches.map((match) =>
-    `<option value="${match.id}" ${match.id === selected.id ? "selected" : ""}>${escapeHtml(matchLabel(match))} · ${match.status === "played" ? "jugado" : match.status === "closed" ? "cerrado" : "abierto"}</option>`,
+    `<option value="${match.id}" ${match.id === selected.id ? "selected" : ""}>${escapeHtml(matchLabel(match))} · ${matchStatusLabel(match.status)}</option>`,
   ).join("");
   const action = selected.finance
     ? `<div class="grid gap-2 rounded-xl bg-paper p-4 text-xs text-ink/60 sm:grid-cols-4"><span>Precio total: <b class="text-ink">${formatMoney(selected.finance.pitch_cost)}</b></span><span>Cuota inicial: <b class="text-ink">${formatMoney(selected.finance.fee_per_player)}</b></span><span>Cobrado (${selected.finance.participants}): <b class="text-ink">${formatMoney(selected.finance.total_collected)}</b></span><span>Al bote: <b class="text-pitch-800">${formatMoney(selected.finance.pot_added)}</b></span></div>`
+    : selected.status === "cancelled"
+      ? `<div class="rounded-xl bg-red-50 p-4 text-sm text-red-800">Evento cancelado. No se pueden aplicar cobros.</div>`
     : selected.status === "played"
       ? `<div class="rounded-xl bg-paper p-4 text-sm text-ink/55">Este partido ya tiene resultado, pero no conserva un cobro automático histórico.</div>`
       : `<form id="match-price-form" data-match-id="${selected.id}" class="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end"><label><span class="mb-1.5 block text-xs font-semibold text-ink/55">Precio por Partido · coste total de pista/reserva (€)</span><input name="price_total" type="number" min="0" step="0.01" required value="${selected.pitch_price ?? ""}" placeholder="Ej. 60,00" class="w-full rounded-xl border border-ink/10 px-3 py-2.5 text-sm"/></label><button class="rounded-xl bg-pitch-900 px-4 py-2.5 text-sm font-bold text-white">${selected.pitch_price == null ? "Guardar precio" : "Actualizar precio"}</button><p class="text-xs text-ink/45 sm:col-span-2">Al guardar el resultado, se dividirá entre los jugadores de los equipos, redondeando la cuota al céntimo superior; el sobrante irá al bote.</p></form>`;
@@ -853,6 +900,7 @@ async function renderAdmin() {
         method: "POST",
         body: JSON.stringify({
           match_date: form.elements.match_date.value,
+          match_time: form.elements.match_time.value,
           ...(sourceMatchId ? { source_match_id: Number(sourceMatchId) } : {}),
         }),
       });
@@ -900,6 +948,32 @@ async function renderAdmin() {
     } catch (error) {
       showToast(error.message);
       form.querySelector("button").disabled = false;
+    }
+  });
+  document.querySelector("#cancel-convocation")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    if (!confirm("¿Cancelar esta convocatoria? Se avisará al grupo y no se aplicarán cobros ni puntos.")) return;
+    button.disabled = true;
+    try {
+      const response = await api("/api/admin/convocations/current/cancel", {
+        method: "POST",
+        body: "{}",
+      });
+      selectedConvocationId = response.match.id;
+      viewingHistoricalConvocation = true;
+      const pushMessage = response.notification?.status === "disabled"
+        ? " Web Push no está configurado."
+        : response.notification?.status === "failed"
+          ? " Algunos avisos push no se entregaron."
+          : response.notification?.delivered
+            ? ` Aviso enviado a ${response.notification.delivered} dispositivo(s).`
+            : "";
+      showToast(`Convocatoria cancelada.${pushMessage}`);
+      activeAdminTab = "convocatoria";
+      await renderAdmin();
+    } catch (error) {
+      showToast(error.message);
+      button.disabled = false;
     }
   });
   document.querySelector("#open-convocation")?.addEventListener("click", async (event) => {
