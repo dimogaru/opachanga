@@ -176,6 +176,91 @@ after(async () => {
   if (context.dataDirectory) fs.rmSync(context.dataDirectory, { recursive: true, force: true });
 });
 
+test("solo Admin puede ajustar los totales de clasificación sin alterar resultados de partidos", async () => {
+  const initial = await get("/api/standings", context.captainACookie);
+  assert.equal(initial.response.status, 200);
+  const player = initial.payload.standings.find((row) => row.alias === "draft1");
+  assert.ok(player);
+
+  const db = new Database(context.databasePath);
+  const matchPointCount = db.prepare("SELECT COUNT(*) AS count FROM match_points").get().count;
+  db.close();
+
+  const denied = await post("/api/admin/standings/adjustments", context.captainACookie, {
+    user_id: player.id,
+    points: 17,
+    matches_played: 3,
+    wins: 2,
+    draws: 1,
+    losses: 0,
+    reason: "Prueba de autorización",
+  });
+  assert.equal(denied.response.status, 403);
+  const deniedHistory = await get("/api/admin/standings/adjustments", context.captainACookie);
+  assert.equal(deniedHistory.response.status, 403);
+
+  const invalid = await post("/api/admin/standings/adjustments", context.adminCookie, {
+    user_id: player.id,
+    points: 17,
+    matches_played: 2,
+    wins: 2,
+    draws: 1,
+    losses: 0,
+    reason: "Prueba de validación",
+  });
+  assert.equal(invalid.response.status, 400);
+
+  const first = await post("/api/admin/standings/adjustments", context.adminCookie, {
+    user_id: player.id,
+    points: 17,
+    matches_played: 3,
+    wins: 2,
+    draws: 1,
+    losses: 0,
+    reason: "Ajuste manual de puntos por corrección",
+  });
+  assert.equal(first.response.status, 201, JSON.stringify(first.payload));
+  assert.equal(first.payload.adjustment.points_delta, 17);
+  assert.equal(first.payload.adjustment.matches_played_delta, 3);
+  assert.equal(first.payload.adjustment.admin_alias, "DIMOGARU");
+
+  const updated = await get("/api/standings", context.captainBCookie);
+  assert.equal(updated.payload.standings[0].alias, "draft1");
+  assert.deepEqual(
+    {
+      points: updated.payload.standings[0].points,
+      matches_played: updated.payload.standings[0].matches_played,
+      wins: updated.payload.standings[0].wins,
+      draws: updated.payload.standings[0].draws,
+      losses: updated.payload.standings[0].losses,
+    },
+    { points: 17, matches_played: 3, wins: 2, draws: 1, losses: 0 },
+  );
+
+  const second = await post("/api/admin/standings/adjustments", context.adminCookie, {
+    user_id: player.id,
+    points: 10,
+    matches_played: 2,
+    wins: 1,
+    draws: 1,
+    losses: 0,
+    reason: "Corrección del total acumulado",
+  });
+  assert.equal(second.response.status, 201, JSON.stringify(second.payload));
+  assert.equal(second.payload.adjustment.points_delta, -7);
+  assert.equal(second.payload.adjustment.matches_played_delta, -1);
+
+  const history = await get("/api/admin/standings/adjustments", context.adminCookie);
+  assert.equal(history.payload.adjustments.length, 2);
+  assert.equal(history.payload.adjustments[0].reason, "Corrección del total acumulado");
+  const finalStandings = await get("/api/standings", context.captainACookie);
+  assert.equal(finalStandings.payload.standings[0].points, 10);
+
+  const dbAfter = new Database(context.databasePath, { readonly: true });
+  assert.equal(dbAfter.prepare("SELECT COUNT(*) AS count FROM match_points").get().count, matchPointCount);
+  dbAfter.close();
+});
+
 test("no se crea una convocatoria automáticamente y Admin debe elegir la fecha", async () => {
   const db = new Database(context.databasePath, { readonly: true });
   try {

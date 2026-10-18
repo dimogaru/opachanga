@@ -8,3 +8,9 @@ description: Reglas de negocio semanales para convocatorias, equipos, cobros y c
 **Why:** el usuario especificó que la apertura y el cierre son manuales, que Admin elige fecha/hora y que una convocatoria con menos de 14 principales puede cancelarse sin actividad financiera ni deportiva. El reparto equilibrado, la conservación del historial y el uso de alias también responden a reglas explícitas del producto.
 
 **How to apply:** exigir acciones de Admin para abrir/cerrar, requerir fecha y usar la hora por defecto a menos que Admin indique otra; mostrar los valores en PWA y avisos. Permitir cancelación solo bajo el umbral de 14, impedir cobros/resultados/puntos y conservar el evento para el historial. No inferir ni cambiar estados por cron. Exigir 14 o 16 participantes para un draft equilibrado, asignar automáticamente al último a B y recalcular puntos si se corrige una alineación histórica. Al crear una jornada, no copiar respuestas ni alterar el historial anterior. Preservar estas condiciones en convocatorias, cobros, notificaciones y clasificación; no habilitar picks para Admin ni duplicar cobros, y no mostrar nombres reales en las vistas públicas indicadas.
+
+**Clasificación manual:** Admin puede definir totales nuevos de puntos, partidos jugados, victorias, empates y derrotas, con un motivo obligatorio. El sistema registra las diferencias como ajustes auditables, recalcula el orden público y conserva sin cambios los resultados y puntos asociados a partidos finalizados. Partidos jugados debe ser igual a victorias + empates + derrotas.
+
+**Why:** el usuario pidió corregir manualmente la clasificación sin alterar historiales individuales de partidos.
+
+**How to apply:** tratar los valores del formulario como totales deseados, calcular y guardar diferencias acumuladas, identificar jugadores por alias y proteger lectura de auditoría/escritura según rol Admin; las nuevas puntuaciones de partidos deben seguir sumándose sobre esos ajustes.

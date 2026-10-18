@@ -1510,6 +1510,9 @@ app.post("/api/admin/standings/adjustments", requireAdmin, (req, res) => {
     if (value === undefined || value === null || value === "" || !Number.isSafeInteger(number)) {
       return res.status(400).json({ error: `El campo ${field} debe ser un número entero válido.` });
     }
+    if (Math.abs(number) > 1_000_000) {
+      return res.status(400).json({ error: "Los totales deben estar dentro del rango permitido." });
+    }
     targets[field] = number;
   }
   const reason = typeof req.body?.reason === "string" ? req.body.reason.trim() : "";
