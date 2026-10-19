@@ -1,6 +1,6 @@
-# --- Etapa 1: Builder ---
-FROM node:20-bookworm-slim AS builder
+FROM node:20-bookworm-slim
 
+# Instalar dependencias del sistema requeridas para la compilación de módulos nativos (sqlite3, etc.)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
     make \
@@ -9,21 +9,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
+# Copiar archivos de dependencias
 COPY package*.json ./
 
-# Usamos --omit=dev para producción en versiones modernas de npm
-RUN npm ci --omit=dev --no-audit --no-fund
+# Instalar TODAS las dependencias sin omitir nada
+RUN npm install --no-audit --no-fund
 
-# --- Etapa 2: Runner ---
-FROM node:20-bookworm-slim AS runner
-
-WORKDIR /app
-
-# Copiamos las dependencias compiladas y el código fuente
-COPY --from=builder /app/node_modules ./node_modules
+# Copiar el código fuente
 COPY . .
 
-# Permisos para directorio de datos y script de inicio
+# Preparar directorio de datos y dar permisos
 RUN mkdir -p /app/data && chown -R node:node /app && chmod +x start.sh
 
 USER node
