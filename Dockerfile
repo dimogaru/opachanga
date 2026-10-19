@@ -1,23 +1,18 @@
 FROM node:20-bookworm-slim
 
-# Instalar dependencias para módulos nativos (bcrypt, better-sqlite3) y activar pnpm
+# Instalar herramientas del sistema necesarias para la compilación de C++ (sqlite3, bcrypt)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
     make \
     g++ \
-    && rm -rf /var/lib/apt/lists/* \
-    && corepack enable && corepack prepare pnpm@latest --activate
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-COPY package*.json ./
-
-# pnpm config set policy-config-version 1 bypasses build script restrictions for C++ packages
-RUN pnpm config set config-field-name-is-deprecated false \
-    && pnpm install --unsafe-perm || pnpm install --config.confirmModulesPurge=false
-
+# Copiar todo el proyecto al contenedor
 COPY . .
 
+# Crear carpeta de persistencia de datos y asignar permisos al usuario node
 RUN mkdir -p /app/data && chown -R node:node /app && chmod +x start.sh
 
 USER node
