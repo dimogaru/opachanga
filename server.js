@@ -9,6 +9,7 @@ const bcrypt = require("bcrypt");
 
 const app = express();
 const port = Number(process.env.PORT || 3000);
+const HOST = '0.0.0.0';
 const defaultSubstitutePassword = "Pachanga123#";
 const maxProfilePhotoBytes = 256 * 1024;
 const databasePath = process.env.DB_PATH
@@ -2485,6 +2486,6 @@ cron.schedule("0 10 * * *", async () => {
 app.use(express.static(path.join(__dirname, "public"), { index: "index.html" }));
 app.get(/.*/, (_req, res) => res.sendFile(path.join(__dirname, "public", "index.html")));
 
-app.listen(port, "0.0.0.0", () => {
-  console.log(`O Pachanga disponible en http://0.0.0.0:${port}`);
+app.listen(PORT, HOST, () => {
+    console.log(`Server listening on http://${HOST}:${PORT}`);
 });
