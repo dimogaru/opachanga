@@ -1,8 +1,7 @@
 const path = require("node:path");
-const fs = require("node:fs");
 const express = require("express");
 const session = require("express-session");
-const Database = require("better-sqlite3");
+const db = require("./database");
 const cron = require("node-cron");
 const webPush = require("web-push");
 const bcrypt = require("bcrypt");
@@ -10,8 +9,10 @@ const bcrypt = require("bcrypt");
 const app = express();
 const port = Number(process.env.PORT || 3000);
 const HOST = '0.0.0.0';
+const timeZone = "Europe/Madrid";
 const defaultSubstitutePassword = "Pachanga123#";
 const maxProfilePhotoBytes = 256 * 1024;
+if (false) {
 const databasePath = process.env.DB_PATH
   ? path.resolve(process.env.DB_PATH)
   : path.resolve("./data/database.sqlite");
@@ -275,6 +276,7 @@ if (!defaultAdmin) {
     VALUES ('DIEGO GAY DAVILA', 'DIEGO', 'GAY DAVILA', 'DIMOGARU', ?, 'active', 0, 'admin', 'principal', NULL, 0)
   `).run(defaultAdminPasswordHash);
 }
+}
 
 const vapidPublicKey = process.env.VAPID_PUBLIC_KEY || process.env.PUBLIC_VAPID_KEY || "";
 const vapidPrivateKey = process.env.VAPID_PRIVATE_KEY || process.env.PRIVATE_VAPID_KEY || "";
@@ -322,9 +324,9 @@ const publicUser = (user) => ({
   must_change_password: Boolean(user.must_change_password),
 });
 
-function requireUser(req, res, next) {
+async function requireUser(req, res, next) {
   if (!req.session.user) return res.status(401).json({ error: "Inicia sesión para continuar." });
-  const account = db.prepare(`
+  const account = await db.prepare(`
     SELECT account_status, deleted_at, must_change_password
     FROM users WHERE id = ?
   `).get(req.session.user.id);
@@ -406,7 +408,7 @@ function formatSpanishDate(dateString) {
   return `${titleCase(values.weekday)}, ${values.day} de ${titleCase(values.month)}`;
 }
 
-function getCurrentMatch() {
+async function getCurrentMatch() {
   return db.prepare(`
     SELECT * FROM matches
     WHERE status IN ('open', 'closed')
@@ -416,7 +418,7 @@ function getCurrentMatch() {
   `).get() || null;
 }
 
-function latestCancellation() {
+async function latestCancellation() {
   const latest = db.prepare(`
     SELECT * FROM matches
     ORDER BY id DESC
@@ -438,9 +440,9 @@ function emptyConvocationData() {
   };
 }
 
-function getConvocationData(match, userId, { historical = false } = {}) {
+async function getConvocationData(match, userId, { historical = false } = {}) {
   const roster = historical
-    ? db.prepare(`
+    ? await db.prepare(`
         SELECT u.id, u.name, u.alias, u.role, u.base_role, u.ranking_position,
           c.status AS response, c.invited_by_user_id, inviter.alias AS invited_by_alias
         FROM convocations c
@@ -449,9 +451,9 @@ function getConvocationData(match, userId, { historical = false } = {}) {
         WHERE c.match_id = ? AND u.role != 'admin'
         ORDER BY
           CASE c.status WHEN 'principal' THEN 1 WHEN 'suplente' THEN 2 ELSE 3 END,
-          u.ranking_position IS NULL, u.ranking_position, u.name COLLATE NOCASE
+          u.ranking_position IS NULL, u.ranking_position, LOWER(u.name)
       `).all(match.id)
-    : db.prepare(`
+    : await db.prepare(`
         SELECT u.id, u.name, u.alias, u.role, u.base_role, u.ranking_position,
           c.status AS response, c.invited_by_user_id, inviter.alias AS invited_by_alias
         FROM users u
@@ -467,7 +469,7 @@ function getConvocationData(match, userId, { historical = false } = {}) {
           END,
           u.ranking_position IS NULL,
           u.ranking_position,
-          u.name COLLATE NOCASE
+          LOWER(u.name)
       `).all(match.id);
   const principal = roster.filter((user) => user.response === "principal");
   const suplentes = roster.filter((user) => user.response === "suplente");
@@ -477,12 +479,12 @@ function getConvocationData(match, userId, { historical = false } = {}) {
   const principalCount = principal.length;
   return {
     match: {
-      ...matchDetails(match),
+      ...await matchDetails(match),
       draft: readJson(match.draft_state, {}),
       canReopen: !historical && match.status === "closed" &&
         !["in_progress", "complete"].includes(readJson(match.draft_state, {}).status),
       readOnly: historical,
-      transactions: historical || match.status === "played" ? getMatchTransactions(match.id) : [],
+      transactions: historical || match.status === "played" ? await getMatchTransactions(match.id) : [],
     },
     lists: { principal, suplentes, no_va: noVan, pending },
     currentResponse: roster.find((user) => user.id === userId)?.response || null,
@@ -493,7 +495,7 @@ function getConvocationData(match, userId, { historical = false } = {}) {
   };
 }
 
-function getMatchTransactions(matchId) {
+async function getMatchTransactions(matchId) {
   return db.prepare(`
     SELECT t.id, t.user_id, u.alias, t.amount, t.concept, t.date,
       t.transaction_type, t.adjustment_of, t.status
@@ -512,10 +514,10 @@ function roundMoney(value) {
   return Math.round(value * 100) / 100;
 }
 
-function nonAdminPlayerIds(ids) {
+async function nonAdminPlayerIds(ids) {
   const uniqueIds = [...new Set((ids || []).map(Number).filter(Number.isInteger))];
   if (!uniqueIds.length) return [];
-  const users = db.prepare(`
+  const users = await db.prepare(`
     SELECT id FROM users
     WHERE id IN (${uniqueIds.map(() => "?").join(",")})
       AND role != 'admin'
@@ -532,7 +534,7 @@ function readJson(value, fallback) {
   }
 }
 
-function principalRosterIds(matchId) {
+async function principalRosterIds(matchId) {
   return db.prepare(`
     SELECT c.user_id
     FROM convocations c JOIN users u ON u.id = c.user_id
@@ -541,12 +543,12 @@ function principalRosterIds(matchId) {
   `).all(matchId).map((row) => row.user_id);
 }
 
-function validateDraftState(matchId, draft, teamA, teamB) {
+async function validateDraftState(matchId, draft, teamA, teamB) {
   if (!["in_progress", "complete"].includes(draft?.status)) return "El estado del draft no es válido.";
   if (!Array.isArray(teamA) || !Array.isArray(teamB) || !Array.isArray(draft.picks)) {
     return "Faltan datos de elecciones o de equipos.";
   }
-  const confirmedIds = new Set(principalRosterIds(matchId));
+  const confirmedIds = new Set(await principalRosterIds(matchId));
   const inferredRoster = [
     ...teamA,
     ...teamB,
@@ -638,8 +640,8 @@ function validateDraftState(matchId, draft, teamA, teamB) {
   return null;
 }
 
-function recalculateMatchPoints(matchId, result, teamA, teamB) {
-  db.prepare("DELETE FROM match_points WHERE match_id = ?").run(matchId);
+async function recalculateMatchPoints(matchId, result, teamA, teamB) {
+  await db.prepare("DELETE FROM match_points WHERE match_id = ?").run(matchId);
   const insertPoints = db.prepare(`
     INSERT INTO match_points (match_id, user_id, points, result) VALUES (?, ?, ?, ?)
   `);
@@ -648,12 +650,12 @@ function recalculateMatchPoints(matchId, result, teamA, teamB) {
     [teamB, result === "draw" ? "draw" : result === "B" ? "win" : "loss"],
   ]) {
     const points = 1 + (outcome === "win" ? 3 : outcome === "draw" ? 1 : 0);
-    for (const userId of team) insertPoints.run(matchId, userId, points, outcome);
+    for (const userId of team) await insertPoints.run(matchId, userId, points, outcome);
   }
 }
 
-function repairCurrentLegacyDraftBalance() {
-  const currentMatch = db.prepare("SELECT * FROM matches ORDER BY match_date DESC, start_date DESC, id DESC LIMIT 1").get();
+async function repairCurrentLegacyDraftBalance() {
+  const currentMatch = await db.prepare("SELECT * FROM matches ORDER BY match_date DESC, start_date DESC, id DESC LIMIT 1").get();
   if (!currentMatch) return false;
   const draft = readJson(currentMatch.draft_state, {});
   if (draft.status !== "complete" || !Array.isArray(draft.picks)) return false;
@@ -704,26 +706,24 @@ function repairCurrentLegacyDraftBalance() {
   const teamA = legacyTeamA.slice(0, -1);
   const teamB = [...legacyTeamB, automaticId];
   draft.picks[automaticPicks[0].index] = { ...automaticPick, team: "B" };
-  const validationError = validateDraftState(currentMatch.id, draft, teamA, teamB);
+  const validationError = await validateDraftState(currentMatch.id, draft, teamA, teamB);
   if (validationError) {
     console.error(`No se pudo reequilibrar el draft del partido #${currentMatch.id}: ${validationError}`);
     return false;
   }
 
-  db.transaction(() => {
-    db.prepare("UPDATE matches SET draft_state = ?, team_a = ?, team_b = ? WHERE id = ?")
+  await db.transaction(async () => {
+    await db.prepare("UPDATE matches SET draft_state = ?, team_a = ?, team_b = ? WHERE id = ?")
       .run(JSON.stringify(draft), JSON.stringify(teamA), JSON.stringify(teamB), currentMatch.id);
     if (currentMatch.status === "played" && ["A", "B", "draw"].includes(currentMatch.result)) {
-      recalculateMatchPoints(currentMatch.id, currentMatch.result, teamA, teamB);
+      await recalculateMatchPoints(currentMatch.id, currentMatch.result, teamA, teamB);
     }
-  }).immediate();
+  })();
   console.log(`Draft del partido #${currentMatch.id} reequilibrado: ${teamA.length} en A y ${teamB.length} en B; cobro conservado.`);
   return true;
 }
 
-repairCurrentLegacyDraftBalance();
-
-function matchDetails(match) {
+async function matchDetails(match) {
   if (!match) return null;
   const matchDate = match.match_date || shiftDate(match.start_date, 7);
   const matchTime = isValidTime(match.match_time)
@@ -737,36 +737,36 @@ function matchDetails(match) {
   let draftValidationError = ["in_progress", "complete"].includes(draft.status)
     ? !Array.isArray(storedTeamA) || !Array.isArray(storedTeamB)
       ? "Faltan datos de elecciones o de equipos."
-      : validateDraftState(match.id, draft, teamAIds, teamBIds)
+      : await validateDraftState(match.id, draft, teamAIds, teamBIds)
     : null;
   if (!draftValidationError && ["closed", "played"].includes(match.status) &&
       (match.draft_state !== "{}" || teamAIds.length || teamBIds.length) &&
       !["in_progress", "complete"].includes(draft.status)) {
     draftValidationError = "El estado guardado del draft no es válido.";
   }
-  const getTeam = (ids, activeOnly = false) => ids.length
-    ? db.prepare(`
+  const getTeam = async (ids, activeOnly = false) => ids.length
+    ? await db.prepare(`
       SELECT id, name, alias, ranking_position FROM users
       WHERE id IN (${ids.map(() => "?").join(",")}) AND role != 'admin'
         ${activeOnly ? "AND account_status = 'active' AND deleted_at IS NULL" : ""}
     `).all(...ids)
       .sort((left, right) => ids.indexOf(left.id) - ids.indexOf(right.id))
     : [];
-  const available = draft.remaining?.length ? getTeam(draft.remaining, true) : [];
-  const finance = db.prepare("SELECT * FROM match_finances WHERE match_id = ?").get(match.id) || null;
-  const principalCount = db.prepare(`
+  const available = draft.remaining?.length ? await getTeam(draft.remaining, true) : [];
+  const finance = await db.prepare("SELECT * FROM match_finances WHERE match_id = ?").get(match.id) || null;
+  const principalCount = (await db.prepare(`
     SELECT COUNT(*) AS count FROM convocations c
     JOIN users u ON u.id = c.user_id
     WHERE c.match_id = ? AND c.status = 'principal'
       AND u.role != 'admin' AND u.account_status = 'active' AND u.deleted_at IS NULL
   `)
-    .get(match.id).count;
-  const principalPlayers = db.prepare(`
+    .get(match.id)).count;
+  const principalPlayers = await db.prepare(`
     SELECT u.id, u.name, u.alias, u.ranking_position
     FROM convocations c JOIN users u ON u.id = c.user_id
     WHERE c.match_id = ? AND c.status = 'principal'
       AND u.role != 'admin' AND u.account_status = 'active' AND u.deleted_at IS NULL
-    ORDER BY u.ranking_position IS NULL, u.ranking_position, u.name COLLATE NOCASE
+    ORDER BY u.ranking_position IS NULL, u.ranking_position, LOWER(u.name)
   `).all(match.id);
   return {
     ...match,
@@ -776,8 +776,8 @@ function matchDetails(match) {
     match_time_label: `${matchTime} h`,
     draft,
     draftValidationError,
-    teamA: getTeam(teamAIds),
-    teamB: getTeam(teamBIds),
+    teamA: await getTeam(teamAIds),
+    teamB: await getTeam(teamBIds),
     available,
     finance,
     principalCount,
@@ -785,23 +785,23 @@ function matchDetails(match) {
   };
 }
 
-function currentPot() {
-  const setting = db.prepare("SELECT value FROM app_settings WHERE key = 'pot_cents'").get();
+async function currentPot() {
+  const setting = await db.prepare("SELECT value FROM app_settings WHERE key = 'pot_cents'").get();
   return Number(setting?.value || 0) / 100;
 }
 
 async function sendNegativeBalanceAlert(match) {
   if (!pushConfigured) return { skipped: true, reason: "push_not_configured" };
-  const claim = db.transaction(() => {
-    db.prepare("INSERT OR IGNORE INTO balance_alert_campaigns (match_id, status) VALUES (?, 'sending')")
+  const claim = await db.transaction(async () => {
+    await db.prepare("INSERT INTO balance_alert_campaigns (match_id, status) VALUES (?, 'sending') ON CONFLICT (match_id) DO NOTHING")
       .run(match.id);
-    const campaign = db.prepare("SELECT * FROM balance_alert_campaigns WHERE match_id = ?").get(match.id);
+    const campaign = await db.prepare("SELECT * FROM balance_alert_campaigns WHERE match_id = ?").get(match.id);
     if (campaign.status === "sent") return { claimed: false, campaign };
     if (campaign.status === "sending") {
-      const stale = db.prepare("SELECT ? < datetime('now', '-15 minutes') AS value").get(campaign.created_at).value;
+      const stale = (await db.prepare("SELECT ?::timestamptz < CURRENT_TIMESTAMP - INTERVAL '15 minutes' AS value").get(campaign.created_at)).value;
       if (!stale) return { claimed: false, campaign };
     }
-    db.prepare(`
+    await db.prepare(`
       UPDATE balance_alert_campaigns
       SET status = 'sending', error = NULL, created_at = CURRENT_TIMESTAMP
       WHERE match_id = ?
@@ -811,7 +811,7 @@ async function sendNegativeBalanceAlert(match) {
   if (!claim.claimed) {
     return { alreadySent: claim.campaign.status === "sent", inProgress: claim.campaign.status === "sending" };
   }
-  const recipients = db.prepare(`
+  const recipients = await db.prepare(`
     SELECT s.endpoint, s.p256dh, s.auth
     FROM push_subscriptions s
     JOIN users u ON u.id = s.user_id
@@ -841,9 +841,10 @@ async function sendNegativeBalanceAlert(match) {
       if ([404, 410].includes(result.reason?.statusCode)) expired.push(recipients[index].endpoint);
     }
   });
-  const removeExpired = db.prepare("DELETE FROM push_subscriptions WHERE endpoint = ?");
-  expired.forEach((endpoint) => removeExpired.run(endpoint));
-  db.prepare(`
+  for (const endpoint of expired) {
+    await db.prepare("DELETE FROM push_subscriptions WHERE endpoint = ?").run(endpoint);
+  }
+  await db.prepare(`
     UPDATE balance_alert_campaigns
     SET status = ?, delivered_count = ?, error = ?, sent_at = CURRENT_TIMESTAMP
     WHERE match_id = ?
@@ -863,19 +864,19 @@ async function sendCampaign(match, type) {
     throw error;
   }
 
-  const claim = db.transaction(() => {
-    db.prepare("INSERT OR IGNORE INTO push_campaigns (match_id, type, status) VALUES (?, ?, 'sending')")
+  const claim = await db.transaction(async () => {
+    await db.prepare("INSERT INTO push_campaigns (match_id, type, status) VALUES (?, ?, 'sending') ON CONFLICT (match_id, type) DO NOTHING")
       .run(match.id, type);
-    const campaign = db.prepare("SELECT * FROM push_campaigns WHERE match_id = ? AND type = ?")
+    const campaign = await db.prepare("SELECT * FROM push_campaigns WHERE match_id = ? AND type = ?")
       .get(match.id, type);
     if (campaign.status === "sent") {
       return { claimed: false, campaign };
     }
     if (campaign.status === "sending") {
-      const stale = db.prepare("SELECT ? < datetime('now', '-15 minutes') AS value").get(campaign.created_at).value;
+      const stale = (await db.prepare("SELECT ?::timestamptz < CURRENT_TIMESTAMP - INTERVAL '15 minutes' AS value").get(campaign.created_at)).value;
       if (!stale) return { claimed: false, campaign };
     }
-    db.prepare(`
+    await db.prepare(`
       UPDATE push_campaigns
       SET status = 'sending', error = NULL, created_at = CURRENT_TIMESTAMP
       WHERE id = ?
@@ -888,8 +889,8 @@ async function sendCampaign(match, type) {
   }
 
   const subscriptions = type === "opening"
-    ? db.prepare("SELECT s.endpoint, s.p256dh, s.auth FROM push_subscriptions s JOIN users u ON u.id = s.user_id WHERE u.account_status = 'active' AND u.role != 'admin' AND u.deleted_at IS NULL").all()
-    : db.prepare(`
+    ? await db.prepare("SELECT s.endpoint, s.p256dh, s.auth FROM push_subscriptions s JOIN users u ON u.id = s.user_id WHERE u.account_status = 'active' AND u.role != 'admin' AND u.deleted_at IS NULL").all()
+    : await db.prepare(`
         SELECT s.endpoint, s.p256dh, s.auth
         FROM push_subscriptions s
         JOIN users u ON u.id = s.user_id AND u.account_status = 'active' AND u.role != 'admin' AND u.deleted_at IS NULL
@@ -918,10 +919,11 @@ async function sendCampaign(match, type) {
       errors.push(statusCode || "error");
     }
   });
-  const removeExpired = db.prepare("DELETE FROM push_subscriptions WHERE endpoint = ?");
-  expired.forEach((endpoint) => removeExpired.run(endpoint));
+  for (const endpoint of expired) {
+    await db.prepare("DELETE FROM push_subscriptions WHERE endpoint = ?").run(endpoint);
+  }
   const status = errors.length ? "failed" : "sent";
-  db.prepare(`
+  await db.prepare(`
     UPDATE push_campaigns
     SET status = ?, delivered_count = ?, error = ?, sent_at = CURRENT_TIMESTAMP
     WHERE id = ?
@@ -931,7 +933,7 @@ async function sendCampaign(match, type) {
 
 async function sendUserNotification(userId, payload) {
   if (!pushConfigured) return { skipped: true };
-  const subscriptions = db.prepare(`
+  const subscriptions = await db.prepare(`
     SELECT endpoint, p256dh, auth FROM push_subscriptions WHERE user_id = ?
   `).all(userId);
   const results = await Promise.allSettled(subscriptions.map((subscription) =>
@@ -946,14 +948,15 @@ async function sendUserNotification(userId, payload) {
     if (result.status === "fulfilled") delivered += 1;
     else if ([404, 410].includes(result.reason?.statusCode)) expired.push(subscriptions[index].endpoint);
   });
-  const removeExpired = db.prepare("DELETE FROM push_subscriptions WHERE endpoint = ?");
-  expired.forEach((endpoint) => removeExpired.run(endpoint));
+  for (const endpoint of expired) {
+    await db.prepare("DELETE FROM push_subscriptions WHERE endpoint = ?").run(endpoint);
+  }
   return { delivered, failed: results.length - delivered };
 }
 
 async function sendCancellationNotifications(match) {
   if (!pushConfigured) return { status: "disabled", delivered: 0 };
-  const recipients = db.prepare(`
+  const recipients = await db.prepare(`
     SELECT DISTINCT u.id
     FROM users u
     JOIN push_subscriptions s ON s.user_id = u.id
@@ -989,12 +992,12 @@ app.post("/api/register", async (req, res) => {
   if (Buffer.byteLength(password, "utf8") < 8 || Buffer.byteLength(password, "utf8") > 72) {
     return res.status(400).json({ error: "La contraseña debe tener entre 8 y 72 bytes." });
   }
-  if (db.prepare("SELECT id FROM users WHERE alias = ? COLLATE NOCASE").get(alias)) {
+  if (await db.prepare("SELECT id FROM users WHERE LOWER(alias) = LOWER(?)").get(alias)) {
     return res.status(409).json({ error: "Ese alias ya está en uso." });
   }
   try {
     const passwordHash = await bcrypt.hash(password, 12);
-    const existingPlayer = db.prepare(`
+    const existingPlayer = await db.prepare(`
       SELECT id FROM users
       WHERE role != 'admin' AND account_status = 'pending'
         AND alias IS NULL AND password_hash IS NULL
@@ -1004,17 +1007,17 @@ app.post("/api/register", async (req, res) => {
     let userId;
     if (existingPlayer) {
       userId = existingPlayer.id;
-      db.prepare(`
+      await db.prepare(`
         UPDATE users
         SET name = ?, first_name = ?, last_name = ?, alias = ?, password_hash = ?,
             account_status = 'pending', must_change_password = 0, created_at = CURRENT_TIMESTAMP
         WHERE id = ?
       `).run(fullName, firstName, lastName, alias, passwordHash, userId);
     } else {
-      const created = db.prepare(`
+      const created = await db.prepare(`
         INSERT INTO users (name, first_name, last_name, alias, password_hash, account_status,
           role, base_role, ranking_position, balance)
-        VALUES (?, ?, ?, ?, ?, 'pending', 'principal', 'principal', NULL, 0)
+        VALUES (?, ?, ?, ?, ?, 'pending', 'principal', 'principal', NULL, 0) RETURNING id
       `).run(fullName, firstName, lastName, alias, passwordHash);
       userId = Number(created.lastInsertRowid);
     }
@@ -1028,22 +1031,22 @@ app.post("/api/register", async (req, res) => {
   }
 });
 
-app.get("/api/users", requireUser, (_req, res) => {
-  const users = db.prepare(`
+app.get("/api/users", requireUser, async (_req, res) => {
+  const users = await db.prepare(`
     SELECT id, name, first_name, last_name, alias, role, base_role, ranking_position, balance
     FROM users
     WHERE account_status = 'active' AND role != 'admin' AND deleted_at IS NULL
-    ORDER BY role, ranking_position IS NULL, ranking_position, name COLLATE NOCASE
+    ORDER BY role, ranking_position IS NULL, ranking_position, LOWER(name)
   `).all();
   res.json(users);
 });
 
-app.get("/api/users/:id/profile", requireUser, (req, res) => {
+app.get("/api/users/:id/profile", requireUser, async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id < 1) {
     return res.status(400).json({ error: "El jugador seleccionado no es válido." });
   }
-  const profile = db.prepare(`
+  const profile = await db.prepare(`
     SELECT id, alias, photo_url, strong_points, weak_points, preferred_position, other_details
     FROM users WHERE id = ? AND role != 'admin'
   `).get(id);
@@ -1051,7 +1054,7 @@ app.get("/api/users/:id/profile", requireUser, (req, res) => {
   res.json({ profile });
 });
 
-app.patch("/api/users/:id/profile", requireUser, (req, res) => {
+app.patch("/api/users/:id/profile", requireUser, async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id < 1) {
     return res.status(400).json({ error: "El jugador seleccionado no es válido." });
@@ -1060,7 +1063,7 @@ app.patch("/api/users/:id/profile", requireUser, (req, res) => {
   if (!isAdmin && req.session.user.id !== id) {
     return res.status(403).json({ error: "Solo puedes editar tu propia ficha de jugador." });
   }
-  const current = db.prepare(`
+  const current = await db.prepare(`
     SELECT id, alias, photo_url, strong_points, weak_points, preferred_position, other_details
     FROM users WHERE id = ? AND role != 'admin'
   `).get(id);
@@ -1094,9 +1097,9 @@ app.patch("/api/users/:id/profile", requireUser, (req, res) => {
   }
 
   if (!isAdmin) {
-    db.prepare("UPDATE users SET photo_url = ? WHERE id = ?").run(photoUrl, id);
+    await db.prepare("UPDATE users SET photo_url = ? WHERE id = ?").run(photoUrl, id);
     return res.json({
-      profile: db.prepare(`
+      profile: await db.prepare(`
         SELECT id, alias, photo_url, strong_points, weak_points, preferred_position, other_details
         FROM users WHERE id = ?
       `).get(id),
@@ -1109,7 +1112,7 @@ app.patch("/api/users/:id/profile", requireUser, (req, res) => {
   if (!/^[\p{L}\p{N}._-]{3,24}$/u.test(alias || "")) {
     return res.status(400).json({ error: "El alias debe tener entre 3 y 24 caracteres." });
   }
-  if (db.prepare("SELECT id FROM users WHERE alias = ? COLLATE NOCASE AND id != ?").get(alias, id)) {
+  if (await db.prepare("SELECT id FROM users WHERE LOWER(alias) = LOWER(?) AND id != ?").get(alias, id)) {
     return res.status(409).json({ error: "Ese alias ya está en uso." });
   }
 
@@ -1131,7 +1134,7 @@ app.patch("/api/users/:id/profile", requireUser, (req, res) => {
   }
 
   try {
-    db.prepare(`
+    await db.prepare(`
       UPDATE users
       SET alias = ?, photo_url = ?, strong_points = ?, weak_points = ?,
         preferred_position = ?, other_details = ?
@@ -1151,15 +1154,15 @@ app.patch("/api/users/:id/profile", requireUser, (req, res) => {
     }
     throw error;
   }
-  const profile = db.prepare(`
+  const profile = await db.prepare(`
     SELECT id, alias, photo_url, strong_points, weak_points, preferred_position, other_details
     FROM users WHERE id = ?
   `).get(id);
   res.json({ profile });
 });
 
-app.get("/api/admin/pending-users", requireAdmin, (_req, res) => {
-  const pendingUsers = db.prepare(`
+app.get("/api/admin/pending-users", requireAdmin, async (_req, res) => {
+  const pendingUsers = await db.prepare(`
     SELECT id, first_name, last_name, name, alias, created_at
     FROM users
     WHERE role != 'admin' AND account_status = 'pending' AND deleted_at IS NULL
@@ -1169,9 +1172,9 @@ app.get("/api/admin/pending-users", requireAdmin, (_req, res) => {
   res.json(pendingUsers);
 });
 
-app.post("/api/admin/pending-users/:id/approve", requireAdmin, (req, res) => {
+app.post("/api/admin/pending-users/:id/approve", requireAdmin, async (req, res) => {
   const id = Number(req.params.id);
-  const pending = db.prepare(`
+  const pending = await db.prepare(`
     SELECT id FROM users
     WHERE id = ? AND role != 'admin' AND account_status = 'pending' AND deleted_at IS NULL
       AND alias IS NOT NULL AND password_hash IS NOT NULL
@@ -1187,26 +1190,26 @@ app.post("/api/admin/pending-users/:id/approve", requireAdmin, (req, res) => {
     return res.status(400).json({ error: "La posición del ranking debe ser un entero positivo." });
   }
   if (!Number.isFinite(balance) || !Number.isSafeInteger(moneyCents(balance))) return res.status(400).json({ error: "El saldo inicial debe ser válido." });
-  if (db.prepare("SELECT id FROM users WHERE account_status = 'active' AND role != 'admin' AND ranking_position = ? AND id != ?").get(rankingPosition, id)) {
+  if (await db.prepare("SELECT id FROM users WHERE account_status = 'active' AND role != 'admin' AND ranking_position = ? AND id != ?").get(rankingPosition, id)) {
     return res.status(409).json({ error: "Esa posición ya está asignada a otro jugador activo." });
   }
-  db.transaction(() => {
-    db.prepare(`
+  await db.transaction(async () => {
+    await db.prepare(`
       UPDATE users
       SET role = ?, base_role = ?, ranking_position = ?, balance = ?, account_status = 'active'
       WHERE id = ?
     `).run(baseRole, baseRole, rankingPosition, moneyCents(balance) / 100, id);
     if (moneyCents(balance)) {
-      db.prepare("INSERT INTO transactions (user_id, amount, concept) VALUES (?, ?, ?)")
+      await db.prepare("INSERT INTO transactions (user_id, amount, concept) VALUES (?, ?, ?)")
         .run(id, moneyCents(balance) / 100, "Saldo inicial al aprobar la cuenta");
     }
   })();
-  res.json({ approved: true, user: publicUser(db.prepare("SELECT * FROM users WHERE id = ?").get(id)) });
+  res.json({ approved: true, user: publicUser(await db.prepare("SELECT * FROM users WHERE id = ?").get(id)) });
 });
 
-app.get("/api/session", (req, res) => {
+app.get("/api/session", async (req, res) => {
   if (!req.session.user) return res.json({ user: null });
-  const user = db.prepare(`
+  const user = await db.prepare(`
     SELECT id, name, first_name, last_name, alias, role, base_role,
       ranking_position, balance, must_change_password, account_status, deleted_at
     FROM users WHERE id = ?
@@ -1222,10 +1225,10 @@ app.get("/api/session", (req, res) => {
 app.post("/api/session", async (req, res) => {
   const alias = String(req.body?.alias || "").trim().normalize("NFKC").toLowerCase();
   const password = typeof req.body?.password === "string" ? req.body.password : "";
-  const user = db.prepare(`
+  const user = await db.prepare(`
     SELECT id, name, first_name, last_name, alias, role, base_role,
       ranking_position, balance, password_hash, must_change_password, account_status, deleted_at
-    FROM users WHERE alias = ? COLLATE NOCASE
+    FROM users WHERE LOWER(alias) = LOWER(?)
   `).get(alias);
   if (user?.account_status === "pending" && !user.deleted_at) {
     return res.status(403).json({ error: "Tu cuenta está pendiente de aprobación." });
@@ -1241,7 +1244,7 @@ app.post("/api/session", async (req, res) => {
 app.post("/api/account/password", requireUser, async (req, res) => {
   const currentPassword = typeof req.body?.current_password === "string" ? req.body.current_password : "";
   const newPassword = typeof req.body?.new_password === "string" ? req.body.new_password : "";
-  const user = db.prepare("SELECT password_hash FROM users WHERE id = ? AND account_status = 'active'")
+  const user = await db.prepare("SELECT password_hash FROM users WHERE id = ? AND account_status = 'active'")
     .get(req.session.user.id);
   if (!user || !(await bcrypt.compare(currentPassword, user.password_hash))) {
     return res.status(401).json({ error: "La contraseña actual no es válida." });
@@ -1250,7 +1253,7 @@ app.post("/api/account/password", requireUser, async (req, res) => {
     return res.status(400).json({ error: "La nueva contraseña debe tener entre 8 y 72 bytes." });
   }
   const passwordHash = await bcrypt.hash(newPassword, 12);
-  db.prepare("UPDATE users SET password_hash = ?, must_change_password = 0 WHERE id = ?")
+  await db.prepare("UPDATE users SET password_hash = ?, must_change_password = 0 WHERE id = ?")
     .run(passwordHash, req.session.user.id);
   req.session.user.must_change_password = 0;
   res.json({ updated: true });
@@ -1264,18 +1267,18 @@ app.delete("/api/session", (req, res) => {
   });
 });
 
-app.get("/api/convocations/current", requireUser, (_req, res) => {
-  const match = getCurrentMatch();
-  if (match) return res.json(getConvocationData(match, _req.session.user.id));
+app.get("/api/convocations/current", requireUser, async (_req, res) => {
+  const match = await getCurrentMatch();
+  if (match) return res.json(await getConvocationData(match, _req.session.user.id));
   const data = emptyConvocationData();
-  const cancellation = latestCancellation();
-  if (cancellation) data.cancellation = matchDetails(cancellation);
+  const cancellation = await latestCancellation();
+  if (cancellation) data.cancellation = await matchDetails(cancellation);
   res.json(data);
 });
 
-app.get("/api/admin/convocations/history", requireAdmin, (_req, res) => {
-  const activeMatch = getCurrentMatch();
-  const matches = db.prepare(`
+app.get("/api/admin/convocations/history", requireAdmin, async (_req, res) => {
+  const activeMatch = await getCurrentMatch();
+  const matches = (await db.prepare(`
     SELECT m.id, m.start_date, m.end_date, m.match_date, m.match_time, m.status, m.result,
       COUNT(CASE WHEN u.role != 'admin' THEN c.user_id END) AS response_count,
       COUNT(CASE WHEN c.status = 'principal' AND u.role != 'admin' THEN 1 END) AS principal_count
@@ -1284,7 +1287,7 @@ app.get("/api/admin/convocations/history", requireAdmin, (_req, res) => {
     LEFT JOIN users u ON u.id = c.user_id
     GROUP BY m.id
     ORDER BY COALESCE(m.match_date, m.start_date) DESC, m.id DESC
-  `).all().map((match) => ({
+  `).all()).map((match) => ({
     ...match,
     match_date: match.match_date || shiftDate(match.start_date, 7),
     match_date_label: formatSpanishDate(match.match_date || shiftDate(match.start_date, 7)),
@@ -1295,48 +1298,48 @@ app.get("/api/admin/convocations/history", requireAdmin, (_req, res) => {
   res.json({ active_match_id: activeMatch?.id || null, matches });
 });
 
-app.get("/api/convocations/:matchId", requireUser, (req, res) => {
+app.get("/api/convocations/:matchId", requireUser, async (req, res) => {
   const matchId = Number(req.params.matchId);
   if (!Number.isInteger(matchId)) return res.status(400).json({ error: "Identificador de jornada no válido." });
-  const match = db.prepare("SELECT * FROM matches WHERE id = ?").get(matchId);
+  const match = await db.prepare("SELECT * FROM matches WHERE id = ?").get(matchId);
   if (!match) return res.status(404).json({ error: "No se encontró la convocatoria." });
-  const activeMatch = getCurrentMatch();
-  res.json(getConvocationData(match, req.session.user.id, { historical: match.id !== activeMatch?.id }));
+  const activeMatch = await getCurrentMatch();
+  res.json(await getConvocationData(match, req.session.user.id, { historical: match.id !== activeMatch?.id }));
 });
 
 app.post("/api/admin/convocations/current/open", requireAdmin, async (req, res) => {
-  const match = getCurrentMatch();
+  const match = await getCurrentMatch();
   if (!match) return res.status(404).json({ error: "No hay una convocatoria cerrada para reabrir." });
   const draft = readJson(match.draft_state, {});
   if (match.status === "played" || ["in_progress", "complete"].includes(draft.status)) {
     return res.status(409).json({ error: "No se puede reabrir una convocatoria con un draft iniciado o un partido jugado." });
   }
   if (match.status !== "closed") return res.status(409).json({ error: "La convocatoria ya está abierta." });
-  db.prepare("UPDATE matches SET status = 'open', draft_state = '{}', team_a = '[]', team_b = '[]' WHERE id = ?")
+  await db.prepare("UPDATE matches SET status = 'open', draft_state = '{}', team_a = '[]', team_b = '[]' WHERE id = ?")
     .run(match.id);
   let notification = { status: "disabled" };
   if (pushConfigured) {
     try {
-      notification = await sendCampaign(db.prepare("SELECT * FROM matches WHERE id = ?").get(match.id), "opening");
+      notification = await sendCampaign(await db.prepare("SELECT * FROM matches WHERE id = ?").get(match.id), "opening");
     } catch (error) {
       notification = { status: "failed", error: error.message };
     }
   }
   res.json({
-    ...getConvocationData(db.prepare("SELECT * FROM matches WHERE id = ?").get(match.id), req.session.user.id),
+    ...await getConvocationData(await db.prepare("SELECT * FROM matches WHERE id = ?").get(match.id), req.session.user.id),
     notification,
   });
 });
 
-app.post("/api/admin/convocations/current/close", requireAdmin, (req, res) => {
-  const match = getCurrentMatch();
+app.post("/api/admin/convocations/current/close", requireAdmin, async (req, res) => {
+  const match = await getCurrentMatch();
   if (!match) return res.status(404).json({ error: "No hay una convocatoria abierta para cerrar." });
   if (match.status !== "open") return res.status(409).json({ error: "La convocatoria ya está cerrada." });
-  const roster = db.prepare(`
+  const roster = await db.prepare(`
     SELECT u.id FROM convocations c JOIN users u ON u.id = c.user_id
     WHERE c.match_id = ? AND c.status = 'principal'
       AND u.role != 'admin' AND u.account_status = 'active' AND u.deleted_at IS NULL
-    ORDER BY u.ranking_position IS NULL, u.ranking_position, u.name COLLATE NOCASE
+    ORDER BY u.ranking_position IS NULL, u.ranking_position, LOWER(u.name)
   `).all(match.id);
   const captainA = Number(req.body?.captainA);
   const captainB = Number(req.body?.captainB);
@@ -1360,13 +1363,13 @@ app.post("/api/admin/convocations/current/close", requireAdmin, (req, res) => {
       picks: [],
     };
   }
-  db.prepare("UPDATE matches SET status = 'closed', draft_state = ?, team_a = ?, team_b = ? WHERE id = ?")
+  await db.prepare("UPDATE matches SET status = 'closed', draft_state = ?, team_a = ?, team_b = ? WHERE id = ?")
     .run(JSON.stringify(draft), JSON.stringify(teamA), JSON.stringify(teamB), match.id);
-  res.json(getConvocationData(db.prepare("SELECT * FROM matches WHERE id = ?").get(match.id), req.session.user.id));
+  res.json(await getConvocationData(await db.prepare("SELECT * FROM matches WHERE id = ?").get(match.id), req.session.user.id));
 });
 
 app.post("/api/admin/convocations/current/cancel", requireAdmin, async (req, res) => {
-  const match = getCurrentMatch();
+  const match = await getCurrentMatch();
   if (!match) return res.status(404).json({ error: "No hay una convocatoria activa para cancelar." });
   if (!["open", "closed"].includes(match.status)) {
     return res.status(409).json({ error: "Solo se puede cancelar una convocatoria abierta o cerrada sin partido jugado." });
@@ -1374,20 +1377,20 @@ app.post("/api/admin/convocations/current/cancel", requireAdmin, async (req, res
 
   let cancelledMatch;
   try {
-    cancelledMatch = db.transaction(() => {
-      const current = db.prepare("SELECT * FROM matches WHERE id = ?").get(match.id);
+    cancelledMatch = await db.transaction(async () => {
+      const current = await db.prepare("SELECT * FROM matches WHERE id = ?").get(match.id);
       if (!current || !["open", "closed"].includes(current.status)) {
         const error = new Error("La convocatoria ya no se puede cancelar.");
         error.status = 409;
         throw error;
       }
-      const principalCount = db.prepare(`
+      const principalCount = (await db.prepare(`
         SELECT COUNT(*) AS count
         FROM convocations c
         JOIN users u ON u.id = c.user_id
         WHERE c.match_id = ? AND c.status = 'principal'
           AND u.role != 'admin' AND u.account_status = 'active' AND u.deleted_at IS NULL
-      `).get(current.id).count;
+      `).get(current.id)).count;
       if (principalCount >= 14) {
         const error = new Error("No se puede cancelar: ya hay al menos 14 jugadores en la Lista Principal.");
         error.status = 409;
@@ -1397,17 +1400,17 @@ app.post("/api/admin/convocations/current/cancel", requireAdmin, async (req, res
         readJson(current.draft_state, {}).status ||
         readJson(current.team_a, []).length ||
         readJson(current.team_b, []).length ||
-        db.prepare("SELECT 1 FROM match_finances WHERE match_id = ?").get(current.id) ||
-        db.prepare("SELECT 1 FROM match_points WHERE match_id = ?").get(current.id) ||
-        db.prepare("SELECT 1 FROM transactions WHERE match_id = ?").get(current.id);
+        await db.prepare("SELECT 1 FROM match_finances WHERE match_id = ?").get(current.id) ||
+        await db.prepare("SELECT 1 FROM match_points WHERE match_id = ?").get(current.id) ||
+        await db.prepare("SELECT 1 FROM transactions WHERE match_id = ?").get(current.id);
       if (hasSportsOrFinance) {
         const error = new Error("No se puede cancelar un evento con draft, resultado, puntos o movimientos financieros.");
         error.status = 409;
         throw error;
       }
-      db.prepare("UPDATE matches SET status = 'cancelled' WHERE id = ?").run(current.id);
+      await db.prepare("UPDATE matches SET status = 'cancelled' WHERE id = ?").run(current.id);
       return db.prepare("SELECT * FROM matches WHERE id = ?").get(current.id);
-    }).immediate();
+    })();
   } catch (error) {
     if (error.status) return res.status(error.status).json({ error: error.message });
     console.error("No se pudo cancelar la convocatoria:", error.message);
@@ -1422,7 +1425,7 @@ app.post("/api/admin/convocations/current/cancel", requireAdmin, async (req, res
       notification = { status: "failed", delivered: 0, error: error.message };
     }
   }
-  res.json({ match: matchDetails(cancelledMatch), notification });
+  res.json({ match: await matchDetails(cancelledMatch), notification });
 });
 
 app.post("/api/admin/convocations/new", requireAdmin, async (req, res) => {
@@ -1443,7 +1446,7 @@ app.post("/api/admin/convocations/new", requireAdmin, async (req, res) => {
   const sourceMatchId = sourceValue == null || sourceValue === "" ? null : Number(sourceValue);
   if (sourceMatchId !== null) {
     if (!Number.isInteger(sourceMatchId)) return res.status(400).json({ error: "La jornada anterior no es válida." });
-    const sourceMatch = db.prepare("SELECT id, status FROM matches WHERE id = ?").get(sourceMatchId);
+    const sourceMatch = await db.prepare("SELECT id, status FROM matches WHERE id = ?").get(sourceMatchId);
     if (!sourceMatch) return res.status(404).json({ error: "No se encontró la jornada anterior." });
     if (!["played", "cancelled"].includes(sourceMatch.status)) {
       return res.status(409).json({ error: "Finaliza o cancela la jornada anterior antes de abrir una nueva convocatoria." });
@@ -1452,8 +1455,8 @@ app.post("/api/admin/convocations/new", requireAdmin, async (req, res) => {
 
   let schedule;
   try {
-    schedule = db.transaction(() => {
-      const activeMatch = getCurrentMatch();
+    schedule = await db.transaction(async () => {
+      const activeMatch = await getCurrentMatch();
       if (activeMatch) {
         if (activeMatch.status === "open" && activeMatch.match_date === matchDate) {
           return { match: activeMatch, created: false };
@@ -1462,14 +1465,14 @@ app.post("/api/admin/convocations/new", requireAdmin, async (req, res) => {
         error.status = 409;
         throw error;
       }
-      const existingDate = db.prepare("SELECT * FROM matches WHERE match_date = ? ORDER BY id DESC LIMIT 1")
+      const existingDate = await db.prepare("SELECT * FROM matches WHERE match_date = ? ORDER BY id DESC LIMIT 1")
         .get(matchDate);
       if (existingDate) {
         const error = new Error("Ya existe una jornada registrada para esa fecha de partido.");
         error.status = 409;
         throw error;
       }
-      const latest = db.prepare("SELECT * FROM matches ORDER BY COALESCE(match_date, start_date) DESC, id DESC LIMIT 1").get();
+      const latest = await db.prepare("SELECT * FROM matches ORDER BY COALESCE(match_date, start_date) DESC, id DESC LIMIT 1").get();
       if (latest && !["played", "cancelled"].includes(latest.status)) {
         const error = new Error("Finaliza la jornada anterior antes de abrir una convocatoria nueva.");
         error.status = 409;
@@ -1478,15 +1481,15 @@ app.post("/api/admin/convocations/new", requireAdmin, async (req, res) => {
 
       const startDate = madridDate();
       const endDate = `${matchDate}T${matchTime}:00`;
-      const insert = db.prepare(`
+      const insert = await db.prepare(`
         INSERT INTO matches (start_date, end_date, match_date, match_time, status)
-        VALUES (?, ?, ?, ?, 'open')
+        VALUES (?, ?, ?, ?, 'open') RETURNING id
       `).run(startDate, endDate, matchDate, matchTime);
       return {
-        match: db.prepare("SELECT * FROM matches WHERE id = ?").get(insert.lastInsertRowid),
+        match: await db.prepare("SELECT * FROM matches WHERE id = ?").get(insert.lastInsertRowid),
         created: true,
       };
-    }).immediate();
+    })();
   } catch (error) {
     if (error.status) return res.status(error.status).json({ error: error.message });
     console.error("No se pudo abrir la siguiente convocatoria:", error.message);
@@ -1504,19 +1507,19 @@ app.post("/api/admin/convocations/new", requireAdmin, async (req, res) => {
     }
   }
   res.status(schedule.created ? 201 : 200).json({
-    ...getConvocationData(schedule.match, req.session.user.id),
+    ...await getConvocationData(schedule.match, req.session.user.id),
     created: schedule.created,
     notification,
   });
 });
 
-app.get("/api/matches", requireUser, (_req, res) => {
-  const matches = db.prepare("SELECT * FROM matches ORDER BY COALESCE(match_date, start_date) DESC, id DESC LIMIT 12").all()
-    .map(matchDetails);
-  res.json({ matches, pot: currentPot() });
+app.get("/api/matches", requireUser, async (_req, res) => {
+  const rawMatches = await db.prepare("SELECT * FROM matches ORDER BY COALESCE(match_date, start_date) DESC, id DESC LIMIT 12").all();
+  const matches = await Promise.all(rawMatches.map(matchDetails));
+  res.json({ matches, pot: await currentPot() });
 });
 
-function getStandingsRows() {
+async function getStandingsRows() {
   return db.prepare(`
     SELECT u.id, u.alias, u.base_role, u.ranking_position,
       COALESCE(mp.points, 0) + COALESCE(sa.points_delta, 0) AS points,
@@ -1544,11 +1547,11 @@ function getStandingsRows() {
       GROUP BY user_id
     ) sa ON sa.user_id = u.id
     WHERE u.account_status = 'active' AND u.role != 'admin' AND u.deleted_at IS NULL
-    ORDER BY points DESC, wins DESC, u.alias COLLATE NOCASE
+    ORDER BY points DESC, wins DESC, LOWER(u.alias)
   `).all();
 }
 
-function getMatchStandingTotals(userId) {
+async function getMatchStandingTotals(userId) {
   return db.prepare(`
     SELECT COALESCE(SUM(points), 0) AS points,
       SUM(CASE WHEN result = 'win' THEN 1 ELSE 0 END) AS wins,
@@ -1560,7 +1563,7 @@ function getMatchStandingTotals(userId) {
   `).get(userId);
 }
 
-function getManualStandingDeltas(userId) {
+async function getManualStandingDeltas(userId) {
   return db.prepare(`
     SELECT COALESCE(SUM(points_delta), 0) AS points,
       COALESCE(SUM(matches_played_delta), 0) AS matches_played,
@@ -1572,8 +1575,8 @@ function getManualStandingDeltas(userId) {
   `).get(userId);
 }
 
-app.get("/api/admin/standings/adjustments", requireAdmin, (_req, res) => {
-  const adjustments = db.prepare(`
+app.get("/api/admin/standings/adjustments", requireAdmin, async (_req, res) => {
+  const adjustments = await db.prepare(`
     SELECT sa.id, sa.user_id, player.alias AS player_alias,
       sa.admin_id, admin.alias AS admin_alias,
       sa.points_delta, sa.matches_played_delta, sa.wins_delta,
@@ -1587,7 +1590,7 @@ app.get("/api/admin/standings/adjustments", requireAdmin, (_req, res) => {
   res.json({ adjustments });
 });
 
-app.post("/api/admin/standings/adjustments", requireAdmin, (req, res) => {
+app.post("/api/admin/standings/adjustments", requireAdmin, async (req, res) => {
   const userId = Number(req.body?.user_id);
   const fields = ["points", "matches_played", "wins", "draws", "losses"];
   const targets = {};
@@ -1617,8 +1620,8 @@ app.post("/api/admin/standings/adjustments", requireAdmin, (req, res) => {
   }
 
   try {
-    const adjustmentId = db.transaction(() => {
-      const player = db.prepare(`
+    const adjustmentId = await db.transaction(async () => {
+      const player = await db.prepare(`
         SELECT id FROM users
         WHERE id = ? AND role != 'admin'
           AND account_status = 'active' AND deleted_at IS NULL
@@ -1629,8 +1632,8 @@ app.post("/api/admin/standings/adjustments", requireAdmin, (req, res) => {
         throw error;
       }
 
-      const matches = getMatchStandingTotals(userId);
-      const manual = getManualStandingDeltas(userId);
+      const matches = await getMatchStandingTotals(userId);
+      const manual = await getManualStandingDeltas(userId);
       const current = {
         points: matches.points + manual.points,
         matches_played: matches.matches_played + manual.matches_played,
@@ -1645,7 +1648,7 @@ app.post("/api/admin/standings/adjustments", requireAdmin, (req, res) => {
         throw error;
       }
 
-      const result = db.prepare(`
+      const result = await db.prepare(`
         INSERT INTO standing_adjustments (
           user_id, admin_id, points_delta, matches_played_delta,
           wins_delta, draws_delta, losses_delta, reason
@@ -1661,9 +1664,9 @@ app.post("/api/admin/standings/adjustments", requireAdmin, (req, res) => {
         reason,
       );
       return Number(result.lastInsertRowid);
-    }).immediate();
+    })();
 
-    const adjustment = db.prepare(`
+    const adjustment = await db.prepare(`
       SELECT sa.id, sa.user_id, player.alias AS player_alias,
         sa.admin_id, admin.alias AS admin_alias,
         sa.points_delta, sa.matches_played_delta, sa.wins_delta,
@@ -1673,30 +1676,30 @@ app.post("/api/admin/standings/adjustments", requireAdmin, (req, res) => {
       JOIN users admin ON admin.id = sa.admin_id
       WHERE sa.id = ?
     `).get(adjustmentId);
-    res.status(201).json({ adjustment, standings: getStandingsRows() });
+    res.status(201).json({ adjustment, standings: await getStandingsRows() });
   } catch (error) {
     console.error("No se pudo ajustar la clasificación:", error.message);
     res.status(error.status || 500).json({ error: error.status ? error.message : "No se pudo guardar el ajuste de clasificación." });
   }
 });
 
-app.get("/api/standings", requireUser, (_req, res) => {
-  res.json({ standings: getStandingsRows(), pot: currentPot() });
+app.get("/api/standings", requireUser, async (_req, res) => {
+  res.json({ standings: await getStandingsRows(), pot: await currentPot() });
 });
 
-app.post("/api/admin/matches/:id/draft/start", requireAdmin, (req, res) => {
+app.post("/api/admin/matches/:id/draft/start", requireAdmin, async (req, res) => {
   const matchId = Number(req.params.id);
-  const match = db.prepare("SELECT * FROM matches WHERE id = ?").get(matchId);
+  const match = await db.prepare("SELECT * FROM matches WHERE id = ?").get(matchId);
   if (!match) return res.status(404).json({ error: "No se encontró el partido." });
   if (match.status !== "closed") return res.status(409).json({ error: "El draft solo se puede iniciar con la convocatoria cerrada." });
   const previousDraft = readJson(match.draft_state, {});
   if (["in_progress", "complete"].includes(previousDraft.status)) return res.status(409).json({ error: "El draft de este partido ya se inició." });
-  const participants = db.prepare(`
+  const participants = await db.prepare(`
     SELECT u.id, u.name, u.ranking_position
     FROM convocations c JOIN users u ON u.id = c.user_id
     WHERE c.match_id = ? AND c.status = 'principal'
       AND u.role != 'admin' AND u.account_status = 'active' AND u.deleted_at IS NULL
-    ORDER BY u.ranking_position IS NULL, u.ranking_position, u.name COLLATE NOCASE
+    ORDER BY u.ranking_position IS NULL, u.ranking_position, LOWER(u.name)
   `).all(matchId);
   if (participants.length !== 14 && participants.length !== 16) {
     return res.status(409).json({ error: "El draft requiere exactamente 14 o 16 jugadores confirmados para formar equipos iguales." });
@@ -1720,16 +1723,16 @@ app.post("/api/admin/matches/:id/draft/start", requireAdmin, (req, res) => {
     remaining,
     picks: [],
   };
-  db.prepare("UPDATE matches SET draft_state = ?, team_a = ?, team_b = ? WHERE id = ?")
+  await db.prepare("UPDATE matches SET draft_state = ?, team_a = ?, team_b = ? WHERE id = ?")
     .run(JSON.stringify(draft), JSON.stringify([captainA.id]), JSON.stringify([captainB.id]), matchId);
-  res.json(matchDetails(db.prepare("SELECT * FROM matches WHERE id = ?").get(matchId)));
+  res.json(await matchDetails(await db.prepare("SELECT * FROM matches WHERE id = ?").get(matchId)));
 });
 
-app.post("/api/matches/:id/draft/pick", requirePlayer, (req, res) => {
+app.post("/api/matches/:id/draft/pick", requirePlayer, async (req, res) => {
   const matchId = Number(req.params.id);
   const playerId = Number(req.body?.userId);
   const pickerId = req.session.user.id;
-  const match = db.prepare("SELECT * FROM matches WHERE id = ?").get(matchId);
+  const match = await db.prepare("SELECT * FROM matches WHERE id = ?").get(matchId);
   if (!match) return res.status(404).json({ error: "No se encontró el partido." });
   const draft = readJson(match.draft_state, {});
   if (match.status !== "closed" || draft.status !== "in_progress") {
@@ -1737,7 +1740,7 @@ app.post("/api/matches/:id/draft/pick", requirePlayer, (req, res) => {
   }
   const teamA = readJson(match.team_a, []);
   const teamB = readJson(match.team_b, []);
-  const integrityError = validateDraftState(matchId, draft, teamA, teamB);
+  const integrityError = await validateDraftState(matchId, draft, teamA, teamB);
   if (integrityError) {
     return res.status(409).json({
       error: `Draft inconsistente. No se guardará esta elección: ${integrityError}`,
@@ -1752,7 +1755,7 @@ app.post("/api/matches/:id/draft/pick", requirePlayer, (req, res) => {
   if (!Number.isInteger(playerId) || !remaining.includes(playerId)) {
     return res.status(400).json({ error: "Selecciona un jugador disponible en el draft." });
   }
-  if (!db.prepare(`
+  if (!await db.prepare(`
     SELECT 1 FROM convocations c JOIN users u ON u.id = c.user_id
     WHERE c.match_id = ? AND c.user_id = ? AND c.status = 'principal'
       AND u.role != 'admin' AND u.account_status = 'active' AND u.deleted_at IS NULL
@@ -1777,23 +1780,23 @@ app.post("/api/matches/:id/draft/pick", requirePlayer, (req, res) => {
   } else if (remaining.length > 3) {
     draft.currentTurn = draft.currentTurn === "A" ? "B" : "A";
   }
-  const finalIntegrityError = validateDraftState(matchId, draft, teamA, teamB);
+  const finalIntegrityError = await validateDraftState(matchId, draft, teamA, teamB);
   if (finalIntegrityError) {
     return res.status(409).json({
       error: `No se puede confirmar la alineación final: ${finalIntegrityError}`,
       draftInvalid: true,
     });
   }
-  db.prepare("UPDATE matches SET draft_state = ?, team_a = ?, team_b = ? WHERE id = ?")
+  await db.prepare("UPDATE matches SET draft_state = ?, team_a = ?, team_b = ? WHERE id = ?")
     .run(JSON.stringify(draft), JSON.stringify(teamA), JSON.stringify(teamB), matchId);
-  res.json(matchDetails(db.prepare("SELECT * FROM matches WHERE id = ?").get(matchId)));
+  res.json(await matchDetails(await db.prepare("SELECT * FROM matches WHERE id = ?").get(matchId)));
 });
 
-app.post("/api/admin/matches/:id/price", requireAdmin, (req, res) => {
+app.post("/api/admin/matches/:id/price", requireAdmin, async (req, res) => {
   const matchId = Number(req.params.id);
   const price = Number(req.body?.price_total);
   const priceCents = moneyCents(price);
-  const match = db.prepare("SELECT * FROM matches WHERE id = ?").get(matchId);
+  const match = await db.prepare("SELECT * FROM matches WHERE id = ?").get(matchId);
   if (!match) return res.status(404).json({ error: "No se encontró el partido." });
   if (match.status === "cancelled") return res.status(409).json({ error: "Una convocatoria cancelada no admite precio ni cobros." });
   if (!Number.isFinite(price) || price < 0 || !Number.isSafeInteger(priceCents)) {
@@ -1802,21 +1805,21 @@ app.post("/api/admin/matches/:id/price", requireAdmin, (req, res) => {
   if (match.status === "played") {
     return res.status(409).json({ error: "No se puede definir un precio retroactivo para un partido jugado." });
   }
-  if (db.prepare("SELECT 1 FROM match_finances WHERE match_id = ?").get(matchId)) {
+  if (await db.prepare("SELECT 1 FROM match_finances WHERE match_id = ?").get(matchId)) {
     return res.status(409).json({ error: "El cobro ya se aplicó al registrar el resultado y el precio no se puede cambiar." });
   }
-  db.prepare("UPDATE matches SET pitch_price = ? WHERE id = ?").run(priceCents / 100, matchId);
-  res.json({ match: matchDetails(db.prepare("SELECT * FROM matches WHERE id = ?").get(matchId)) });
+  await db.prepare("UPDATE matches SET pitch_price = ? WHERE id = ?").run(priceCents / 100, matchId);
+  res.json({ match: await matchDetails(await db.prepare("SELECT * FROM matches WHERE id = ?").get(matchId)) });
 });
 
 app.post("/api/admin/matches/:id/finance", requireAdmin, (_req, res) =>
   res.status(410).json({ error: "El cobro ahora se calcula automáticamente al guardar el resultado. Configura el Precio por Partido en Finanzas." }),
 );
 
-app.post("/api/admin/matches/:id/result", requireAdmin, (req, res) => {
+app.post("/api/admin/matches/:id/result", requireAdmin, async (req, res) => {
   const matchId = Number(req.params.id);
   const result = req.body?.result;
-  const match = db.prepare("SELECT * FROM matches WHERE id = ?").get(matchId);
+  const match = await db.prepare("SELECT * FROM matches WHERE id = ?").get(matchId);
   if (!match) return res.status(404).json({ error: "No se encontró el partido." });
   if (!["A", "B", "draw"].includes(result)) return res.status(400).json({ error: "El resultado debe ser A, B o empate." });
   if (match.status === "cancelled") return res.status(409).json({ error: "Una convocatoria cancelada no admite resultados, cobros ni puntos." });
@@ -1825,16 +1828,16 @@ app.post("/api/admin/matches/:id/result", requireAdmin, (req, res) => {
   }
   const rawTeamA = readJson(match.team_a, []);
   const rawTeamB = readJson(match.team_b, []);
-  const draftIntegrityError = validateDraftState(matchId, readJson(match.draft_state, {}), rawTeamA, rawTeamB);
+  const draftIntegrityError = await validateDraftState(matchId, readJson(match.draft_state, {}), rawTeamA, rawTeamB);
   if (draftIntegrityError) {
     return res.status(409).json({
       error: `No se puede guardar el resultado ni cobrar: draft inconsistente. ${draftIntegrityError}`,
       draftInvalid: true,
     });
   }
-  const teamA = nonAdminPlayerIds(rawTeamA);
-  const teamB = nonAdminPlayerIds(rawTeamB);
-  const existingFinance = db.prepare("SELECT 1 FROM match_finances WHERE match_id = ?").get(matchId);
+  const teamA = await nonAdminPlayerIds(rawTeamA);
+  const teamB = await nonAdminPlayerIds(rawTeamB);
+  const existingFinance = await db.prepare("SELECT 1 FROM match_finances WHERE match_id = ?").get(matchId);
   const shouldCharge = !existingFinance && match.status !== "played";
   let charge = null;
   if (shouldCharge) {
@@ -1857,11 +1860,11 @@ app.post("/api/admin/matches/:id/result", requireAdmin, (req, res) => {
       potAddedCents: collectedCents - pitchCents,
     };
   }
-  const saveResult = db.transaction(() => {
-    const latestMatch = db.prepare("SELECT status FROM matches WHERE id = ?").get(matchId);
-    const financeExists = db.prepare("SELECT 1 FROM match_finances WHERE match_id = ?").get(matchId);
+  const saveResult = db.transaction(async () => {
+    const latestMatch = await db.prepare("SELECT status FROM matches WHERE id = ?").get(matchId);
+    const financeExists = await db.prepare("SELECT 1 FROM match_finances WHERE match_id = ?").get(matchId);
     if (charge && (latestMatch?.status !== "closed" || financeExists)) charge = null;
-    db.prepare("UPDATE matches SET status = 'played', result = ? WHERE id = ?").run(result, matchId);
+    await db.prepare("UPDATE matches SET status = 'played', result = ? WHERE id = ?").run(result, matchId);
     if (charge) {
       const insertTransaction = db.prepare(`
         INSERT INTO transactions (user_id, amount, concept, match_id, transaction_type)
@@ -1870,16 +1873,16 @@ app.post("/api/admin/matches/:id/result", requireAdmin, (req, res) => {
       const debitPlayer = db.prepare("UPDATE users SET balance = ROUND((balance - ?) * 100) / 100 WHERE id = ?");
       if (charge.feeCents > 0) {
         for (const userId of charge.participants) {
-          debitPlayer.run(charge.feeCents / 100, userId);
-          insertTransaction.run(userId, -(charge.feeCents / 100), `Partido #${matchId}: cuota automática`, matchId);
+          await debitPlayer.run(charge.feeCents / 100, userId);
+          await insertTransaction.run(userId, -(charge.feeCents / 100), `Partido #${matchId}: cuota automática`, matchId);
         }
       }
-      const currentPotCents = moneyCents(currentPot());
-      db.prepare(`
+      const currentPotCents = moneyCents(await currentPot());
+      await db.prepare(`
         INSERT INTO app_settings (key, value) VALUES ('pot_cents', ?)
         ON CONFLICT(key) DO UPDATE SET value = excluded.value
       `).run(String(currentPotCents + charge.potAddedCents));
-      db.prepare(`
+      await db.prepare(`
         INSERT INTO match_finances (match_id, pitch_cost, fee_per_player, participants, total_collected, pot_added)
         VALUES (?, ?, ?, ?, ?, ?)
       `).run(
@@ -1891,24 +1894,24 @@ app.post("/api/admin/matches/:id/result", requireAdmin, (req, res) => {
         charge.potAddedCents / 100,
       );
     }
-    recalculateMatchPoints(matchId, result, teamA, teamB);
+    await recalculateMatchPoints(matchId, result, teamA, teamB);
   });
   try {
-    saveResult.immediate();
+    await saveResult();
   } catch (error) {
     console.error("No se pudo guardar el resultado:", error.message);
     return res.status(500).json({ error: "No se pudo guardar el resultado." });
   }
   res.json({
-    match: matchDetails(db.prepare("SELECT * FROM matches WHERE id = ?").get(matchId)),
-    pot: currentPot(),
+    match: await matchDetails(await db.prepare("SELECT * FROM matches WHERE id = ?").get(matchId)),
+    pot: await currentPot(),
     charged: Boolean(charge),
   });
 });
 
 app.post("/api/admin/matches/:id/notify-negative-balances", requireAdmin, async (req, res) => {
   const matchId = Number(req.params.id);
-  const match = db.prepare("SELECT * FROM matches WHERE id = ?").get(matchId);
+  const match = await db.prepare("SELECT * FROM matches WHERE id = ?").get(matchId);
   if (!match) return res.status(404).json({ error: "No se encontró el partido." });
   try {
     res.json(await sendNegativeBalanceAlert(match));
@@ -1917,64 +1920,64 @@ app.post("/api/admin/matches/:id/notify-negative-balances", requireAdmin, async 
   }
 });
 
-app.post("/api/convocations/me", requirePlayer, (req, res) => {
+app.post("/api/convocations/me", requirePlayer, async (req, res) => {
   const response = req.body?.response;
   if (!["yes", "no"].includes(response)) {
     return res.status(400).json({ error: "Elige «Sí voy» o «No voy»." });
   }
-  const match = getCurrentMatch();
+  const match = await getCurrentMatch();
   if (!match) return res.status(409).json({ error: "No hay una convocatoria abierta." });
   if (match.status !== "open") {
     return res.status(409).json({ error: "La convocatoria ya está cerrada." });
   }
-  const user = db.prepare("SELECT id, role, base_role FROM users WHERE id = ?")
+  const user = await db.prepare("SELECT id, role, base_role FROM users WHERE id = ?")
     .get(req.session.user.id);
   if (!user) return res.status(401).json({ error: "La cuenta ya no existe." });
   const status = response === "no" ? "no_va" : user.base_role;
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO convocations (match_id, user_id, status, updated_at)
     VALUES (?, ?, ?, CURRENT_TIMESTAMP)
     ON CONFLICT(match_id, user_id)
     DO UPDATE SET status = excluded.status, updated_at = CURRENT_TIMESTAMP
   `).run(match.id, user.id, status);
-  res.json(getConvocationData(match, user.id));
+  res.json(await getConvocationData(match, user.id));
 });
 
-app.get("/api/convocations/current/available-suplentes", requirePlayer, (req, res) => {
-  const match = getCurrentMatch();
+app.get("/api/convocations/current/available-suplentes", requirePlayer, async (req, res) => {
+  const match = await getCurrentMatch();
   if (!match || match.status !== "open") {
     return res.status(409).json({ error: "No hay una convocatoria abierta." });
   }
-  const players = db.prepare(`
+  const players = await db.prepare(`
     SELECT u.id, u.alias
     FROM users u
     LEFT JOIN convocations c ON c.match_id = ? AND c.user_id = u.id
     WHERE u.role = 'suplente' AND u.base_role = 'suplente'
       AND u.account_status = 'active' AND u.deleted_at IS NULL
       AND c.user_id IS NULL
-    ORDER BY u.ranking_position IS NULL, u.ranking_position, u.alias COLLATE NOCASE
+    ORDER BY u.ranking_position IS NULL, u.ranking_position, LOWER(u.alias)
   `).all(match.id);
   res.json({ players });
 });
 
-app.post("/api/convocations/current/add-existing-suplente", requirePlayer, (req, res) => {
+app.post("/api/convocations/current/add-existing-suplente", requirePlayer, async (req, res) => {
   const userId = Number(req.body?.user_id);
   if (!Number.isInteger(userId) || userId < 1) {
     return res.status(400).json({ error: "Selecciona un suplente válido." });
   }
-  const match = getCurrentMatch();
+  const match = await getCurrentMatch();
   if (!match || match.status !== "open") {
     return res.status(409).json({ error: "No hay una convocatoria abierta." });
   }
   try {
-    db.transaction(() => {
-      const current = getCurrentMatch();
+    await db.transaction(async () => {
+      const current = await getCurrentMatch();
       if (!current || current.id !== match.id || current.status !== "open") {
         const error = new Error("La convocatoria ya no está abierta.");
         error.status = 409;
         throw error;
       }
-      const candidate = db.prepare(`
+      const candidate = await db.prepare(`
         SELECT id FROM users
         WHERE id = ? AND role = 'suplente' AND base_role = 'suplente'
           AND account_status = 'active' AND deleted_at IS NULL
@@ -1984,17 +1987,17 @@ app.post("/api/convocations/current/add-existing-suplente", requirePlayer, (req,
         error.status = 409;
         throw error;
       }
-      if (db.prepare("SELECT 1 FROM convocations WHERE match_id = ? AND user_id = ?").get(match.id, userId)) {
+      if (await db.prepare("SELECT 1 FROM convocations WHERE match_id = ? AND user_id = ?").get(match.id, userId)) {
         const error = new Error("Ese jugador ya respondió a esta convocatoria.");
         error.status = 409;
         throw error;
       }
-      db.prepare(`
+      await db.prepare(`
         INSERT INTO convocations (match_id, user_id, status, updated_at, invited_by_user_id)
         VALUES (?, ?, 'suplente', CURRENT_TIMESTAMP, ?)
       `).run(match.id, userId, req.session.user.id);
     })();
-    res.json(getConvocationData(match, req.session.user.id));
+    res.json(await getConvocationData(match, req.session.user.id));
   } catch (error) {
     res.status(error.status || 500).json({ error: error.status ? error.message : "No se pudo añadir al suplente." });
   }
@@ -2010,44 +2013,44 @@ app.post("/api/convocations/current/add-new-suplente", requirePlayer, async (req
   if (!/^[\p{L}\p{N}._-]{3,24}$/u.test(alias)) {
     return res.status(400).json({ error: "El alias debe tener entre 3 y 24 letras, números, puntos, guiones o guiones bajos." });
   }
-  const match = getCurrentMatch();
+    const match = await getCurrentMatch();
   if (!match || match.status !== "open") {
     return res.status(409).json({ error: "No hay una convocatoria abierta." });
   }
   try {
     const passwordHash = await bcrypt.hash(defaultSubstitutePassword, 12);
-    const createdUserId = db.transaction(() => {
-      const current = getCurrentMatch();
+    const createdUserId = await db.transaction(async () => {
+      const current = await getCurrentMatch();
       if (!current || current.id !== match.id || current.status !== "open") {
         const error = new Error("La convocatoria ya no está abierta.");
         error.status = 409;
         throw error;
       }
-      if (db.prepare("SELECT 1 FROM users WHERE alias = ? COLLATE NOCASE").get(alias)) {
+      if (await db.prepare("SELECT 1 FROM users WHERE LOWER(alias) = LOWER(?)").get(alias)) {
         const error = new Error("Ese alias ya está en uso.");
         error.status = 409;
         throw error;
       }
       const name = `${firstName} ${lastName}`;
-      const rankingPosition = db.prepare(`
+      const rankingPosition = (await db.prepare(`
         SELECT COALESCE(MAX(ranking_position), 0) + 1 AS next_position
         FROM users WHERE role != 'admin'
-      `).get().next_position;
-      const created = db.prepare(`
+      `).get()).next_position;
+      const created = await db.prepare(`
         INSERT INTO users (name, first_name, last_name, alias, password_hash, account_status,
           must_change_password, role, base_role, ranking_position, balance, created_at)
-        VALUES (?, ?, ?, ?, ?, 'active', 1, 'suplente', 'suplente', ?, 0, CURRENT_TIMESTAMP)
+        VALUES (?, ?, ?, ?, ?, 'active', 1, 'suplente', 'suplente', ?, 0, CURRENT_TIMESTAMP) RETURNING id
       `).run(name, firstName, lastName, alias, passwordHash, rankingPosition);
       const userId = Number(created.lastInsertRowid);
-      db.prepare(`
+      await db.prepare(`
         INSERT INTO convocations (match_id, user_id, status, updated_at, invited_by_user_id)
         VALUES (?, ?, 'suplente', CURRENT_TIMESTAMP, ?)
       `).run(match.id, userId, req.session.user.id);
       return userId;
     })();
     res.status(201).json({
-      ...getConvocationData(match, req.session.user.id),
-      added_player: db.prepare("SELECT id, alias FROM users WHERE id = ?").get(createdUserId),
+      ...await getConvocationData(match, req.session.user.id),
+      added_player: await db.prepare("SELECT id, alias FROM users WHERE id = ?").get(createdUserId),
     });
   } catch (error) {
     if (error.status) return res.status(error.status).json({ error: error.message });
@@ -2059,14 +2062,14 @@ app.post("/api/convocations/current/add-new-suplente", requirePlayer, async (req
   }
 });
 
-app.post("/api/admin/convocations/:userId/promote", requireAdmin, (req, res) => {
-  const match = getCurrentMatch();
+app.post("/api/admin/convocations/:userId/promote", requireAdmin, async (req, res) => {
+  const match = await getCurrentMatch();
   if (!match) return res.status(409).json({ error: "No hay una convocatoria abierta." });
   if (match.status !== "open") {
     return res.status(409).json({ error: "La convocatoria está cerrada; ya no se pueden mover jugadores." });
   }
   const userId = Number(req.params.userId);
-  const response = db.prepare(`
+  const response = await db.prepare(`
     SELECT c.status FROM convocations c
     JOIN users u ON u.id = c.user_id
     WHERE c.match_id = ? AND c.user_id = ? AND c.status = 'suplente'
@@ -2076,16 +2079,16 @@ app.post("/api/admin/convocations/:userId/promote", requireAdmin, (req, res) => 
   if (!response) {
     return res.status(409).json({ error: "Solo se puede promover a alguien de la lista de suplentes." });
   }
-  db.prepare("UPDATE convocations SET status = 'principal', updated_at = CURRENT_TIMESTAMP WHERE match_id = ? AND user_id = ?")
+  await db.prepare("UPDATE convocations SET status = 'principal', updated_at = CURRENT_TIMESTAMP WHERE match_id = ? AND user_id = ?")
     .run(match.id, userId);
-  res.json(getConvocationData(match, req.session.user.id));
+  res.json(await getConvocationData(match, req.session.user.id));
 });
 
 app.get("/api/push/config", requireUser, (_req, res) => {
   res.json({ enabled: pushConfigured, publicKey: pushConfigured ? vapidPublicKey : null });
 });
 
-app.post("/api/push/subscriptions", requirePlayer, (req, res) => {
+app.post("/api/push/subscriptions", requirePlayer, async (req, res) => {
   if (!pushConfigured) {
     return res.status(503).json({ error: "Las notificaciones push aún no están configuradas en el servidor." });
   }
@@ -2098,7 +2101,7 @@ app.post("/api/push/subscriptions", requirePlayer, (req, res) => {
   ) {
     return res.status(400).json({ error: "La suscripción del navegador no es válida." });
   }
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth)
     VALUES (?, ?, ?, ?)
     ON CONFLICT(endpoint)
@@ -2107,18 +2110,18 @@ app.post("/api/push/subscriptions", requirePlayer, (req, res) => {
   res.status(201).json({ subscribed: true });
 });
 
-app.delete("/api/push/subscriptions", requirePlayer, (req, res) => {
+app.delete("/api/push/subscriptions", requirePlayer, async (req, res) => {
   const endpoint = req.body?.endpoint;
   if (typeof endpoint !== "string") return res.status(400).json({ error: "Falta el endpoint de la suscripción." });
-  db.prepare("DELETE FROM push_subscriptions WHERE endpoint = ? AND user_id = ?")
+  await db.prepare("DELETE FROM push_subscriptions WHERE endpoint = ? AND user_id = ?")
     .run(endpoint, req.session.user.id);
   res.status(204).end();
 });
 
-app.get("/api/admin/notifications/status", requireAdmin, (_req, res) => {
-  const match = getCurrentMatch();
+app.get("/api/admin/notifications/status", requireAdmin, async (_req, res) => {
+  const match = await getCurrentMatch();
   if (!match) return res.json({ enabled: pushConfigured, matchId: null, campaigns: {} });
-  const campaigns = db.prepare("SELECT type, status, delivered_count, sent_at FROM push_campaigns WHERE match_id = ?")
+  const campaigns = await db.prepare("SELECT type, status, delivered_count, sent_at FROM push_campaigns WHERE match_id = ?")
     .all(match.id);
   res.json({
     enabled: pushConfigured,
@@ -2128,7 +2131,7 @@ app.get("/api/admin/notifications/status", requireAdmin, (_req, res) => {
 });
 
 app.post("/api/admin/notifications/:type", requireAdmin, async (req, res) => {
-  const match = getCurrentMatch();
+  const match = await getCurrentMatch();
   if (!match) return res.status(409).json({ error: "No hay una convocatoria para enviar este aviso." });
   const type = req.params.type === "unanswered" ? "friday_reminder" : req.params.type;
   if (["opening", "friday_reminder"].includes(type) && match.status !== "open") {
@@ -2145,10 +2148,10 @@ app.post("/api/admin/notifications/:type", requireAdmin, async (req, res) => {
 
 app.post("/api/admin/players/:id/notify-promoted", requireAdmin, async (req, res) => {
   const userId = Number(req.params.id);
-  const match = getCurrentMatch();
+  const match = await getCurrentMatch();
   if (!match) return res.status(409).json({ error: "No hay una convocatoria abierta." });
   if (!Number.isInteger(userId)) return res.status(400).json({ error: "Selecciona un jugador válido." });
-  const player = db.prepare(`
+  const player = await db.prepare(`
     SELECT u.id FROM users u JOIN convocations c ON c.user_id = u.id
     WHERE u.id = ? AND u.role != 'admin' AND u.account_status = 'active'
       AND u.deleted_at IS NULL AND c.match_id = ? AND c.status = 'principal'
@@ -2163,8 +2166,8 @@ app.post("/api/admin/players/:id/notify-promoted", requireAdmin, async (req, res
   res.json(result);
 });
 
-app.get("/api/admin/users", requireAdmin, (_req, res) => {
-  const users = db
+app.get("/api/admin/users", requireAdmin, async (_req, res) => {
+  const users = await db
     .prepare(
       "SELECT id, name, first_name, last_name, alias, role, base_role, ranking_position, balance FROM users WHERE role != 'admin' AND account_status = 'active' AND deleted_at IS NULL ORDER BY ranking_position IS NULL, ranking_position, name",
     )
@@ -2172,14 +2175,14 @@ app.get("/api/admin/users", requireAdmin, (_req, res) => {
   res.json(users);
 });
 
-app.get("/api/admin/finance/overview", requireAdmin, (_req, res) => {
-  const players = db.prepare(`
+app.get("/api/admin/finance/overview", requireAdmin, async (_req, res) => {
+  const players = await db.prepare(`
     SELECT id, name, alias, base_role, balance
     FROM users
     WHERE role != 'admin' AND account_status = 'active' AND deleted_at IS NULL
-    ORDER BY balance ASC, name COLLATE NOCASE
+    ORDER BY balance ASC, LOWER(name)
   `).all();
-  const transactions = db.prepare(`
+  const transactions = await db.prepare(`
     SELECT t.id, t.user_id, u.name, t.amount, t.concept, t.date,
       t.match_id, t.adjustment_of, t.transaction_type, t.status, t.adjusted_at,
       CASE WHEN t.transaction_type = 'match_charge' THEN (
@@ -2192,10 +2195,10 @@ app.get("/api/admin/finance/overview", requireAdmin, (_req, res) => {
     WHERE u.role != 'admin'
     ORDER BY t.date DESC, t.id DESC LIMIT 100
   `).all();
-  res.json({ players, transactions, pot: currentPot() });
+  res.json({ players, transactions, pot: await currentPot() });
 });
 
-app.post("/api/admin/finance/transactions/:id/adjust", requireAdmin, (req, res) => {
+app.post("/api/admin/finance/transactions/:id/adjust", requireAdmin, async (req, res) => {
   const transactionId = Number(req.params.id);
   const action = req.body?.action;
   const reason = String(req.body?.reason || "").trim();
@@ -2213,23 +2216,23 @@ app.post("/api/admin/finance/transactions/:id/adjust", requireAdmin, (req, res) 
   if (!Number.isFinite(targetAmount) || targetAmount < 0 || !Number.isSafeInteger(targetCents)) {
     return res.status(400).json({ error: "La cuota corregida debe ser un importe válido, igual o superior a cero." });
   }
-  const original = db.prepare(`
+  const original = await db.prepare(`
     SELECT t.id FROM transactions t JOIN match_finances mf ON mf.match_id = t.match_id
     WHERE t.id = ? AND t.transaction_type = 'match_charge'
   `).get(transactionId);
   if (!original) return res.status(404).json({ error: "No se encontró un cargo de partido corregible." });
 
-  const applyAdjustment = db.transaction(() => {
-    const charge = db.prepare(`
+  const applyAdjustment = db.transaction(async () => {
+    const charge = await db.prepare(`
       SELECT t.id, t.user_id, t.match_id
       FROM transactions t JOIN match_finances mf ON mf.match_id = t.match_id
       WHERE t.id = ? AND t.transaction_type = 'match_charge'
     `).get(transactionId);
     if (!charge) return { error: "El cargo ya no está disponible para corregir.", status: 409 };
-    const netCents = db.prepare(`
+    const netCents = (await db.prepare(`
       SELECT COALESCE(SUM(CAST(ROUND(amount * 100) AS INTEGER)), 0) AS cents
       FROM transactions WHERE id = ? OR adjustment_of = ?
-    `).get(transactionId, transactionId).cents;
+    `).get(transactionId, transactionId)).cents;
     const currentChargeCents = -netCents;
     if (!Number.isSafeInteger(currentChargeCents) || currentChargeCents < 0) {
       return { error: "El historial de este cargo es inconsistente; no se ha modificado nada.", status: 409 };
@@ -2237,16 +2240,16 @@ app.post("/api/admin/finance/transactions/:id/adjust", requireAdmin, (req, res) 
     if (targetCents === currentChargeCents) {
       return { error: "La cuota indicada ya coincide con el importe cobrado.", status: 409 };
     }
-    if (!db.prepare("SELECT 1 FROM users WHERE id = ?").get(charge.user_id)) {
+    if (!await db.prepare("SELECT 1 FROM users WHERE id = ?").get(charge.user_id)) {
       return { error: "No se encontró la cuenta asociada al cargo.", status: 409 };
     }
 
     const balanceDeltaCents = currentChargeCents - targetCents;
     const collectedDeltaCents = targetCents - currentChargeCents;
-    const finance = db.prepare("SELECT * FROM match_finances WHERE match_id = ?").get(charge.match_id);
+    const finance = await db.prepare("SELECT * FROM match_finances WHERE match_id = ?").get(charge.match_id);
     const updatedCollectedCents = moneyCents(finance.total_collected) + collectedDeltaCents;
     const updatedPotAddedCents = moneyCents(finance.pot_added) + collectedDeltaCents;
-    const updatedPotCents = moneyCents(currentPot()) + collectedDeltaCents;
+    const updatedPotCents = moneyCents(await currentPot()) + collectedDeltaCents;
     if (![updatedCollectedCents, updatedPotAddedCents, updatedPotCents].every(Number.isSafeInteger) ||
         updatedCollectedCents < 0) {
       return { error: "El ajuste excede el rango financiero permitido; no se ha modificado nada.", status: 400 };
@@ -2257,21 +2260,21 @@ app.post("/api/admin/finance/transactions/:id/adjust", requireAdmin, (req, res) 
     const concept = action === "refund"
       ? `Devolución íntegra del cargo del partido #${charge.match_id}: ${reason}`
       : `Corrección de cuota del partido #${charge.match_id}; nueva cuota ${targetText} €: ${reason}`;
-    db.prepare(`
+    await db.prepare(`
       INSERT INTO transactions
         (user_id, amount, concept, match_id, transaction_type, adjustment_of)
       VALUES (?, ?, ?, ?, 'adjustment', ?)
     `).run(charge.user_id, balanceDeltaCents / 100, concept, charge.match_id, transactionId);
-    db.prepare("UPDATE users SET balance = ROUND((balance + ?) * 100) / 100 WHERE id = ?")
+    await db.prepare("UPDATE users SET balance = ROUND((balance + ?) * 100) / 100 WHERE id = ?")
       .run(balanceDeltaCents / 100, charge.user_id);
-    db.prepare(`
+    await db.prepare(`
       UPDATE transactions SET status = ?, adjusted_by = ?, adjusted_at = CURRENT_TIMESTAMP
       WHERE id = ?
     `).run(status, req.session.user.id, transactionId);
-    db.prepare(`
+    await db.prepare(`
       UPDATE match_finances SET total_collected = ?, pot_added = ? WHERE match_id = ?
     `).run(updatedCollectedCents / 100, updatedPotAddedCents / 100, charge.match_id);
-    db.prepare(`
+    await db.prepare(`
       INSERT INTO app_settings (key, value) VALUES ('pot_cents', ?)
       ON CONFLICT(key) DO UPDATE SET value = excluded.value
     `).run(String(updatedPotCents));
@@ -2284,14 +2287,14 @@ app.post("/api/admin/finance/transactions/:id/adjust", requireAdmin, (req, res) 
       pot: updatedPotCents / 100,
     };
   });
-  const result = applyAdjustment.immediate();
+  const result = await applyAdjustment();
   if (result.error) return res.status(result.status).json({ error: result.error });
   res.json(result);
 });
 
-app.post("/api/admin/users/:id/balance", requireAdmin, (req, res) => {
+app.post("/api/admin/users/:id/balance", requireAdmin, async (req, res) => {
   const id = Number(req.params.id);
-  const player = db.prepare(`
+  const player = await db.prepare(`
     SELECT id, balance FROM users
     WHERE id = ? AND role != 'admin' AND account_status = 'active' AND deleted_at IS NULL
   `).get(id);
@@ -2302,13 +2305,13 @@ app.post("/api/admin/users/:id/balance", requireAdmin, (req, res) => {
     return res.status(400).json({ error: "El ajuste debe ser un importe válido distinto de cero." });
   }
   if (!concept || concept.length > 120) return res.status(400).json({ error: "Indica un concepto de hasta 120 caracteres." });
-  db.transaction(() => {
-    db.prepare("UPDATE users SET balance = ROUND((balance + ?) * 100) / 100 WHERE id = ?")
+  await db.transaction(async () => {
+    await db.prepare("UPDATE users SET balance = ROUND((balance + ?) * 100) / 100 WHERE id = ?")
       .run(moneyCents(amount) / 100, id);
-    db.prepare("INSERT INTO transactions (user_id, amount, concept) VALUES (?, ?, ?)")
+    await db.prepare("INSERT INTO transactions (user_id, amount, concept) VALUES (?, ?, ?)")
       .run(id, moneyCents(amount) / 100, concept);
   })();
-  res.json({ user: db.prepare("SELECT id, name, balance FROM users WHERE id = ?").get(id) });
+  res.json({ user: await db.prepare("SELECT id, name, balance FROM users WHERE id = ?").get(id) });
 });
 
 app.post("/api/admin/users", requireAdmin, async (req, res) => {
@@ -2329,7 +2332,7 @@ app.post("/api/admin/users", requireAdmin, async (req, res) => {
   if (typeof password !== "string" || Buffer.byteLength(password, "utf8") < 8 || Buffer.byteLength(password, "utf8") > 72) {
     return res.status(400).json({ error: "La contraseña debe tener entre 8 y 72 bytes." });
   }
-  if (db.prepare("SELECT id FROM users WHERE alias = ? COLLATE NOCASE").get(alias)) {
+  if (await db.prepare("SELECT id FROM users WHERE LOWER(alias) = LOWER(?)").get(alias)) {
     return res.status(409).json({ error: "Ese alias ya está en uso." });
   }
   if (rank !== null && (!Number.isInteger(rank) || rank < 1)) {
@@ -2338,26 +2341,26 @@ app.post("/api/admin/users", requireAdmin, async (req, res) => {
   if (!Number.isFinite(amount) || !Number.isSafeInteger(moneyCents(amount))) {
     return res.status(400).json({ error: "El saldo debe ser un importe válido." });
   }
-  if (rank !== null && db.prepare("SELECT id FROM users WHERE account_status = 'active' AND role != 'admin' AND ranking_position = ?").get(rank)) {
+  if (rank !== null && await db.prepare("SELECT id FROM users WHERE account_status = 'active' AND role != 'admin' AND ranking_position = ?").get(rank)) {
     return res.status(409).json({ error: "Esa posición ya está asignada a otro jugador activo." });
   }
   try {
     const passwordHash = await bcrypt.hash(password, 12);
     const [firstName, ...lastParts] = cleanName.split(/\s+/);
     const lastName = lastParts.join(" ");
-    const result = db.transaction(() => {
-      const created = db.prepare(`
+    const result = await db.transaction(async () => {
+      const created = await db.prepare(`
         INSERT INTO users (name, first_name, last_name, alias, password_hash, account_status,
           role, base_role, ranking_position, balance)
-        VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?) RETURNING id
       `).run(cleanName, firstName, lastName, alias, passwordHash, role, role, rank, moneyCents(amount) / 100);
       if (moneyCents(amount)) {
-        db.prepare("INSERT INTO transactions (user_id, amount, concept) VALUES (?, ?, ?)")
+        await db.prepare("INSERT INTO transactions (user_id, amount, concept) VALUES (?, ?, ?)")
           .run(created.lastInsertRowid, moneyCents(amount) / 100, "Saldo inicial al crear la cuenta");
       }
       return created;
     })();
-    res.status(201).json(publicUser(db.prepare("SELECT * FROM users WHERE id = ?").get(result.lastInsertRowid)));
+    res.status(201).json(publicUser(await db.prepare("SELECT * FROM users WHERE id = ?").get(result.lastInsertRowid)));
   } catch (error) {
     if (String(error.code || "").includes("CONSTRAINT")) {
       return res.status(409).json({ error: "Ese alias o posición ya está en uso." });
@@ -2368,7 +2371,7 @@ app.post("/api/admin/users", requireAdmin, async (req, res) => {
 
 app.patch("/api/admin/users/:id", requireAdmin, async (req, res) => {
   const id = Number(req.params.id);
-  const current = db.prepare("SELECT * FROM users WHERE id = ? AND role != 'admin' AND account_status = 'active' AND deleted_at IS NULL").get(id);
+  const current = await db.prepare("SELECT * FROM users WHERE id = ? AND role != 'admin' AND account_status = 'active' AND deleted_at IS NULL").get(id);
   if (!current) return res.status(404).json({ error: "No se encontró ese jugador." });
   const body = req.body || {};
   const name = body.name === undefined ? current.name : String(body.name).trim();
@@ -2396,17 +2399,17 @@ app.patch("/api/admin/users/:id", requireAdmin, async (req, res) => {
   if (password && (Buffer.byteLength(password, "utf8") < 8 || Buffer.byteLength(password, "utf8") > 72)) {
     return res.status(400).json({ error: "La nueva contraseña debe tener entre 8 y 72 bytes." });
   }
-  if (db.prepare("SELECT id FROM users WHERE alias = ? COLLATE NOCASE AND id != ?").get(alias, id)) {
+  if (await db.prepare("SELECT id FROM users WHERE LOWER(alias) = LOWER(?) AND id != ?").get(alias, id)) {
     return res.status(409).json({ error: "Ese alias ya está en uso." });
   }
-  if (rank !== null && db.prepare("SELECT id FROM users WHERE account_status = 'active' AND role != 'admin' AND ranking_position = ? AND id != ?").get(rank, id)) {
+  if (rank !== null && await db.prepare("SELECT id FROM users WHERE account_status = 'active' AND role != 'admin' AND ranking_position = ? AND id != ?").get(rank, id)) {
     return res.status(409).json({ error: "Esa posición ya está asignada a otro jugador activo." });
   }
   const [firstName, ...lastParts] = name.split(/\s+/);
   const lastName = lastParts.join(" ");
   const passwordHash = password ? await bcrypt.hash(password, 12) : current.password_hash;
-  db.transaction(() => {
-    db.prepare(`
+  await db.transaction(async () => {
+    await db.prepare(`
       UPDATE users SET name = ?, first_name = ?, last_name = ?, alias = ?, password_hash = ?,
         role = ?, base_role = ?, ranking_position = ?, balance = ?,
         must_change_password = CASE WHEN ? != '' THEN 1 ELSE must_change_password END
@@ -2414,16 +2417,16 @@ app.patch("/api/admin/users/:id", requireAdmin, async (req, res) => {
     `).run(name, firstName, lastName, alias, passwordHash, role, role, rank, amount, password, id);
     const balanceDelta = moneyCents(amount) - moneyCents(current.balance);
     if (balanceDelta) {
-      db.prepare("INSERT INTO transactions (user_id, amount, concept) VALUES (?, ?, ?)")
+      await db.prepare("INSERT INTO transactions (user_id, amount, concept) VALUES (?, ?, ?)")
         .run(id, balanceDelta / 100, "Ajuste manual de saldo desde la ficha del jugador");
     }
   })();
-  res.json(publicUser(db.prepare("SELECT * FROM users WHERE id = ?").get(id)));
+  res.json(publicUser(await db.prepare("SELECT * FROM users WHERE id = ?").get(id)));
 });
 
 app.post("/api/admin/users/:id/reset-password", requireAdmin, async (req, res) => {
   const id = Number(req.params.id);
-  const player = db.prepare(`
+  const player = await db.prepare(`
     SELECT id FROM users WHERE id = ? AND role != 'admin'
       AND account_status = 'active' AND deleted_at IS NULL
   `).get(id);
@@ -2433,32 +2436,32 @@ app.post("/api/admin/users/:id/reset-password", requireAdmin, async (req, res) =
     return res.status(400).json({ error: "La contraseña temporal debe tener entre 8 y 72 bytes." });
   }
   const passwordHash = await bcrypt.hash(password, 12);
-  db.prepare("UPDATE users SET password_hash = ?, must_change_password = 1 WHERE id = ?")
+  await db.prepare("UPDATE users SET password_hash = ?, must_change_password = 1 WHERE id = ?")
     .run(passwordHash, id);
   res.json({ reset: true, must_change_password: true });
 });
 
-app.delete("/api/admin/users/:id", requireAdmin, (req, res) => {
+app.delete("/api/admin/users/:id", requireAdmin, async (req, res) => {
   const id = Number(req.params.id);
-  const activeDraft = db.prepare("SELECT draft_state FROM matches WHERE status = 'closed'").all()
+  const activeDraft = (await db.prepare("SELECT draft_state FROM matches WHERE status = 'closed'").all())
     .some((match) => readJson(match.draft_state, {}).status === "in_progress");
   if (activeDraft) {
     return res.status(409).json({ error: "Espera a que termine el draft antes de retirar jugadores." });
   }
-  const player = db.prepare(`
+  const player = await db.prepare(`
     SELECT id FROM users WHERE id = ? AND role != 'admin'
       AND account_status = 'active' AND deleted_at IS NULL
   `).get(id);
   if (!player) return res.status(404).json({ error: "No se encontró ese jugador activo." });
-  db.transaction(() => {
-    db.prepare("UPDATE users SET account_status = 'pending', deleted_at = CURRENT_TIMESTAMP WHERE id = ?").run(id);
-    db.prepare("DELETE FROM push_subscriptions WHERE user_id = ?").run(id);
+  await db.transaction(async () => {
+    await db.prepare("UPDATE users SET account_status = 'pending', deleted_at = CURRENT_TIMESTAMP WHERE id = ?").run(id);
+    await db.prepare("DELETE FROM push_subscriptions WHERE user_id = ?").run(id);
   })();
   res.json({ deleted: true, preservedHistory: true });
 });
 
 cron.schedule("0 10 * * 5", async () => {
-  const match = getCurrentMatch();
+  const match = await getCurrentMatch();
   if (!match || match.status !== "open" || match.match_date < madridDate()) return;
   try {
     await sendCampaign(match, "friday_reminder");
@@ -2469,7 +2472,7 @@ cron.schedule("0 10 * * 5", async () => {
 
 cron.schedule("0 10 * * *", async () => {
   const tomorrow = shiftDate(madridDate(), 1);
-  const matches = db.prepare(`
+  const matches = await db.prepare(`
     SELECT * FROM matches
     WHERE match_date = ? AND status IN ('open', 'closed')
   `).all(tomorrow);
@@ -2486,6 +2489,25 @@ cron.schedule("0 10 * * *", async () => {
 app.use(express.static(path.join(__dirname, "public"), { index: "index.html" }));
 app.get(/.*/, (_req, res) => res.sendFile(path.join(__dirname, "public", "index.html")));
 
-app.listen(PORT, HOST, () => {
+async function startServer() {
+  await db.initialize();
+  const defaultAdmin = await db.prepare("SELECT id FROM users WHERE role = 'admin' ORDER BY id LIMIT 1").get();
+  if (!defaultAdmin) {
+    const passwordHash = await bcrypt.hash("Opachanga#", 12);
+    await db.prepare(`
+      INSERT INTO users (name, first_name, last_name, alias, password_hash, account_status,
+        must_change_password, role, base_role, ranking_position, balance)
+      VALUES ('DIEGO GAY DAVILA', 'DIEGO', 'GAY DAVILA', 'DIMOGARU', ?, 'active', 0,
+        'admin', 'principal', NULL, 0)
+    `).run(passwordHash);
+  }
+  await repairCurrentLegacyDraftBalance();
+  app.listen(PORT, HOST, () => {
     console.log(`Server listening on http://${HOST}:${PORT}`);
+  });
+}
+
+startServer().catch((error) => {
+  console.error("No se pudo inicializar O Pachanga:", error.message);
+  process.exitCode = 1;
 });
