@@ -1,26 +1,18 @@
-FROM node:20-bookworm-slim
+FROM node:20-bookworm-slim AS dependencies
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci --omit=dev --no-audit --no-fund
 
-# Instalar herramientas para compilar dependencias nativas de SQLite
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 \
-    make \
-    g++ \
-    && rm -rf /var/lib/apt/lists/*
-
+FROM node:20-bookworm-slim AS runner
+ENV NODE_ENV=production
 WORKDIR /app
 
-COPY package*.json ./
-
-# Instalar dependencias compilando SQLite para el entorno Linux
-RUN npm install --omit=dev --no-audit --no-fund
-
-COPY . .
-
-# Crear la carpeta de datos para SQLite y asignar permisos al usuario node
+COPY --from=dependencies --chown=node:node /app/node_modules ./node_modules
+COPY --chown=node:node package*.json ./
+COPY --chown=node:node server.js database.js ./
+COPY --chown=node:node public ./public
 RUN mkdir -p /app/data && chown -R node:node /app
 
 USER node
-
 EXPOSE 3000
-
 CMD ["node", "server.js"]

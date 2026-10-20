@@ -32,7 +32,7 @@ export SESSION_SECRET="$(openssl rand -hex 32)"
 docker compose up --build -d
 ```
 
-La imagen usa Node.js 20; compila `better-sqlite3` en una etapa separada y mantiene el contenedor final sin herramientas de compilación. El servicio escucha en `PORT` (3000 por defecto); el volumen `pachanga-data` mantiene `/app/data` al recrear el contenedor. Para Coolify, monta un volumen persistente en `/app/data` y expón el mismo puerto configurado en `PORT`. Configura un proxy inverso con HTTPS y reenvío de `X-Forwarded-Proto` para uso público.
+La imagen usa Node.js 20 en dos etapas: instala las dependencias en una etapa y copia solo la aplicación y sus módulos al contenedor final. No instala compiladores ni herramientas de desarrollo; la dependencia SQLite utiliza su binding precompilado para Linux. El servicio escucha en `PORT` (3000 por defecto); monta un volumen persistente en `/app/data` si el servidor usa SQLite local. Configura un proxy inverso con HTTPS y reenvío de `X-Forwarded-Proto` para uso público.
 
 Puedes copiar `.env.example` a `.env` y sustituir los valores localmente. `.env` está excluido de Git; no compartas ni subas la clave privada.
 

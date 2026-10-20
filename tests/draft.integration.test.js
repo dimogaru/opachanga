@@ -7,7 +7,7 @@ const path = require("node:path");
 const net = require("node:net");
 const { after, before, test } = require("node:test");
 const bcrypt = require("bcrypt");
-const Database = require("better-sqlite3");
+const Database = require("better-sqlite3-multiple-ciphers");
 
 const projectDirectory = path.join(__dirname, "..");
 const password = "draft-test-password";

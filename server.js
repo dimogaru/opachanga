@@ -2502,8 +2502,8 @@ async function startServer() {
     `).run(passwordHash);
   }
   await repairCurrentLegacyDraftBalance();
-  app.listen(PORT, HOST, () => {
-    console.log(`Server listening on http://${HOST}:${PORT}`);
+  app.listen(port, HOST, () => {
+    console.log(`Server listening on http://${HOST}:${port}`);
   });
 }
 

@@ -2,7 +2,7 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
-const Database = require("better-sqlite3");
+const Database = require("better-sqlite3-multiple-ciphers");
 
 const manuallyInvoked = process.argv.includes("--manual");
 if (!manuallyInvoked && process.env.NODE_ENV !== "development") {
