@@ -1316,7 +1316,15 @@ app.post("/api/account/password", requireUser, async (req, res) => {
   res.json({ updated: true });
 });
 
-function destroySession(req, res) {
+async function destroySession(req, res) {
+  const user = req.session.user;
+  if (user && user.role !== "admin") {
+    try {
+      await db.prepare("DELETE FROM push_subscriptions WHERE user_id = ?").run(user.id);
+    } catch (error) {
+      console.error("No se pudo limpiar la suscripción push al cerrar sesión:", error.message);
+    }
+  }
   req.session.destroy((error) => {
     if (error) return res.status(500).json({ error: "No se pudo cerrar la sesión." });
     res.clearCookie("pachanga.sid");

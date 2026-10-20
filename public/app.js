@@ -1819,6 +1819,7 @@ async function login(alias, password) {
     else {
       await loadUsers();
       await renderHome();
+      await syncExistingPushSubscription();
     }
   } catch (error) {
     showToast(error.message);
@@ -1826,18 +1827,6 @@ async function login(alias, password) {
 }
 
 async function logout() {
-  try {
-    const registration = await navigator.serviceWorker?.ready;
-    const subscription = await registration?.pushManager?.getSubscription();
-    if (subscription && currentUser?.role !== "admin") {
-      await api("/api/push/subscriptions", {
-        method: "DELETE",
-        body: JSON.stringify({ endpoint: subscription.endpoint }),
-      }).catch(() => {});
-    }
-  } catch {
-    // The server session still closes even if local push cleanup fails.
-  }
   try {
     await api("/api/logout", { method: "POST", body: "{}" });
   } catch (error) {
