@@ -1,11 +1,14 @@
-FROM oven/bun:1 AS builder
+FROM node:20-bookworm-slim AS builder
 
 WORKDIR /app
 
+# Activar pnpm nativo de Node.js
+RUN corepack enable && corepack prepare pnpm@latest --activate
+
 COPY package*.json ./
 
-# Bun instala todas las dependencias JS en 2 segundos sin agotar la memoria RAM
-RUN bun install --production --no-save
+# pnpm instala en segundos sin bloquear memoria ni fallar en la red DNS
+RUN pnpm install --prod --ignore-scripts
 
 FROM node:20-bookworm-slim AS runner
 
