@@ -3,7 +3,7 @@
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
-const Sqlite = require("better-sqlite3-multiple-ciphers");
+const { spawnSync } = require("node:child_process");
 const { Pool } = require("pg");
 const db = require("../db");
 
@@ -46,26 +46,35 @@ const targetTables = [...tableOrder];
 
 function readSqliteSnapshot(file) {
   if (!fs.existsSync(file)) throw new Error(`No existe el archivo SQLite indicado: ${file}`);
-  const sqlite = new Sqlite(file, { readonly: true, fileMustExist: true });
-  try {
-    const available = new Set(sqlite.prepare(
-      "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
-    ).all().map(({ name }) => name));
-    const snapshot = {};
-    for (const table of tableOrder) {
-      if (!available.has(table)) continue;
-      const columns = sqlite.prepare(`PRAGMA table_info("${table}")`).all().map(({ name }) => name);
-      const orderBy = columns.includes("id") ? "id" : columns.join(", ");
-      snapshot[table] = {
-        columns,
-        rows: sqlite.prepare(`SELECT * FROM "${table}" ORDER BY ${orderBy}`).all(),
-      };
-    }
-    const fingerprint = crypto.createHash("sha256").update(JSON.stringify(snapshot)).digest("hex");
-    return { snapshot, fingerprint };
-  } finally {
-    sqlite.close();
+  const pythonReader = `
+import json, sqlite3, sys
+connection = sqlite3.connect(sys.argv[1])
+connection.row_factory = sqlite3.Row
+tables = json.loads(sys.argv[2])
+available = {row["name"] for row in connection.execute(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+)}
+snapshot = {}
+for table in tables:
+    if table not in available:
+        continue
+    columns = [row["name"] for row in connection.execute('PRAGMA table_info("' + table + '")')]
+    order = '"id"' if "id" in columns else ", ".join('"' + column + '"' for column in columns)
+    rows = [dict(row) for row in connection.execute('SELECT * FROM "' + table + '" ORDER BY ' + order)]
+    snapshot[table] = {"columns": columns, "rows": rows}
+connection.close()
+print(json.dumps(snapshot, ensure_ascii=False, separators=(",", ":")))
+`;
+  const result = spawnSync("python3", ["-c", pythonReader, file, JSON.stringify(tableOrder)], {
+    encoding: "utf8",
+    maxBuffer: 32 * 1024 * 1024,
+  });
+  if (result.error || result.status !== 0) {
+    throw new Error(`No se pudo leer SQLite con Python 3: ${result.error?.message || result.stderr.trim()}`);
   }
+  const snapshot = JSON.parse(result.stdout);
+  const fingerprint = crypto.createHash("sha256").update(JSON.stringify(snapshot)).digest("hex");
+  return { snapshot, fingerprint };
 }
 
 function remapRow(table, row, idMaps, { deferAdjustment = false } = {}) {
