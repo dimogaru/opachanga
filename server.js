@@ -934,6 +934,60 @@ async function sendCampaign(match, type) {
   return { delivered, failed: errors.length, status };
 }
 
+async function sendManualOpeningNotification() {
+  if (!pushConfigured) {
+    const error = new Error("Las notificaciones push no están configuradas. Define las variables VAPID.");
+    error.status = 503;
+    throw error;
+  }
+
+  const subscriptions = await db.prepare(`
+    SELECT endpoint, p256dh, auth
+    FROM push_subscriptions
+  `).all();
+  if (!subscriptions.length) {
+    return {
+      delivered: 0,
+      failed: 0,
+      status: "empty",
+      noSubscriptions: true,
+      message: "No hay dispositivos suscritos",
+    };
+  }
+
+  const payload = {
+    title: "⚽ ¡Convocatoria abierta!",
+    body: "Ya puedes apuntarte a la próxima pachanga.",
+    url: "/",
+    tag: "o-pachanga-convocatoria-abierta",
+  };
+  const results = await Promise.allSettled(subscriptions.map((subscription) =>
+    webPush.sendNotification({
+      endpoint: subscription.endpoint,
+      keys: { p256dh: subscription.p256dh, auth: subscription.auth },
+    }, JSON.stringify(payload), { TTL: 60 * 60 * 24 * 3 }),
+  ));
+
+  let delivered = 0;
+  let failed = 0;
+  const expired = [];
+  results.forEach((result, index) => {
+    if (result.status === "fulfilled") {
+      delivered += 1;
+      return;
+    }
+    failed += 1;
+    if ([404, 410].includes(result.reason?.statusCode)) {
+      expired.push(subscriptions[index].endpoint);
+    }
+  });
+  for (const endpoint of expired) {
+    await db.prepare("DELETE FROM push_subscriptions WHERE endpoint = ?").run(endpoint);
+  }
+
+  return { delivered, failed, status: failed ? "failed" : "sent" };
+}
+
 async function sendUserNotification(userId, payload) {
   if (!pushConfigured) return { skipped: true };
   const subscriptions = await db.prepare(`
@@ -2134,6 +2188,16 @@ app.get("/api/admin/notifications/status", requireAdmin, async (_req, res) => {
 });
 
 app.post("/api/admin/notifications/:type", requireAdmin, async (req, res) => {
+  if (req.params.type === "opening") {
+    try {
+      return res.json(await sendManualOpeningNotification());
+    } catch (error) {
+      return res.status(error.status || 500).json({
+        error: error.message || "No se pudo enviar la notificación.",
+      });
+    }
+  }
+
   const match = await getCurrentMatch();
   if (!match) return res.status(409).json({ error: "No hay una convocatoria para enviar este aviso." });
   const type = req.params.type === "unanswered" ? "friday_reminder" : req.params.type;
