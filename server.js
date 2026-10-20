@@ -1,7 +1,7 @@
 const path = require("node:path");
 const express = require("express");
 const session = require("express-session");
-const db = require("./database");
+const db = require("./db");
 const cron = require("node-cron");
 const webPush = require("web-push");
 const bcrypt = require("bcrypt");
@@ -12,7 +12,9 @@ const HOST = '0.0.0.0';
 const timeZone = "Europe/Madrid";
 const defaultSubstitutePassword = "Pachanga123#";
 const maxProfilePhotoBytes = 256 * 1024;
-if (false) {
+/*
+  Legacy SQLite initialization is intentionally disabled. The active startup
+  path uses the PostgreSQL initializer in db.initialize().
 const databasePath = process.env.DB_PATH
   ? path.resolve(process.env.DB_PATH)
   : path.resolve("./data/database.sqlite");
@@ -276,7 +278,7 @@ if (!defaultAdmin) {
     VALUES ('DIEGO GAY DAVILA', 'DIEGO', 'GAY DAVILA', 'DIMOGARU', ?, 'active', 0, 'admin', 'principal', NULL, 0)
   `).run(defaultAdminPasswordHash);
 }
-}
+*/
 
 const vapidPublicKey = process.env.VAPID_PUBLIC_KEY || process.env.PUBLIC_VAPID_KEY || "";
 const vapidPrivateKey = process.env.VAPID_PRIVATE_KEY || process.env.PRIVATE_VAPID_KEY || "";
@@ -351,14 +353,14 @@ function requireAdmin(req, res, next) {
   next();
 }
 
-function requirePlayer(req, res, next) {
-  requireUser(req, res, (error) => {
-    if (error) return next(error);
-    if (req.session.user.role === "admin") {
-      return res.status(403).json({ error: "Esta acción está disponible solo para jugadores." });
-    }
-    next();
-  });
+async function requirePlayer(req, res, next) {
+  await requireUser(req, res, () => {});
+  if (res.headersSent) return;
+  if (!req.session.user) return;
+  if (req.session.user.role === "admin") {
+    return res.status(403).json({ error: "Esta acción está disponible solo para jugadores." });
+  }
+  next();
 }
 
 function madridParts(date = new Date()) {
@@ -419,7 +421,7 @@ async function getCurrentMatch() {
 }
 
 async function latestCancellation() {
-  const latest = db.prepare(`
+  const latest = await db.prepare(`
     SELECT * FROM matches
     ORDER BY id DESC
     LIMIT 1
@@ -535,12 +537,13 @@ function readJson(value, fallback) {
 }
 
 async function principalRosterIds(matchId) {
-  return db.prepare(`
+  const rows = await db.prepare(`
     SELECT c.user_id
     FROM convocations c JOIN users u ON u.id = c.user_id
     WHERE c.match_id = ? AND c.status = 'principal' AND u.role != 'admin'
     ORDER BY c.id
-  `).all(matchId).map((row) => row.user_id);
+  `).all(matchId);
+  return rows.map((row) => row.user_id);
 }
 
 async function validateDraftState(matchId, draft, teamA, teamB) {
@@ -745,11 +748,11 @@ async function matchDetails(match) {
     draftValidationError = "El estado guardado del draft no es válido.";
   }
   const getTeam = async (ids, activeOnly = false) => ids.length
-    ? await db.prepare(`
+    ? (await db.prepare(`
       SELECT id, name, alias, ranking_position FROM users
       WHERE id IN (${ids.map(() => "?").join(",")}) AND role != 'admin'
         ${activeOnly ? "AND account_status = 'active' AND deleted_at IS NULL" : ""}
-    `).all(...ids)
+    `).all(...ids))
       .sort((left, right) => ids.indexOf(left.id) - ids.indexOf(right.id))
     : [];
   const available = draft.remaining?.length ? await getTeam(draft.remaining, true) : [];
@@ -1652,7 +1655,7 @@ app.post("/api/admin/standings/adjustments", requireAdmin, async (req, res) => {
         INSERT INTO standing_adjustments (
           user_id, admin_id, points_delta, matches_played_delta,
           wins_delta, draws_delta, losses_delta, reason
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id
       `).run(
         userId,
         req.session.user.id,

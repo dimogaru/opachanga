@@ -1,10 +1,11 @@
 # O Pachanga
 
-Aplicación web instalable para organizar partidos de fútbol entre amigos. Incluye Express, SQLite (Better-SQLite3), HTML, JavaScript y Tailwind CSS por CDN.
+Aplicación web instalable para organizar partidos de fútbol entre amigos. Incluye Express, PostgreSQL (`pg`), HTML, JavaScript y Tailwind CSS por CDN.
 
 ## Requisitos
 
 - Node.js 20 o superior.
+- PostgreSQL disponible mediante `DATABASE_URL`.
 - HTTPS en producción para que el navegador permita instalar la PWA y registrar el service worker. Se recomienda terminar HTTPS en un proxy inverso delante de Node.
 - Define `SESSION_SECRET` con un valor largo y aleatorio. La aplicación usa un valor de desarrollo solo si no está configurado; no lo uses en producción.
 
@@ -15,9 +16,11 @@ npm install
 SESSION_SECRET="cambia-este-valor" npm start
 ```
 
-Abre `http://localhost:3000` (Replit configura el puerto 5000 para su vista previa). En una instalación nueva se crea el usuario administrador DIMOGARU con rol Admin, activo y sin participación en la competición. Para usar una contraseña inicial propia, configura `INITIAL_ADMIN_PASSWORD` antes del primer arranque. La base se guarda en `data/database.sqlite`; `DB_PATH` permite indicar una ruta de archivo completa y tiene prioridad sobre la ruta predeterminada. El directorio padre se crea automáticamente.
+Abre `http://localhost:3000` (Replit configura el puerto 5000 para su vista previa). Configura `DATABASE_URL` con la URL de conexión PostgreSQL. En una instalación nueva se crea el usuario administrador DIMOGARU con rol Admin, activo y sin participación en la competición. Para usar una contraseña inicial propia, configura `INITIAL_ADMIN_PASSWORD` antes del primer arranque.
 
-Al arrancar, el servidor crea las tablas e índices que falten con `IF NOT EXISTS`; no elimina ni reinicia registros existentes. Las migraciones de esquema conservan las filas y solo completan columnas nuevas que estaban vacías.
+Al arrancar, el servidor crea las tablas e índices PostgreSQL que falten y completa columnas nuevas sin borrar los registros existentes.
+
+Para importar la base activa de SQLite (`data/database.sqlite`) una vez, con `DATABASE_URL` configurada, ejecuta `npm run migrate:sqlite`. El importador detiene la operación si el destino ya contiene actividad, mantiene los IDs y las relaciones, y registra una huella para evitar repetir la importación. Si se usaba otra ruta, selecciona explícitamente el archivo con `SQLITE_SOURCE=/ruta/al/archivo.sqlite`.
 
 ## Jugadores de prueba
 
@@ -32,7 +35,7 @@ export SESSION_SECRET="$(openssl rand -hex 32)"
 docker compose up --build -d
 ```
 
-La imagen usa Node.js 20 en dos etapas: instala las dependencias en una etapa y copia solo la aplicación y sus módulos al contenedor final. No instala compiladores ni herramientas de desarrollo; la dependencia SQLite utiliza su binding precompilado para Linux. El servicio escucha en `PORT` (3000 por defecto); monta un volumen persistente en `/app/data` si el servidor usa SQLite local. Configura un proxy inverso con HTTPS y reenvío de `X-Forwarded-Proto` para uso público.
+La imagen usa Node.js 20 y PostgreSQL. El servicio escucha en `PORT` (3000 por defecto). Configura `DATABASE_URL` y un proxy inverso con HTTPS y reenvío de `X-Forwarded-Proto` para uso público.
 
 Puedes copiar `.env.example` a `.env` y sustituir los valores localmente. `.env` está excluido de Git; no compartas ni subas la clave privada.
 

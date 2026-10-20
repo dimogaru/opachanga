@@ -1,8 +1,6 @@
 #!/usr/bin/env node
 
-const fs = require("node:fs");
-const path = require("node:path");
-const Database = require("better-sqlite3-multiple-ciphers");
+const { Pool } = require("pg");
 
 const manuallyInvoked = process.argv.includes("--manual");
 if (!manuallyInvoked && process.env.NODE_ENV !== "development") {
@@ -11,6 +9,7 @@ if (!manuallyInvoked && process.env.NODE_ENV !== "development") {
 if (!manuallyInvoked && process.env.REPLIT_DEPLOYMENT === "1") {
   throw new Error("Semilla bloqueada en un deployment publicado.");
 }
+if (!process.env.DATABASE_URL) throw new Error("Falta DATABASE_URL para conectar con PostgreSQL.");
 
 const seedPasswordHash = "$2b$12$K7EvqLvkNtESiU1.84HoIe43iGq1F7Zet3G9zYh3rQms0.Ff5TtYG";
 const players = [
@@ -34,89 +33,71 @@ const players = [
   rankingPosition: index + 1,
 }));
 
-function tableExists(db, name) {
-  return Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name));
-}
-
-const dataDirectory = process.env.DATA_DIR || path.join(__dirname, "..", "data");
-const databasePath = path.join(dataDirectory, "o-pachanga.sqlite");
-if (!fs.existsSync(databasePath)) {
-  throw new Error("No existe la base local. Inicia la aplicación una vez para crear el esquema y vuelve a ejecutar la semilla.");
-}
-
-let db;
-try {
-  db = new Database(databasePath);
-  db.pragma("foreign_keys = ON");
-  for (const table of ["users"]) {
-    if (!tableExists(db, table)) {
-      throw new Error(`Falta la tabla ${table}; inicia la aplicación una vez antes de ejecutar la semilla.`);
-    }
-  }
-
-  const seed = db.transaction(() => {
-    const findAlias = db.prepare("SELECT id, role FROM users WHERE alias COLLATE NOCASE = ?");
-    const seedAccounts = players.map((player) => {
-      const existing = findAlias.get(player.alias);
-      if (existing?.role === "admin") {
+async function main() {
+  const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const existingResult = await client.query(
+      "SELECT id, alias, role, ranking_position FROM users WHERE LOWER(alias) = ANY($1::text[])",
+      [players.map((player) => player.alias.toLowerCase())],
+    );
+    const existingByAlias = new Map(existingResult.rows.map((user) => [user.alias.toLowerCase(), user]));
+    for (const player of players) {
+      if (existingByAlias.get(player.alias.toLowerCase())?.role === "admin") {
         throw new Error(`El alias ${player.alias} ya pertenece a una cuenta Admin; no se modificó.`);
       }
-      return { ...player, id: existing?.id ?? null };
-    });
-    const seedIds = new Set(seedAccounts.map((player) => player.id).filter(Number.isInteger));
+    }
 
-    const occupiedRanks = db.prepare(`
+    const seedIds = new Set([...existingByAlias.values()].map((user) => Number(user.id)));
+    const occupied = await client.query(`
       SELECT id, alias, ranking_position FROM users
       WHERE role != 'admin' AND account_status = 'active' AND deleted_at IS NULL
         AND ranking_position BETWEEN 1 AND 14
-    `).all().filter((user) => !seedIds.has(user.id));
+    `);
+    const occupiedRanks = occupied.rows.filter((user) => !seedIds.has(Number(user.id)));
     if (occupiedRanks.length) {
-      throw new Error(`Las posiciones de ranking ${occupiedRanks.map((user) => user.ranking_position).join(", ")} ya pertenecen a otros jugadores activos; no se modificó la base.`);
+      throw new Error(`Las posiciones ${occupiedRanks.map((user) => user.ranking_position).join(", ")} ya están ocupadas; no se modificó la base.`);
     }
 
-    const updatePlayer = db.prepare(`
-      UPDATE users SET name = ?, first_name = ?, last_name = ?, alias = ?, password_hash = ?,
-        account_status = 'active', must_change_password = 0, deleted_at = NULL,
-        role = ?, base_role = ?, ranking_position = ?, balance = 10
-      WHERE id = ?
-    `);
-    const insertPlayer = db.prepare(`
-      INSERT INTO users (name, first_name, last_name, alias, password_hash, account_status,
-        must_change_password, role, base_role, ranking_position, balance)
-      VALUES (?, ?, ?, ?, ?, 'active', 0, ?, ?, ?, 10)
-    `);
-
-    for (const player of seedAccounts) {
+    for (const player of players) {
+      const existing = existingByAlias.get(player.alias.toLowerCase());
       const values = [
-        player.name,
-        player.firstName,
-        player.lastName,
-        player.alias,
-        seedPasswordHash,
-        player.baseRole,
-        player.baseRole,
-        player.rankingPosition,
+        player.name, player.firstName, player.lastName, player.alias, seedPasswordHash,
+        player.baseRole, player.baseRole, player.rankingPosition,
       ];
-      if (player.id) {
-        updatePlayer.run(...values, player.id);
+      if (existing) {
+        await client.query(`
+          UPDATE users SET name = $1, first_name = $2, last_name = $3, alias = $4, password_hash = $5,
+            account_status = 'active', must_change_password = 0, deleted_at = NULL,
+            role = $6, base_role = $7, ranking_position = $8, balance = 10
+          WHERE id = $9
+        `, [...values, existing.id]);
       } else {
-        player.id = Number(insertPlayer.run(...values).lastInsertRowid);
-        seedIds.add(player.id);
+        await client.query(`
+          INSERT INTO users (name, first_name, last_name, alias, password_hash, account_status,
+            must_change_password, role, base_role, ranking_position, balance)
+          VALUES ($1, $2, $3, $4, $5, 'active', 0, $6, $7, $8, 10)
+        `, values);
       }
     }
+    await client.query("COMMIT");
+    console.log(JSON.stringify({
+      players: players.length,
+      principal: players.filter((player) => player.baseRole === "principal").length,
+      suplente: players.filter((player) => player.baseRole === "suplente").length,
+      note: "La semilla no abre convocatorias; Admin debe abrirlas y asignar la fecha manualmente.",
+    }, null, 2));
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+    await pool.end();
+  }
+}
 
-    return {
-      players: seedAccounts.length,
-      baseRolePrincipal: seedAccounts.filter((player) => player.baseRole === "principal").length,
-      baseRoleSuplente: seedAccounts.filter((player) => player.baseRole === "suplente").length,
-      note: "La semilla no crea ni abre convocatorias; Admin debe abrirlas y asignar la fecha del partido manualmente.",
-    };
-  });
-
-  console.log(JSON.stringify(seed.immediate(), null, 2));
-} catch (error) {
+main().catch((error) => {
   console.error(`No se pudo ejecutar la semilla: ${error.message}`);
   process.exitCode = 1;
-} finally {
-  db?.close();
-}
+});
