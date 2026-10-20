@@ -148,6 +148,61 @@ async function togglePushSubscription() {
   }
 }
 
+async function syncExistingPushSubscription() {
+  if (
+    !currentUser ||
+    currentUser.role === "admin" ||
+    !pushConfig.enabled ||
+    !("serviceWorker" in navigator) ||
+    !("PushManager" in window) ||
+    !("Notification" in window) ||
+    Notification.permission !== "granted"
+  ) return;
+
+  try {
+    const registration = await navigator.serviceWorker.ready;
+    const subscription = await registration.pushManager.getSubscription();
+    if (!subscription) return;
+    await api("/api/subscriptions", {
+      method: "POST",
+      body: JSON.stringify(subscription),
+    });
+  } catch (error) {
+    console.warn("No se pudo resincronizar la suscripción push:", error);
+  }
+}
+
+function closePwa() {
+  try {
+    window.close();
+  } catch {
+    // Some browsers block closing a window that was not opened by script.
+  }
+  app.innerHTML = `<main class="grid min-h-screen place-items-center bg-paper p-6"><section class="w-full max-w-md rounded-3xl bg-white p-7 text-center shadow-card"><div class="text-4xl" aria-hidden="true">⚽</div><h1 class="display mt-4 text-2xl font-extrabold">O Pachanga está cerrada</h1><p class="mt-2 text-sm leading-6 text-ink/55">Tu sesión y las notificaciones de este dispositivo siguen activas.</p><button id="resume-app" class="mt-6 w-full rounded-xl bg-pitch-900 px-4 py-3 text-sm font-bold text-white">Volver a O Pachanga</button></section></main>`;
+  document.querySelector("#resume-app")?.addEventListener("click", renderHome);
+}
+
+function openAccountSettings() {
+  const overlay = document.createElement("div");
+  overlay.className = "fixed inset-0 z-50 grid place-items-center bg-pitch-950/65 p-4 backdrop-blur-sm";
+  overlay.innerHTML = `<section class="w-full max-w-sm rounded-3xl bg-paper p-5 shadow-2xl sm:p-7" role="dialog" aria-modal="true" aria-labelledby="account-settings-title">
+    <div class="flex items-start justify-between gap-4"><div><p class="text-xs font-bold uppercase tracking-[.13em] text-pitch-700">CUENTA</p><h2 id="account-settings-title" class="display mt-1 text-2xl font-extrabold">Configuración</h2></div><button class="close-account-settings grid h-9 w-9 place-items-center rounded-xl bg-white text-ink/60" type="button" aria-label="Cerrar configuración">✕</button></div>
+    <div class="mt-5 rounded-2xl bg-white p-4"><p class="text-xs font-semibold uppercase tracking-wide text-ink/45">Sesión activa</p><p class="mt-1 font-bold">${escapeHtml(currentUser?.alias || currentUser?.name || "")}</p><p class="mt-1 text-xs text-ink/50">${currentUser?.role === "admin" ? "Administrador" : "Jugador"}</p></div>
+    <p class="mt-4 text-sm leading-5 text-ink/55">Cerrar la sesión te devolverá al formulario de acceso. El permiso del navegador para las notificaciones se conserva.</p>
+    <button id="account-logout" type="button" class="mt-6 w-full rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-bold text-red-800 transition hover:bg-red-100">Cerrar sesión</button>
+  </section>`;
+  document.body.append(overlay);
+  overlay.querySelector(".close-account-settings").addEventListener("click", () => overlay.remove());
+  overlay.addEventListener("click", (event) => {
+    if (event.target === overlay) overlay.remove();
+  });
+  overlay.querySelector("#account-logout").addEventListener("click", async (event) => {
+    event.currentTarget.disabled = true;
+    overlay.remove();
+    await logout();
+  });
+}
+
 function formatConvocationDate(match) {
   if (match.match_date) return `Partido · ${formatMatchSchedule(match)}`;
   const start = new Date(`${match.start_date}T12:00:00Z`);
@@ -672,7 +727,8 @@ function shell(content, active = "Inicio") {
             ${installButton()}
             ${currentUser?.role === "admin" ? `<span class="hidden rounded-full border border-lime/30 px-3 py-1.5 text-[10px] font-bold tracking-wide text-lime sm:inline-flex">ADMIN</span>` : ""}
             <div class="hidden items-center gap-2 sm:flex"><span class="grid h-9 w-9 place-items-center rounded-full bg-white/15 text-xs font-bold">${escapeHtml(initials)}</span><span class="max-w-32 truncate text-sm font-medium">${escapeHtml(currentUser?.name || "")}</span></div>
-            <button id="logout" class="rounded-lg px-2 py-2 text-sm text-white/70 transition hover:bg-white/10 hover:text-white" aria-label="Cerrar sesión">Salir</button>
+            <button id="account-settings" class="rounded-lg px-2 py-2 text-sm text-white/70 transition hover:bg-white/10 hover:text-white" aria-label="Configuración de cuenta">Mi cuenta</button>
+            <button id="close-app" class="rounded-lg px-2 py-2 text-sm font-semibold text-white/70 transition hover:bg-white/10 hover:text-white" aria-label="Cerrar app">Cerrar</button>
           </div>
         </div>
       </header>
@@ -680,7 +736,8 @@ function shell(content, active = "Inicio") {
       <footer class="mx-auto max-w-7xl px-5 pb-8 text-xs text-ink/40 sm:px-8">O Pachanga <span class="mx-1">·</span> Una buena pachanga empieza aquí.</footer>
     </div>`;
   attachInstallButton();
-  document.querySelector("#logout")?.addEventListener("click", logout);
+  document.querySelector("#close-app")?.addEventListener("click", closePwa);
+  document.querySelector("#account-settings")?.addEventListener("click", openAccountSettings);
   document.querySelector("#push-toggle")?.addEventListener("click", togglePushSubscription);
   if (currentUser?.role !== "admin") syncPushButton();
 }
@@ -734,6 +791,7 @@ function renderPasswordChange() {
       currentUser.must_change_password = false;
       await loadUsers();
       await renderHome();
+      await syncExistingPushSubscription();
     } catch (error) {
       const errorBox = document.querySelector("#password-error");
       errorBox.textContent = error.message;
@@ -775,6 +833,7 @@ function renderLogin() {
       else {
         await loadUsers();
         await renderHome();
+        await syncExistingPushSubscription();
       }
     } catch (error) {
       const errorBox = document.querySelector("#login-error");
@@ -1589,6 +1648,7 @@ async function openPlayerProfile(userId) {
         ${canEditPhoto
           ? `<button type="submit" class="w-full rounded-xl bg-pitch-900 px-4 py-3 text-sm font-extrabold text-white transition hover:bg-pitch-800 disabled:opacity-50">${canEditText ? "Guardar cambios" : "Guardar fotografía"}</button>`
           : `<p class="rounded-xl bg-white px-4 py-3 text-center text-xs text-ink/45">Solo el Administrador puede modificar estos datos.</p>`}
+        ${currentUser?.id === profile.id ? `<button id="profile-logout" type="button" class="w-full rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-bold text-red-800 transition hover:bg-red-100">Cerrar sesión</button>` : ""}
       </form>
     </section>`;
   document.body.append(overlay);
@@ -1597,6 +1657,11 @@ async function openPlayerProfile(userId) {
   overlay.querySelector(".close-profile").addEventListener("click", close);
   overlay.addEventListener("click", (event) => { if (event.target === overlay) close(); });
   overlay.addEventListener("keydown", (event) => { if (event.key === "Escape") close(); });
+  overlay.querySelector("#profile-logout")?.addEventListener("click", async (event) => {
+    event.currentTarget.disabled = true;
+    close();
+    await logout();
+  });
 
   if (!canEditPhoto) return;
   const form = overlay.querySelector("#profile-form");
@@ -1764,22 +1829,25 @@ async function logout() {
   try {
     const registration = await navigator.serviceWorker?.ready;
     const subscription = await registration?.pushManager?.getSubscription();
-    if (subscription) {
-      if (currentUser?.role !== "admin") {
-        await api("/api/push/subscriptions", {
-          method: "DELETE",
-          body: JSON.stringify({ endpoint: subscription.endpoint }),
-        });
-      }
-      await subscription.unsubscribe();
+    if (subscription && currentUser?.role !== "admin") {
+      await api("/api/push/subscriptions", {
+        method: "DELETE",
+        body: JSON.stringify({ endpoint: subscription.endpoint }),
+      }).catch(() => {});
     }
   } catch {
-    // The server session still closes even if push unsubscribe fails.
+    // The server session still closes even if local push cleanup fails.
   }
-  await api("/api/session", { method: "DELETE" }).catch(() => {});
+  try {
+    await api("/api/logout", { method: "POST", body: "{}" });
+  } catch (error) {
+    showToast(error.message || "No se pudo cerrar la sesión.");
+    return;
+  }
   currentUser = null;
   selectedConvocationId = null;
   viewingHistoricalConvocation = false;
+  document.querySelectorAll('[role="dialog"]').forEach((dialog) => dialog.remove());
   renderLogin();
 }
 
@@ -1853,6 +1921,7 @@ async function start() {
     if (currentUser) {
       await loadUsers();
       await renderHome();
+      await syncExistingPushSubscription();
     } else renderLogin();
   } catch (error) {
     app.innerHTML = `<main class="grid min-h-screen place-items-center p-6"><div class="max-w-sm text-center"><div class="text-4xl">⚽</div><h1 class="display mt-4 text-2xl font-extrabold">No hay conexión con el servidor</h1><p class="mt-2 text-sm text-ink/55">Comprueba la conexión e inténtalo de nuevo.</p><button onclick="location.reload()" class="mt-5 rounded-xl bg-pitch-900 px-5 py-3 text-sm font-bold text-white">Reintentar</button></div></main>`;

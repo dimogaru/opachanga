@@ -1316,13 +1316,16 @@ app.post("/api/account/password", requireUser, async (req, res) => {
   res.json({ updated: true });
 });
 
-app.delete("/api/session", (req, res) => {
+function destroySession(req, res) {
   req.session.destroy((error) => {
     if (error) return res.status(500).json({ error: "No se pudo cerrar la sesión." });
     res.clearCookie("pachanga.sid");
     res.status(204).end();
   });
-});
+}
+
+app.post("/api/logout", destroySession);
+app.delete("/api/session", destroySession);
 
 app.get("/api/convocations/current", requireUser, async (_req, res) => {
   const match = await getCurrentMatch();
