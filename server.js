@@ -2145,7 +2145,7 @@ app.get("/api/push/config", requireUser, (_req, res) => {
   res.json({ enabled: pushConfigured, publicKey: pushConfigured ? vapidPublicKey : null });
 });
 
-app.post("/api/push/subscriptions", requirePlayer, async (req, res) => {
+app.post(["/api/subscriptions", "/api/push/subscriptions"], requirePlayer, async (req, res) => {
   if (!pushConfigured) {
     return res.status(503).json({ error: "Las notificaciones push aún no están configuradas en el servidor." });
   }

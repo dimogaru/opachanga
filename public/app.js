@@ -102,7 +102,7 @@ async function syncPushButton() {
     const registration = await navigator.serviceWorker.ready;
     const subscription = await registration.pushManager.getSubscription();
     button.disabled = false;
-    button.textContent = subscription ? "Avisos activados" : "Activar avisos";
+    button.textContent = subscription ? "Notificaciones activadas" : "Activar notificaciones push";
     button.dataset.active = subscription ? "true" : "false";
   } catch {
     button.disabled = true;
@@ -116,7 +116,7 @@ async function togglePushSubscription() {
   button.disabled = true;
   try {
     const active = button.dataset.active === "true";
-    if (!active && Notification.permission !== "granted") {
+    if (!active) {
       const permission = await Notification.requestPermission();
       if (permission !== "granted") throw new Error("Necesitas permitir las notificaciones en el navegador.");
     }
@@ -134,7 +134,7 @@ async function togglePushSubscription() {
         userVisibleOnly: true,
         applicationServerKey: urlBase64ToUint8Array(pushConfig.publicKey),
       });
-      await api("/api/push/subscriptions", {
+      await api("/api/subscriptions", {
         method: "POST",
         body: JSON.stringify(subscription),
       });
@@ -154,6 +154,16 @@ function formatConvocationDate(match) {
   const end = new Date(`${match.end_date.slice(0, 10)}T12:00:00Z`);
   const fmt = (date) => date.toLocaleDateString("es-ES", { day: "numeric", month: "short", timeZone: "UTC" });
   return `${fmt(start)} — ${fmt(end)}, 20:00`;
+}
+
+function renderPushBanner() {
+  return `<section class="mb-6 flex flex-col gap-4 rounded-2xl border border-pitch-900/10 bg-white p-4 shadow-sm sm:flex-row sm:items-center sm:justify-between sm:p-5">
+    <div class="flex items-start gap-3">
+      <span class="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-pitch-100 text-pitch-800" aria-hidden="true">🔔</span>
+      <div><h2 class="font-bold">Activa las notificaciones push</h2><p class="mt-1 text-sm leading-5 text-ink/55">Recibe avisos de convocatoria y novedades directamente en este dispositivo.</p></div>
+    </div>
+    <button id="push-toggle" disabled class="w-full shrink-0 rounded-xl bg-pitch-900 px-4 py-3 text-sm font-bold text-white transition hover:bg-pitch-800 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto" title="Activa avisos de convocatoria en este dispositivo">Activar notificaciones push</button>
+  </section>`;
 }
 
 function formatConvocationRange(match) {
@@ -660,7 +670,7 @@ function shell(content, active = "Inicio") {
           </a>
           <div class="flex items-center gap-2 sm:gap-4">
             ${installButton()}
-            ${currentUser?.role === "admin" ? `<span class="hidden rounded-full border border-lime/30 px-3 py-1.5 text-[10px] font-bold tracking-wide text-lime sm:inline-flex">ADMIN</span>` : `<button id="push-toggle" disabled class="rounded-xl border border-white/20 bg-white/10 px-3 py-2.5 text-xs font-bold text-white transition hover:bg-white/20 disabled:cursor-not-allowed disabled:opacity-60 sm:px-4" title="Activa avisos de convocatoria en este dispositivo">Activar avisos</button>`}
+            ${currentUser?.role === "admin" ? `<span class="hidden rounded-full border border-lime/30 px-3 py-1.5 text-[10px] font-bold tracking-wide text-lime sm:inline-flex">ADMIN</span>` : ""}
             <div class="hidden items-center gap-2 sm:flex"><span class="grid h-9 w-9 place-items-center rounded-full bg-white/15 text-xs font-bold">${escapeHtml(initials)}</span><span class="max-w-32 truncate text-sm font-medium">${escapeHtml(currentUser?.name || "")}</span></div>
             <button id="logout" class="rounded-lg px-2 py-2 text-sm text-white/70 transition hover:bg-white/10 hover:text-white" aria-label="Cerrar sesión">Salir</button>
           </div>
@@ -1492,6 +1502,7 @@ async function renderPlayer() {
   const player = users.find((user) => user.id === currentUser?.id);
   const content = `
     <div class="mb-7"><div class="mb-3 flex items-center gap-2 text-xs font-bold uppercase tracking-[.14em] text-pitch-700"><span class="h-2 w-2 rounded-full bg-pitch-700"></span>VESTUARIO</div><h1 class="display text-3xl font-extrabold tracking-tight sm:text-4xl">¡Hola, ${escapeHtml(currentUser?.name?.split(" ")[0] || "jugador")}!</h1><p class="mt-2 text-sm text-ink/55">Responde a la convocatoria y consulta las listas del equipo.</p></div>
+    ${renderPushBanner()}
     ${renderConvocationBoard(convocationData, false)}
     ${renderMatchPanel(matchData, false)}
     ${renderStandingsBoard(standingsData)}
