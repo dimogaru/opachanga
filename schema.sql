@@ -131,6 +131,12 @@ CREATE TABLE IF NOT EXISTS balance_alert_campaigns (
   sent_at TEXT
 );
 
+CREATE TABLE IF NOT EXISTS user_sessions (
+  sid VARCHAR NOT NULL PRIMARY KEY,
+  sess JSON NOT NULL,
+  expire TIMESTAMP(6) NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_standing_adjustments_user
   ON standing_adjustments(user_id, id);
 CREATE INDEX IF NOT EXISTS idx_matches_match_date
@@ -141,3 +147,5 @@ CREATE INDEX IF NOT EXISTS idx_transactions_adjustment
   ON transactions(adjustment_of, id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_users_alias_unique
   ON users(LOWER(alias)) WHERE alias IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_user_sessions_expire
+  ON user_sessions(expire);

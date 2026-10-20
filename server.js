@@ -1,6 +1,7 @@
 const path = require("node:path");
 const express = require("express");
 const session = require("express-session");
+const connectPgSimple = require("connect-pg-simple");
 const db = require("./db");
 const cron = require("node-cron");
 const webPush = require("web-push");
@@ -9,6 +10,7 @@ const bcrypt = require("bcrypt");
 const app = express();
 const port = Number(process.env.PORT || 3000);
 const HOST = '0.0.0.0';
+const PgSessionStore = connectPgSimple(session);
 const timeZone = "Europe/Madrid";
 const defaultSubstitutePassword = "Pachanga123#";
 const maxProfilePhotoBytes = 256 * 1024;
@@ -300,15 +302,22 @@ app.set("trust proxy", 1);
 app.use(express.json({ limit: "512kb" }));
 app.use(
   session({
+    store: new PgSessionStore({
+      pool: db.getPool(),
+      tableName: "user_sessions",
+      createTableIfMissing: false,
+      pruneSessionInterval: 60 * 60,
+    }),
     name: "pachanga.sid",
     secret: process.env.SESSION_SECRET || "solo-desarrollo-cambia-SESSION_SECRET",
     resave: false,
     saveUninitialized: false,
+    rolling: true,
     cookie: {
       httpOnly: true,
       sameSite: "lax",
       secure: process.env.NODE_ENV === "production",
-      maxAge: 7 * 24 * 60 * 60 * 1000,
+      maxAge: 365 * 24 * 60 * 60 * 1000,
     },
   }),
 );
@@ -1318,7 +1327,7 @@ app.post("/api/account/password", requireUser, async (req, res) => {
 
 async function destroySession(req, res) {
   const user = req.session.user;
-  if (user && user.role !== "admin") {
+  if (user?.id) {
     try {
       await db.prepare("DELETE FROM push_subscriptions WHERE user_id = ?").run(user.id);
     } catch (error) {
@@ -2156,7 +2165,7 @@ app.get("/api/push/config", requireUser, (_req, res) => {
   res.json({ enabled: pushConfigured, publicKey: pushConfigured ? vapidPublicKey : null });
 });
 
-app.post(["/api/subscriptions", "/api/push/subscriptions"], requirePlayer, async (req, res) => {
+app.post(["/api/subscriptions", "/api/push/subscriptions"], requireUser, async (req, res) => {
   if (!pushConfigured) {
     return res.status(503).json({ error: "Las notificaciones push aún no están configuradas en el servidor." });
   }
@@ -2178,7 +2187,7 @@ app.post(["/api/subscriptions", "/api/push/subscriptions"], requirePlayer, async
   res.status(201).json({ subscribed: true });
 });
 
-app.delete("/api/push/subscriptions", requirePlayer, async (req, res) => {
+app.delete("/api/push/subscriptions", requireUser, async (req, res) => {
   const endpoint = req.body?.endpoint;
   if (typeof endpoint !== "string") return res.status(400).json({ error: "Falta el endpoint de la suscripción." });
   await db.prepare("DELETE FROM push_subscriptions WHERE endpoint = ? AND user_id = ?")

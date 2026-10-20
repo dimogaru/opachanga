@@ -51,6 +51,10 @@ const db = {
     return query(sql);
   },
 
+  getPool() {
+    return pool;
+  },
+
   transaction(callback) {
     return async () => {
       const client = await pool.connect();

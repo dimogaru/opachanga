@@ -151,7 +151,6 @@ async function togglePushSubscription() {
 async function syncExistingPushSubscription() {
   if (
     !currentUser ||
-    currentUser.role === "admin" ||
     !pushConfig.enabled ||
     !("serviceWorker" in navigator) ||
     !("PushManager" in window) ||
@@ -172,24 +171,14 @@ async function syncExistingPushSubscription() {
   }
 }
 
-function closePwa() {
-  try {
-    window.close();
-  } catch {
-    // Some browsers block closing a window that was not opened by script.
-  }
-  app.innerHTML = `<main class="grid min-h-screen place-items-center bg-paper p-6"><section class="w-full max-w-md rounded-3xl bg-white p-7 text-center shadow-card"><div class="text-4xl" aria-hidden="true">⚽</div><h1 class="display mt-4 text-2xl font-extrabold">O Pachanga está cerrada</h1><p class="mt-2 text-sm leading-6 text-ink/55">Tu sesión y las notificaciones de este dispositivo siguen activas.</p><button id="resume-app" class="mt-6 w-full rounded-xl bg-pitch-900 px-4 py-3 text-sm font-bold text-white">Volver a O Pachanga</button></section></main>`;
-  document.querySelector("#resume-app")?.addEventListener("click", renderHome);
-}
-
 function openAccountSettings() {
   const overlay = document.createElement("div");
   overlay.className = "fixed inset-0 z-50 grid place-items-center bg-pitch-950/65 p-4 backdrop-blur-sm";
   overlay.innerHTML = `<section class="w-full max-w-sm rounded-3xl bg-paper p-5 shadow-2xl sm:p-7" role="dialog" aria-modal="true" aria-labelledby="account-settings-title">
     <div class="flex items-start justify-between gap-4"><div><p class="text-xs font-bold uppercase tracking-[.13em] text-pitch-700">CUENTA</p><h2 id="account-settings-title" class="display mt-1 text-2xl font-extrabold">Configuración</h2></div><button class="close-account-settings grid h-9 w-9 place-items-center rounded-xl bg-white text-ink/60" type="button" aria-label="Cerrar configuración">✕</button></div>
     <div class="mt-5 rounded-2xl bg-white p-4"><p class="text-xs font-semibold uppercase tracking-wide text-ink/45">Sesión activa</p><p class="mt-1 font-bold">${escapeHtml(currentUser?.alias || currentUser?.name || "")}</p><p class="mt-1 text-xs text-ink/50">${currentUser?.role === "admin" ? "Administrador" : "Jugador"}</p></div>
-    <p class="mt-4 text-sm leading-5 text-ink/55">Cerrar la sesión te devolverá al formulario de acceso. El permiso del navegador para las notificaciones se conserva.</p>
-    <button id="account-logout" type="button" class="mt-6 w-full rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-bold text-red-800 transition hover:bg-red-100">Cerrar sesión</button>
+    <p class="mt-4 text-sm leading-5 text-ink/55">La sesión permanece activa al cerrar la PWA. Cierra sesión solo para cambiar de cuenta.</p>
+    <div class="mt-6 flex items-center justify-between border-t border-ink/10 pt-4"><span class="text-[11px] text-ink/40">¿Vas a cambiar de cuenta?</span><button id="account-logout" type="button" class="rounded-lg px-2 py-1.5 text-xs font-semibold text-red-700 transition hover:bg-red-50 hover:text-red-900">Cerrar sesión</button></div>
   </section>`;
   document.body.append(overlay);
   overlay.querySelector(".close-account-settings").addEventListener("click", () => overlay.remove());
@@ -728,7 +717,6 @@ function shell(content, active = "Inicio") {
             ${currentUser?.role === "admin" ? `<span class="hidden rounded-full border border-lime/30 px-3 py-1.5 text-[10px] font-bold tracking-wide text-lime sm:inline-flex">ADMIN</span>` : ""}
             <div class="hidden items-center gap-2 sm:flex"><span class="grid h-9 w-9 place-items-center rounded-full bg-white/15 text-xs font-bold">${escapeHtml(initials)}</span><span class="max-w-32 truncate text-sm font-medium">${escapeHtml(currentUser?.name || "")}</span></div>
             <button id="account-settings" class="rounded-lg px-2 py-2 text-sm text-white/70 transition hover:bg-white/10 hover:text-white" aria-label="Configuración de cuenta">Mi cuenta</button>
-            <button id="close-app" class="rounded-lg px-2 py-2 text-sm font-semibold text-white/70 transition hover:bg-white/10 hover:text-white" aria-label="Cerrar app">Cerrar</button>
           </div>
         </div>
       </header>
@@ -736,10 +724,9 @@ function shell(content, active = "Inicio") {
       <footer class="mx-auto max-w-7xl px-5 pb-8 text-xs text-ink/40 sm:px-8">O Pachanga <span class="mx-1">·</span> Una buena pachanga empieza aquí.</footer>
     </div>`;
   attachInstallButton();
-  document.querySelector("#close-app")?.addEventListener("click", closePwa);
   document.querySelector("#account-settings")?.addEventListener("click", openAccountSettings);
   document.querySelector("#push-toggle")?.addEventListener("click", togglePushSubscription);
-  if (currentUser?.role !== "admin") syncPushButton();
+  syncPushButton();
 }
 
 function renderRegistration() {
@@ -791,7 +778,7 @@ function renderPasswordChange() {
       currentUser.must_change_password = false;
       await loadUsers();
       await renderHome();
-      await syncExistingPushSubscription();
+      void syncExistingPushSubscription();
     } catch (error) {
       const errorBox = document.querySelector("#password-error");
       errorBox.textContent = error.message;
@@ -833,7 +820,7 @@ function renderLogin() {
       else {
         await loadUsers();
         await renderHome();
-        await syncExistingPushSubscription();
+        void syncExistingPushSubscription();
       }
     } catch (error) {
       const errorBox = document.querySelector("#login-error");
@@ -932,6 +919,7 @@ async function renderAdmin() {
   ];
   const adminContent = `
     <div class="mb-6"><div class="mb-3 flex items-center gap-2 text-xs font-bold uppercase tracking-[.14em] text-pitch-700"><span class="h-2 w-2 rounded-full bg-pitch-700"></span>PANEL EXCLUSIVO DE ADMINISTRACIÓN</div><h1 class="display text-3xl font-extrabold tracking-tight sm:text-4xl">Control de O Pachanga</h1><p class="mt-2 text-sm text-ink/55">Convocatorias, avisos, cuentas y resultados en un solo lugar.</p></div>
+    ${renderPushBanner()}
     <nav class="mb-6 flex gap-2 overflow-x-auto rounded-2xl border border-ink/[.07] bg-white p-2 shadow-sm" aria-label="Secciones de administración">
       ${tabs.map(([id, label]) => `<button class="admin-tab-button shrink-0 rounded-xl px-4 py-2.5 text-sm font-bold transition ${activeAdminTab === id ? "bg-pitch-900 text-white" : "text-ink/55 hover:bg-paper"}" data-admin-tab="${id}" aria-pressed="${activeAdminTab === id}">${label}</button>`).join("")}
     </nav>
@@ -1648,7 +1636,7 @@ async function openPlayerProfile(userId) {
         ${canEditPhoto
           ? `<button type="submit" class="w-full rounded-xl bg-pitch-900 px-4 py-3 text-sm font-extrabold text-white transition hover:bg-pitch-800 disabled:opacity-50">${canEditText ? "Guardar cambios" : "Guardar fotografía"}</button>`
           : `<p class="rounded-xl bg-white px-4 py-3 text-center text-xs text-ink/45">Solo el Administrador puede modificar estos datos.</p>`}
-        ${currentUser?.id === profile.id ? `<button id="profile-logout" type="button" class="w-full rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-bold text-red-800 transition hover:bg-red-100">Cerrar sesión</button>` : ""}
+        ${currentUser?.id === profile.id ? `<div class="flex justify-end border-t border-ink/10 pt-3"><button id="profile-logout" type="button" class="rounded-lg px-2 py-1.5 text-xs font-semibold text-red-700 transition hover:bg-red-50 hover:text-red-900">Cerrar sesión</button></div>` : ""}
       </form>
     </section>`;
   document.body.append(overlay);
@@ -1819,7 +1807,7 @@ async function login(alias, password) {
     else {
       await loadUsers();
       await renderHome();
-      await syncExistingPushSubscription();
+      void syncExistingPushSubscription();
     }
   } catch (error) {
     showToast(error.message);
@@ -1910,7 +1898,7 @@ async function start() {
     if (currentUser) {
       await loadUsers();
       await renderHome();
-      await syncExistingPushSubscription();
+      void syncExistingPushSubscription();
     } else renderLogin();
   } catch (error) {
     app.innerHTML = `<main class="grid min-h-screen place-items-center p-6"><div class="max-w-sm text-center"><div class="text-4xl">⚽</div><h1 class="display mt-4 text-2xl font-extrabold">No hay conexión con el servidor</h1><p class="mt-2 text-sm text-ink/55">Comprueba la conexión e inténtalo de nuevo.</p><button onclick="location.reload()" class="mt-5 rounded-xl bg-pitch-900 px-5 py-3 text-sm font-bold text-white">Reintentar</button></div></main>`;

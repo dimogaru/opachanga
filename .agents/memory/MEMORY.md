@@ -1,2 +1,3 @@
 - [Reglas de O Pachanga](pachanga-rules.md) — reglas deportivas, perfiles, almacenamiento de fotos y arranque de SQLite sin borrado automático.
 - [Publicación en GitHub](github-push.md) — verifica el SHA remoto; un commit local no significa que el push se haya completado.
+- [Sesión y notificaciones Push](session-push.md) — conserva sesiones en PostgreSQL y reasocia la suscripción local al usuario activo al recuperar la sesión.
