@@ -744,7 +744,7 @@ function shell(content, active = "Inicio") {
             ${installButton()}
             ${currentUser?.role === "admin" ? `<span class="hidden rounded-full border border-lime/30 px-3 py-1.5 text-[10px] font-bold tracking-wide text-lime sm:inline-flex">ADMIN</span>` : ""}
             <div class="hidden items-center gap-2 sm:flex"><span class="grid h-9 w-9 place-items-center rounded-full bg-white/15 text-xs font-bold">${escapeHtml(initials)}</span><span class="max-w-32 truncate text-sm font-medium">${escapeHtml(currentUser?.name || "")}</span></div>
-            <button id="account-settings" class="rounded-lg px-2 py-2 text-sm text-white/70 transition hover:bg-white/10 hover:text-white" aria-label="Configuración de cuenta">Mi cuenta</button>
+            <button id="account-settings" class="${currentUser?.role === "admin" && activeAdminTab === "jugadores" ? "hidden" : ""} rounded-lg px-2 py-2 text-sm text-white/70 transition hover:bg-white/10 hover:text-white" aria-label="Configuración de cuenta">Mi cuenta</button>
           </div>
         </div>
       </header>
@@ -973,6 +973,7 @@ async function renderAdmin() {
   document.querySelectorAll(".admin-tab-button").forEach((button) => {
     button.addEventListener("click", () => {
       activeAdminTab = button.dataset.adminTab;
+      document.querySelector("#account-settings")?.classList.toggle("hidden", activeAdminTab === "jugadores");
       document.querySelectorAll("[data-admin-panel]").forEach((panel) =>
         panel.classList.toggle("hidden", panel.dataset.adminPanel !== activeAdminTab),
       );
