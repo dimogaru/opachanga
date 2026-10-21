@@ -1946,8 +1946,48 @@ async function refreshLiveDraftIfChanged() {
 setInterval(refreshConvocationIfChanged, 15000);
 setInterval(refreshLiveDraftIfChanged, 4000);
 
+async function registerServiceWorkerWithUpdates() {
+  if (!("serviceWorker" in navigator)) return;
+
+  let reloadWhenControlled = Boolean(navigator.serviceWorker.controller);
+  let isReloading = false;
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (!reloadWhenControlled) {
+      reloadWhenControlled = true;
+      return;
+    }
+    if (isReloading) return;
+    isReloading = true;
+    window.location.reload();
+  });
+
+  try {
+    const registration = await navigator.serviceWorker.register("/sw.js");
+    const activateWaitingWorker = (worker) => worker?.postMessage({ type: "SKIP_WAITING" });
+
+    if (registration.waiting) {
+      reloadWhenControlled = true;
+      activateWaitingWorker(registration.waiting);
+    }
+
+    registration.addEventListener("updatefound", () => {
+      const installing = registration.installing;
+      installing?.addEventListener("statechange", () => {
+        if (installing.state === "installed" && navigator.serviceWorker.controller && registration.waiting) {
+          reloadWhenControlled = true;
+          activateWaitingWorker(registration.waiting);
+        }
+      });
+    });
+
+    await registration.update();
+  } catch (error) {
+    console.warn("No se pudo registrar o actualizar el service worker:", error);
+  }
+}
+
 async function start() {
-  if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch((error) => console.warn("No se pudo registrar el service worker:", error));
+  void registerServiceWorkerWithUpdates();
   try {
     const session = await api("/api/session");
     currentUser = session.user;

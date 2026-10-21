@@ -33,4 +33,12 @@ description: Reglas de negocio semanales para convocatorias, equipos, cobros y c
 
 **Why:** La app está pensada para un grupo pequeño en un servidor propio. Guardar imágenes pequeñas en la misma base evita añadir un directorio de medios y dependencias de almacenamiento que también habría que respaldar.
 
-**How to apply:** Mantener la compresión y validación estricta de tipo y tamaño; limitar las escrituras del jugador al campo `photo_url` tanto en la UI como en el backend. Proteger las modificaciones de alias y datos técnicos con rol Admin; si el tamaño de la plantilla crece de forma sustancial, migrar las fotos a un almacenamiento persistente y mantener solo la URL/ruta en SQLite.
+**How to apply:** Mantener la compresión y validación estricta de tipo y tamaño; limitar las escrituras del jugador al campo `photo_url` tanto en la UI como en el backend. Proteger las modificaciones de alias y datos técnicos con rol Admin; si el tamaño de la plantilla crece de forma sustancial, migrar las fotos a un almacenamiento persistente y mantener solo la URL/ruta en PostgreSQL.
+
+## Caché de la PWA
+
+**Regla:** Los recursos y páginas del mismo origen se consultan primero en la red y usan caché solo como respaldo offline. Las rutas `/api/` quedan fuera de caché para no conservar respuestas autenticadas del usuario.
+
+**Why:** El usuario quiere que los despliegues actualicen la PWA automáticamente; mantener datos de cuenta o convocatoria en caché podría exponer información obsoleta en un dispositivo compartido.
+
+**How to apply:** Versionar la caché al cambiar el shell, borrar cachés antiguas en `activate`, activar el nuevo Service Worker con `skipWaiting`/`clients.claim` y recargar al cambiar el controlador. Conservar Network First para contenido estático y navegación; no cachear respuestas privadas de API.
