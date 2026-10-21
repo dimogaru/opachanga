@@ -92,26 +92,43 @@ async function syncPushButton() {
   const button = document.querySelector("#push-toggle");
   if (!button) return;
   const banner = button.closest("[data-push-banner]");
+  const hideBanner = () => {
+    if (!banner) return;
+    banner.hidden = true;
+    banner.style.display = "none";
+  };
+  const showBanner = () => {
+    if (!banner) return;
+    banner.hidden = false;
+    banner.style.removeProperty("display");
+  };
   if ("Notification" in window && Notification.permission === "granted") {
-    banner?.classList.add("hidden");
+    hideBanner();
     return;
   }
-  if (!pushConfig.enabled || !("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) {
+  if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
+    showBanner();
     button.disabled = true;
-    button.textContent = "Avisos no configurados";
-    button.title = "El servidor debe configurar Web Push y el navegador debe admitirlo.";
-    button.classList.add("cursor-not-allowed", "opacity-60");
+    button.textContent = "Avisos no disponibles";
+    button.title = "Este navegador no admite notificaciones push.";
     return;
   }
   try {
     const registration = await navigator.serviceWorker.ready;
     const subscription = await registration.pushManager.getSubscription();
     if (subscription) {
-      banner?.classList.add("hidden");
+      hideBanner();
       button.dataset.active = "true";
       return;
     }
-    banner?.classList.remove("hidden");
+    showBanner();
+    if (!pushConfig.enabled || !("Notification" in window)) {
+      button.disabled = true;
+      button.textContent = "Avisos no configurados";
+      button.title = "El servidor debe configurar Web Push y el navegador debe admitirlo.";
+      button.classList.add("cursor-not-allowed", "opacity-60");
+      return;
+    }
     button.disabled = false;
     button.textContent = "Activar notificaciones push";
     button.dataset.active = "false";
@@ -212,7 +229,7 @@ function formatConvocationDate(match) {
 }
 
 function renderPushBanner() {
-  return `<section data-push-banner class="mb-6 flex flex-col gap-4 rounded-2xl border border-pitch-900/10 bg-white p-4 shadow-sm sm:flex-row sm:items-center sm:justify-between sm:p-5">
+  return `<section id="pushNotificationCard" data-push-banner class="mb-6 flex flex-col gap-4 rounded-2xl border border-pitch-900/10 bg-white p-4 shadow-sm sm:flex-row sm:items-center sm:justify-between sm:p-5">
     <div class="flex items-start gap-3">
       <span class="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-pitch-100 text-pitch-800" aria-hidden="true">🔔</span>
       <div><h2 class="font-bold">Activa las notificaciones push</h2><p class="mt-1 text-sm leading-5 text-ink/55">Recibe avisos de convocatoria y novedades directamente en este dispositivo.</p></div>
