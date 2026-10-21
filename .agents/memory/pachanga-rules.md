@@ -21,11 +21,11 @@ description: Reglas de negocio semanales para convocatorias, equipos, cobros y c
 
 **How to apply:** mantener los reinicios de pruebas fuera del arranque de producción y de Replit; limitar la inicialización a crear el esquema, añadir columnas necesarias y crear el Admin solo si falta.
 
-**Alta de suplentes:** cualquier jugador activo puede añadir a la convocatoria abierta una cuenta de suplente sin respuesta o crear una cuenta activa nueva de rol suplente; se conserva quién lo invitó y su alias se muestra junto al suplente en las listas activas e históricas. Solo Admin puede promover de suplente a principal. Las cuentas nuevas usan la contraseña inicial compartida y deben cambiarla en su primer acceso.
+**Alta y retirada de suplentes:** cualquier jugador activo puede añadir a la convocatoria abierta una cuenta de suplente sin respuesta o crear una cuenta activa nueva de rol suplente; se conserva quién lo invitó y su alias se muestra junto al suplente en las listas activas e históricas. En una convocatoria abierta, quien añadió al suplente puede retirarlo; Admin puede retirar cualquier suplente. Solo Admin puede promover de suplente a principal. Las cuentas nuevas usan la contraseña inicial compartida y deben cambiarla en su primer acceso.
 
-**Why:** el usuario definió este permiso para convocatorias; exigir el cambio de la contraseña compartida reduce el riesgo de que la credencial inicial siga en uso.
+**Why:** el usuario definió los permisos de alta, retirada y promoción para convocatorias; exigir el cambio de la contraseña compartida reduce el riesgo de que la credencial inicial siga en uso.
 
-**How to apply:** validar en backend el estado abierto, la disponibilidad y unicidad del alias; crear/inscribir la cuenta en una transacción, asignar ranking al final, guardar el ID del invitador en la respuesta sin sobrescribirlo al cambiar de lista, y mantener la ruta de promoción detrás de `requireAdmin`.
+**How to apply:** validar en backend el estado abierto, la disponibilidad y unicidad del alias; crear/inscribir la cuenta en una transacción, asignar ranking al final y guardar el ID del invitador. Para retirar, autorizar por ID de usuario invitador o rol Admin, mostrar el control solo a quien pueda usarlo y mantener la promoción detrás de `requireAdmin`.
 
 ## Fotos de perfil
 

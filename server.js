@@ -2139,6 +2139,75 @@ app.post("/api/convocations/current/add-new-suplente", requirePlayer, async (req
   }
 });
 
+app.delete("/api/convocations/current/suplentes/:userId", requireUser, async (req, res) => {
+  const userId = Number(req.params.userId);
+  if (!Number.isInteger(userId) || userId < 1) {
+    return res.status(400).json({ error: "Selecciona un suplente válido." });
+  }
+  const match = await getCurrentMatch();
+  if (!match || match.status !== "open") {
+    return res.status(409).json({ error: "No hay una convocatoria abierta." });
+  }
+
+  try {
+    await db.transaction(async () => {
+      const latestMatch = await db.prepare("SELECT id, status FROM matches WHERE id = ?").get(match.id);
+      if (!latestMatch || latestMatch.status !== "open") {
+        const error = new Error("La convocatoria ya no está abierta.");
+        error.status = 409;
+        throw error;
+      }
+
+      const actor = await db.prepare(`
+        SELECT id, role FROM users
+        WHERE id = ? AND account_status = 'active' AND deleted_at IS NULL
+      `).get(req.session.user.id);
+      if (!actor) {
+        const error = new Error("La cuenta ya no está activa.");
+        error.status = 401;
+        throw error;
+      }
+
+      const invitation = await db.prepare(`
+        SELECT invited_by_user_id FROM convocations
+        WHERE match_id = ? AND user_id = ? AND status = 'suplente'
+        FOR UPDATE
+      `).get(match.id, userId);
+      if (!invitation) {
+        const error = new Error("Ese jugador ya no está en la lista de suplentes.");
+        error.status = 409;
+        throw error;
+      }
+
+      const isAdmin = actor.role === "admin";
+      const isInviter = Number(invitation.invited_by_user_id) === Number(actor.id);
+      if (!isAdmin && !isInviter) {
+        const error = new Error("Solo quien añadió a este suplente o un administrador puede quitarlo.");
+        error.status = 403;
+        throw error;
+      }
+
+      const deleted = await db.prepare(`
+        DELETE FROM convocations
+        WHERE match_id = ? AND user_id = ? AND status = 'suplente'
+          AND (? = TRUE OR invited_by_user_id = ?)
+        RETURNING user_id
+      `).get(match.id, userId, isAdmin, actor.id);
+      if (!deleted) {
+        const error = new Error("No se pudo quitar al suplente de la convocatoria.");
+        error.status = 409;
+        throw error;
+      }
+    })();
+
+    res.json(await getConvocationData(match, req.session.user.id));
+  } catch (error) {
+    if (error.status) return res.status(error.status).json({ error: error.message });
+    console.error("No se pudo quitar al suplente:", error.message);
+    res.status(500).json({ error: "No se pudo quitar al suplente de la convocatoria." });
+  }
+});
+
 app.post("/api/admin/convocations/:userId/promote", requireAdmin, async (req, res) => {
   const match = await getCurrentMatch();
   if (!match) return res.status(409).json({ error: "No hay una convocatoria abierta." });

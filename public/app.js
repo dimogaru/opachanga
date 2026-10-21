@@ -336,17 +336,22 @@ function renderConvocationHistorySummary(match) {
   </section>`;
 }
 
-function listPanel(title, usersInList, colorClass, icon, isAdmin = false, showBaseRole = true) {
+function listPanel(title, usersInList, colorClass, icon, isAdmin = false, showBaseRole = true, canRemoveSubstitutes = false) {
   const list = usersInList || [];
   const playerCount = list.length;
   const rows = list.length
-    ? list.map((user) => `<li class="flex items-center gap-3 px-4 py-3 ${isAdmin && title === "Lista de suplentes" ? "pr-2" : ""}">
+    ? list.map((user) => {
+      const canRemove = title === "Lista de suplentes" && canRemoveSubstitutes &&
+        (currentUser?.role === "admin" || Number(user.invited_by_user_id) === Number(currentUser?.id));
+      return `<li class="flex items-center gap-3 px-4 py-3 ${isAdmin && title === "Lista de suplentes" ? "pr-2" : ""}">
         <span class="grid h-8 w-8 shrink-0 place-items-center rounded-xl ${colorClass} text-[11px] font-bold">${escapeHtml(String(user.alias || "").slice(0, 2).toUpperCase())}</span>
         <span class="flex min-w-0 flex-1 items-center gap-1.5"><span class="min-w-0 flex-1 truncate text-sm font-semibold">${escapeHtml(user.alias)}${title === "Lista de suplentes" && user.invited_by_alias ? `<span class="ml-1 font-normal text-ink/50">(${escapeHtml(user.invited_by_alias)})</span>` : ""}</span>${profileButton(user.id, user.alias)}</span>
         ${showBaseRole ? `<span class="hidden text-[11px] text-ink/40 sm:inline">${`${user.base_role === "principal" ? "Principal" : "Suplente"}${user.base_role === "suplente" && user.response === "principal" ? " · promovido" : ""}`}</span>` : ""}
         ${isAdmin && title === "Lista de suplentes" ? `<button class="promote-player shrink-0 rounded-lg border border-pitch-700/20 px-2.5 py-1.5 text-[11px] font-bold text-pitch-800 transition hover:bg-pitch-100" data-user-id="${user.id}" aria-label="Promover a ${escapeHtml(user.alias)} a principal">↑ Principal</button>` : ""}
         ${isAdmin && title === "Lista principal" ? `<button class="notify-promoted shrink-0 rounded-lg border border-ink/10 px-2.5 py-1.5 text-[11px] font-bold text-ink/65 transition hover:bg-paper" data-user-id="${user.id}" aria-label="Enviar aviso a ${escapeHtml(user.alias)}">Avisar</button>` : ""}
-      </li>`).join("")
+        ${canRemove ? `<button type="button" class="remove-substitute grid h-9 w-9 shrink-0 place-items-center rounded-lg text-red-700 transition hover:bg-red-50 disabled:opacity-50" data-user-id="${user.id}" data-alias="${escapeHtml(user.alias)}" aria-label="Quitar a ${escapeHtml(user.alias)} de la convocatoria" title="Quitar suplente">×</button>` : ""}
+      </li>`;
+    }).join("")
     : `<li class="px-4 py-7 text-center text-sm text-ink/40">La lista está vacía.</li>`;
   return `<section class="overflow-hidden rounded-2xl border border-ink/[.07] bg-white shadow-sm">
     <header class="flex items-center justify-between gap-3 border-b border-ink/[.07] px-4 py-3.5">
@@ -468,7 +473,7 @@ function renderConvocationBoard(data, isAdmin = false, history = []) {
      <div class="mb-3"><h2 class="display text-xl font-extrabold tracking-tight">${isAdmin ? "Listas del grupo" : "Respuestas del grupo"}</h2><p class="mt-1 text-xs text-ink/50">La lista se actualiza para todo el equipo.</p></div>
     <div class="grid gap-4 lg:grid-cols-3">
       ${listPanel("Lista principal", data.lists.principal, "bg-pitch-100 text-pitch-800", "✓", isAdmin && !readOnly, !readOnly)}
-      ${listPanel("Lista de suplentes", data.lists.suplentes, "bg-amber-50 text-amber-700", "↗", isAdmin && !readOnly, !readOnly)}
+      ${listPanel("Lista de suplentes", data.lists.suplentes, "bg-amber-50 text-amber-700", "↗", isAdmin && !readOnly, !readOnly, !readOnly && open)}
       ${listPanel("Lista NO VAN", data.lists.no_va, "bg-stone-100 text-stone-500", "—", isAdmin && !readOnly, !readOnly)}
     </div>
     <details class="mt-4 rounded-2xl border border-ink/[.07] bg-white px-4 py-3">
@@ -1276,6 +1281,28 @@ async function renderAdmin() {
 
 function bindConvocationActions(isAdmin = false) {
   document.querySelector("#add-substitute")?.addEventListener("click", openSubstituteModal);
+  document.querySelectorAll(".remove-substitute").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const alias = button.dataset.alias || "este suplente";
+      if (!confirm(`¿Quitar a @${alias} de la convocatoria?`)) return;
+      button.disabled = true;
+      try {
+        convocationData = await api(`/api/convocations/current/suplentes/${button.dataset.userId}`, {
+          method: "DELETE",
+        });
+        showToast(`@${alias} eliminado de la lista de suplentes.`);
+        if (isAdmin) {
+          activeAdminTab = "convocatoria";
+          await renderAdmin();
+        } else {
+          await renderHome();
+        }
+      } catch (error) {
+        showToast(error.message);
+        button.disabled = false;
+      }
+    });
+  });
   for (const [id, response] of [["response-yes", "yes"], ["response-no", "no"]]) {
     document.querySelector(`#${id}`)?.addEventListener("click", async () => {
       try {
