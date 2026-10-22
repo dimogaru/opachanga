@@ -1012,7 +1012,7 @@ async function sendManualOpeningNotification() {
   return { delivered, failed, status: failed ? "failed" : "sent" };
 }
 
-async function sendUserNotification(userId, payload) {
+async function sendUserNotification(userId, payload, { cleanupExpired = true } = {}) {
   if (!pushConfigured) return { skipped: true };
   const subscriptions = await db.prepare(`
     SELECT endpoint, p256dh, auth FROM push_subscriptions WHERE user_id = ?
@@ -1029,10 +1029,43 @@ async function sendUserNotification(userId, payload) {
     if (result.status === "fulfilled") delivered += 1;
     else if ([404, 410].includes(result.reason?.statusCode)) expired.push(subscriptions[index].endpoint);
   });
-  for (const endpoint of expired) {
-    await db.prepare("DELETE FROM push_subscriptions WHERE endpoint = ?").run(endpoint);
+  if (cleanupExpired) {
+    for (const endpoint of expired) {
+      await db.prepare("DELETE FROM push_subscriptions WHERE endpoint = ?").run(endpoint);
+    }
   }
   return { delivered, failed: results.length - delivered };
+}
+
+async function sendPromotionNotification(userId, recipientLabel, payload) {
+  if (!pushConfigured) {
+    console.warn(`[Web Push promoción] No se pudo avisar a ${recipientLabel}: VAPID no está configurado.`);
+    return { delivered: 0, failed: 0, skipped: true };
+  }
+  try {
+    const subscriptions = await db.prepare(`
+      SELECT COUNT(*)::integer AS count FROM push_subscriptions WHERE user_id = ?
+    `).get(userId);
+    if (!subscriptions?.count) {
+      console.info(`[Web Push promoción] ${recipientLabel} no tiene dispositivos suscritos.`);
+      return { delivered: 0, failed: 0, skipped: true, reason: "no_subscription" };
+    }
+
+    const result = await sendUserNotification(userId, payload, { cleanupExpired: false });
+    if (result.delivered > 0) {
+      console.info(`[Web Push promoción] Aviso enviado a ${recipientLabel}: ${result.delivered} dispositivo(s).`);
+    }
+    if (result.failed > 0) {
+      console.warn(`[Web Push promoción] Fallaron ${result.failed} envío(s) a ${recipientLabel}.`);
+    }
+    if (result.delivered === 0 && result.failed === 0) {
+      console.info(`[Web Push promoción] No hay una suscripción activa para ${recipientLabel}.`);
+    }
+    return result;
+  } catch (error) {
+    console.error(`[Web Push promoción] Error al avisar a ${recipientLabel}; la promoción se mantiene:`, error.message);
+    return { delivered: 0, failed: 1 };
+  }
 }
 
 async function sendCancellationNotifications(match) {
@@ -2343,18 +2376,54 @@ app.post("/api/admin/convocations/:userId/promote", requireAdmin, async (req, re
     return res.status(409).json({ error: "La convocatoria está cerrada; ya no se pueden mover jugadores." });
   }
   const userId = Number(req.params.userId);
-  const response = await db.prepare(`
-    SELECT c.status FROM convocations c
-    JOIN users u ON u.id = c.user_id
-    WHERE c.match_id = ? AND c.user_id = ? AND c.status = 'suplente'
-      AND u.role != 'admin' AND u.account_status = 'active' AND u.deleted_at IS NULL
-  `)
-    .get(match.id, userId);
-  if (!response) {
+  const promotion = await db.transaction(async () => {
+    const response = await db.prepare(`
+      SELECT c.invited_by_user_id, u.alias AS promoted_alias,
+        inviter.alias AS inviter_alias, inviter.role AS inviter_role,
+        inviter.account_status AS inviter_account_status, inviter.deleted_at AS inviter_deleted_at
+      FROM convocations c
+      JOIN users u ON u.id = c.user_id
+      LEFT JOIN users inviter ON inviter.id = c.invited_by_user_id
+      WHERE c.match_id = ? AND c.user_id = ? AND c.status = 'suplente'
+        AND u.role != 'admin' AND u.account_status = 'active' AND u.deleted_at IS NULL
+      FOR UPDATE OF c
+    `).get(match.id, userId);
+    if (!response) return null;
+    const updated = await db.prepare(`
+      UPDATE convocations SET status = 'principal', updated_at = CURRENT_TIMESTAMP
+      WHERE match_id = ? AND user_id = ? AND status = 'suplente'
+      RETURNING user_id
+    `).get(match.id, userId);
+    return updated ? response : null;
+  })();
+  if (!promotion) {
     return res.status(409).json({ error: "Solo se puede promover a alguien de la lista de suplentes." });
   }
-  await db.prepare("UPDATE convocations SET status = 'principal', updated_at = CURRENT_TIMESTAMP WHERE match_id = ? AND user_id = ?")
-    .run(match.id, userId);
+
+  const notifications = [
+    sendPromotionNotification(userId, `suplente @${promotion.promoted_alias}`, {
+      title: "¡Pasas a la Lista Principal!",
+      body: "Has sido promocionado para jugar el próximo partido. ¡Revisa la convocatoria en la app!",
+      url: "/",
+      tag: `promotion-${match.id}-${userId}`,
+    }),
+  ];
+  const inviterId = Number(promotion.invited_by_user_id);
+  const inviterIsDifferentUser = Number.isSafeInteger(inviterId) && inviterId > 0 && inviterId !== userId;
+  const inviterIsNonAdmin = promotion.inviter_role && promotion.inviter_role !== "admin";
+  const inviterIsActive = promotion.inviter_account_status === "active" && !promotion.inviter_deleted_at;
+  if (inviterIsDifferentUser && inviterIsNonAdmin && inviterIsActive) {
+    notifications.push(sendPromotionNotification(inviterId, `invitador @${promotion.inviter_alias}`, {
+      title: "Tu suplente entra en el partido",
+      body: `Tu suplente ${promotion.promoted_alias} ha pasado a la Lista Principal para el próximo partido.`,
+      url: "/",
+      tag: `promotion-invited-${match.id}-${inviterId}-${userId}`,
+    }));
+  } else if (promotion.invited_by_user_id) {
+    console.info(`[Web Push promoción] Solo se avisará a @${promotion.promoted_alias}: el registro no tiene un invitador jugador activo.`);
+  }
+  await Promise.all(notifications);
+
   res.json(await getConvocationData(match, req.session.user.id));
 });
 
