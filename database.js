@@ -151,6 +151,78 @@ const db = {
           WHERE matches.id = substring(transactions.concept FROM '^Partido #([0-9]+): cuota automática$')::bigint
         )
     `);
+
+    // Backfill existing automatic match remnants into the append-only bote ledger.
+    // This only inserts into the new table; it never rewrites match, player or balance history.
+    const ledgerMigration = await pool.connect();
+    try {
+      await ledgerMigration.query("BEGIN");
+      const ledgerCount = Number((await ledgerMigration.query(
+        "SELECT COUNT(*)::integer AS count FROM bote_transactions",
+      )).rows[0].count);
+      if (ledgerCount === 0) {
+        const storedPotResult = await ledgerMigration.query(
+          "SELECT value FROM app_settings WHERE key = 'pot_cents'",
+        );
+        const storedPotCents = Math.round(Number(storedPotResult.rows[0]?.value || 0));
+        const oldMatchEntries = (await ledgerMigration.query(`
+          SELECT match_id, pitch_cost, pot_added, created_at
+          FROM match_finances
+          WHERE pot_added <> 0
+          ORDER BY created_at, match_id
+        `)).rows;
+        const historicalPotCents = oldMatchEntries.reduce(
+          (total, entry) => total + Math.round(Number(entry.pot_added) * 100),
+          0,
+        );
+        let runningPotCents = storedPotCents - historicalPotCents;
+        if (!Number.isSafeInteger(runningPotCents) ||
+            !Number.isSafeInteger(storedPotCents) ||
+            !Number.isSafeInteger(historicalPotCents)) {
+          throw new Error("El saldo histórico del bote excede el rango permitido.");
+        }
+
+        if (runningPotCents !== 0) {
+          await ledgerMigration.query(`
+            INSERT INTO bote_transactions
+              (concept, amount, movement_type, balance_after, created_at)
+            VALUES (
+              'Saldo de bote existente antes del historial',
+              $1, 'opening_balance', $1,
+              CASE WHEN $2::timestamp IS NULL
+                THEN CURRENT_TIMESTAMP
+                ELSE $2::timestamp - INTERVAL '1 millisecond'
+              END
+            )
+          `, [runningPotCents / 100, oldMatchEntries[0]?.created_at ?? null]);
+        }
+
+        for (const entry of oldMatchEntries) {
+          const amountCents = Math.round(Number(entry.pot_added) * 100);
+          runningPotCents += amountCents;
+          if (!Number.isSafeInteger(runningPotCents)) {
+            throw new Error("El historial del bote excede el rango permitido.");
+          }
+          await ledgerMigration.query(`
+            INSERT INTO bote_transactions
+              (match_id, concept, amount, movement_type, balance_after, created_at)
+            VALUES ($1, $2, $3, 'match_remainder', $4, $5)
+          `, [
+            entry.match_id,
+            `Remanente de cuota · Partido #${entry.match_id}`,
+            amountCents / 100,
+            runningPotCents / 100,
+            entry.created_at,
+          ]);
+        }
+      }
+      await ledgerMigration.query("COMMIT");
+    } catch (error) {
+      await ledgerMigration.query("ROLLBACK");
+      throw error;
+    } finally {
+      ledgerMigration.release();
+    }
   },
 
   async close() {

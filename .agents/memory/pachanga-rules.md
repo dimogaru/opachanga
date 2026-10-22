@@ -15,6 +15,14 @@ description: Reglas de negocio semanales para convocatorias, equipos, cobros y c
 
 **How to apply:** tratar los valores del formulario como totales deseados, calcular y guardar diferencias acumuladas, identificar jugadores por alias y proteger lectura de auditoría/escritura según rol Admin; las nuevas puntuaciones de partidos deben seguir sumándose sobre esos ajustes.
 
+## Bote general
+
+**Regla:** El bote es un fondo global distinto de los saldos individuales. Admin puede registrar ingresos y gastos con concepto; los remanentes de partidos y las correcciones financieras también deben figurar en un historial con importe y saldo resultante.
+
+**Why:** El usuario pidió administrar movimientos del fondo común sin atribuirlos a ningún jugador y conservar el historial financiero real.
+
+**How to apply:** autorizar ajustes solo a Admin, guardar cada movimiento como asiento append-only y actualizar el total global dentro de la misma transacción. En una base existente, preservar el total guardado y añadir solo el nuevo libro de movimientos; no limpiar tablas ni reescribir los movimientos originales.
+
 **Arranque de SQLite:** crear las tablas e índices requeridos con `IF NOT EXISTS`, localizar la base mediante `DB_PATH` y no ejecutar limpiezas automáticas ni restablecer saldos o cuentas al iniciar una base existente. Las migraciones pueden completar columnas nuevas vacías, pero deben preservar las filas y valores existentes.
 
 **Why:** el usuario pidió un arranque idempotente que nunca borre ni sobrescriba los datos del archivo SQLite existente.

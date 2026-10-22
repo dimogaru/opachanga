@@ -100,6 +100,19 @@ CREATE TABLE IF NOT EXISTS match_finances (
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS bote_transactions (
+  id BIGSERIAL PRIMARY KEY,
+  match_id BIGINT REFERENCES matches(id) ON DELETE SET NULL,
+  concept TEXT NOT NULL,
+  amount NUMERIC(12, 2) NOT NULL,
+  movement_type TEXT NOT NULL CHECK (
+    movement_type IN ('match_remainder', 'match_adjustment', 'manual_income', 'manual_expense', 'opening_balance')
+  ),
+  balance_after NUMERIC(12, 2) NOT NULL,
+  created_by BIGINT REFERENCES users(id) ON DELETE SET NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS match_points (
   match_id BIGINT NOT NULL REFERENCES matches(id) ON DELETE CASCADE,
   user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -155,6 +168,11 @@ CREATE INDEX IF NOT EXISTS idx_transactions_match
   ON transactions(match_id, date DESC);
 CREATE INDEX IF NOT EXISTS idx_transactions_adjustment
   ON transactions(adjustment_of, id);
+CREATE INDEX IF NOT EXISTS idx_bote_transactions_created
+  ON bote_transactions(created_at DESC, id DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_bote_match_remainder
+  ON bote_transactions(match_id)
+  WHERE movement_type = 'match_remainder' AND match_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_substitute_requests_pending_user
   ON substitute_approval_requests(user_id) WHERE status = 'pending' AND user_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_users_alias_unique

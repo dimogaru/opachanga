@@ -802,6 +802,21 @@ async function currentPot() {
   return Number(setting?.value || 0) / 100;
 }
 
+async function lockCurrentPotCents() {
+  await db.prepare(`
+    INSERT INTO app_settings (key, value) VALUES ('pot_cents', '0')
+    ON CONFLICT(key) DO NOTHING
+  `).run();
+  const setting = await db.prepare(`
+    SELECT value FROM app_settings WHERE key = 'pot_cents' FOR UPDATE
+  `).get();
+  const cents = Math.round(Number(setting?.value || 0));
+  if (!Number.isSafeInteger(cents)) {
+    throw new Error("El saldo actual del bote no es válido.");
+  }
+  return cents;
+}
+
 async function sendNegativeBalanceAlert(match) {
   if (!pushConfigured) return { skipped: true, reason: "push_not_configured" };
   const claim = await db.transaction(async () => {
@@ -1856,6 +1871,10 @@ app.get("/api/standings", requireUser, async (_req, res) => {
   res.json({ standings: await getStandingsRows(), pot: await currentPot() });
 });
 
+app.get("/api/pot", requireUser, async (_req, res) => {
+  res.json({ pot: await currentPot() });
+});
+
 app.post("/api/admin/matches/:id/draft/start", requireAdmin, async (req, res) => {
   const matchId = Number(req.params.id);
   const match = await db.prepare("SELECT * FROM matches WHERE id = ?").get(matchId);
@@ -2046,11 +2065,15 @@ app.post("/api/admin/matches/:id/result", requireAdmin, async (req, res) => {
           await insertTransaction.run(userId, -(charge.feeCents / 100), `Partido #${matchId}: cuota automática`, matchId);
         }
       }
-      const currentPotCents = moneyCents(await currentPot());
+      const currentPotCents = await lockCurrentPotCents();
+      const updatedPotCents = currentPotCents + charge.potAddedCents;
+      if (!Number.isSafeInteger(updatedPotCents)) {
+        throw new Error("El saldo del bote excede el rango permitido.");
+      }
       await db.prepare(`
         INSERT INTO app_settings (key, value) VALUES ('pot_cents', ?)
         ON CONFLICT(key) DO UPDATE SET value = excluded.value
-      `).run(String(currentPotCents + charge.potAddedCents));
+      `).run(String(updatedPotCents));
       await db.prepare(`
         INSERT INTO match_finances (match_id, pitch_cost, fee_per_player, participants, total_collected, pot_added)
         VALUES (?, ?, ?, ?, ?, ?)
@@ -2062,6 +2085,19 @@ app.post("/api/admin/matches/:id/result", requireAdmin, async (req, res) => {
         charge.collectedCents / 100,
         charge.potAddedCents / 100,
       );
+      if (charge.potAddedCents !== 0) {
+        await db.prepare(`
+          INSERT INTO bote_transactions
+            (match_id, concept, amount, movement_type, balance_after, created_by)
+          VALUES (?, ?, ?, 'match_remainder', ?, ?)
+        `).run(
+          matchId,
+          `Remanente de cuota · Partido #${matchId}`,
+          charge.potAddedCents / 100,
+          updatedPotCents / 100,
+          req.session.user.id,
+        );
+      }
     }
     await recalculateMatchPoints(matchId, result, teamA, teamB);
   });
@@ -2443,7 +2479,66 @@ app.get("/api/admin/finance/overview", requireAdmin, async (_req, res) => {
     WHERE u.role != 'admin'
     ORDER BY t.date DESC, t.id DESC LIMIT 100
   `).all();
-  res.json({ players, transactions, pot: await currentPot() });
+  const potTransactions = await db.prepare(`
+    SELECT bt.id, bt.match_id, bt.concept, bt.amount, bt.movement_type,
+      bt.balance_after, bt.created_at, creator.alias AS created_by_alias
+    FROM bote_transactions bt
+    LEFT JOIN users creator ON creator.id = bt.created_by
+    ORDER BY bt.created_at DESC, bt.id DESC
+  `).all();
+  res.json({ players, transactions, pot: await currentPot(), potTransactions });
+});
+
+app.post("/api/admin/finance/pot-transactions", requireAdmin, async (req, res) => {
+  const concept = String(req.body?.concept || "").trim();
+  const amount = Number(req.body?.amount);
+  const operation = req.body?.operation;
+  if (!concept || concept.length > 160) {
+    return res.status(400).json({ error: "Indica un concepto de hasta 160 caracteres." });
+  }
+  if (!["income", "expense"].includes(operation)) {
+    return res.status(400).json({ error: "Elige ingreso o gasto para el movimiento." });
+  }
+  const amountCents = moneyCents(amount);
+  if (!Number.isFinite(amount) || amount <= 0 || !Number.isSafeInteger(amountCents) || amountCents <= 0) {
+    return res.status(400).json({ error: "El importe debe ser un número positivo válido." });
+  }
+
+  try {
+    const result = await db.transaction(async () => {
+      const currentCents = await lockCurrentPotCents();
+      const signedCents = operation === "income" ? amountCents : -amountCents;
+      const updatedCents = currentCents + signedCents;
+      if (!Number.isSafeInteger(updatedCents)) {
+        const error = new Error("El ajuste excede el rango permitido del bote.");
+        error.status = 400;
+        throw error;
+      }
+      const type = operation === "income" ? "manual_income" : "manual_expense";
+      const movementAmount = signedCents / 100;
+      const balanceAfter = updatedCents / 100;
+      await db.prepare(`
+        INSERT INTO app_settings (key, value) VALUES ('pot_cents', ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+      `).run(String(updatedCents));
+      const inserted = await db.prepare(`
+        INSERT INTO bote_transactions
+          (concept, amount, movement_type, balance_after, created_by)
+        VALUES (?, ?, ?, ?, ?)
+        RETURNING id
+      `).run(concept, movementAmount, type, balanceAfter, req.session.user.id);
+      const movement = await db.prepare(`
+        SELECT id, concept, amount, movement_type, balance_after, created_at
+        FROM bote_transactions WHERE id = ?
+      `).get(inserted.lastInsertRowid);
+      return { movement, pot: balanceAfter };
+    })();
+    res.status(201).json(result);
+  } catch (error) {
+    if (error.status) return res.status(error.status).json({ error: error.message });
+    console.error("No se pudo registrar el ajuste del bote:", error.message);
+    res.status(500).json({ error: "No se pudo registrar el movimiento del bote." });
+  }
 });
 
 app.post("/api/admin/finance/transactions/:id/adjust", requireAdmin, async (req, res) => {
@@ -2497,7 +2592,7 @@ app.post("/api/admin/finance/transactions/:id/adjust", requireAdmin, async (req,
     const finance = await db.prepare("SELECT * FROM match_finances WHERE match_id = ?").get(charge.match_id);
     const updatedCollectedCents = moneyCents(finance.total_collected) + collectedDeltaCents;
     const updatedPotAddedCents = moneyCents(finance.pot_added) + collectedDeltaCents;
-    const updatedPotCents = moneyCents(await currentPot()) + collectedDeltaCents;
+    const updatedPotCents = await lockCurrentPotCents() + collectedDeltaCents;
     if (![updatedCollectedCents, updatedPotAddedCents, updatedPotCents].every(Number.isSafeInteger) ||
         updatedCollectedCents < 0) {
       return { error: "El ajuste excede el rango financiero permitido; no se ha modificado nada.", status: 400 };
@@ -2522,6 +2617,19 @@ app.post("/api/admin/finance/transactions/:id/adjust", requireAdmin, async (req,
     await db.prepare(`
       UPDATE match_finances SET total_collected = ?, pot_added = ? WHERE match_id = ?
     `).run(updatedCollectedCents / 100, updatedPotAddedCents / 100, charge.match_id);
+    if (collectedDeltaCents !== 0) {
+      await db.prepare(`
+        INSERT INTO bote_transactions
+          (match_id, concept, amount, movement_type, balance_after, created_by)
+        VALUES (?, ?, ?, 'match_adjustment', ?, ?)
+      `).run(
+        charge.match_id,
+        `Corrección del remanente del partido #${charge.match_id}: ${reason}`,
+        collectedDeltaCents / 100,
+        updatedPotCents / 100,
+        req.session.user.id,
+      );
+    }
     await db.prepare(`
       INSERT INTO app_settings (key, value) VALUES ('pot_cents', ?)
       ON CONFLICT(key) DO UPDATE SET value = excluded.value

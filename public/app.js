@@ -621,7 +621,7 @@ function renderMatchFinanceControl(matchesData) {
 
 function renderStandingsBoard(data) {
   const rows = data.standings || [];
-  return `<section class="mb-7 overflow-hidden rounded-3xl border border-ink/[.07] bg-white shadow-sm"><div class="flex flex-col gap-3 border-b border-ink/[.07] p-5 sm:flex-row sm:items-center sm:justify-between sm:px-6"><div><p class="text-xs font-bold uppercase tracking-[.12em] text-pitch-700">Temporada</p><h2 class="display mt-1 text-2xl font-extrabold">Clasificación</h2><p class="mt-1 text-xs text-ink/50">Puntos globales por asistencia y resultado.</p></div><div class="rounded-2xl bg-lime/35 px-4 py-3"><p class="text-[10px] font-bold uppercase tracking-[.12em] text-pitch-900/60">Bote acumulado</p><p class="display text-xl font-extrabold text-pitch-900">${formatMoney(data.pot)}</p></div></div><div class="overflow-x-auto"><table class="w-full min-w-[600px] text-left"><thead class="bg-paper/70 text-[10px] font-bold uppercase tracking-[.12em] text-ink/45"><tr><th class="px-5 py-3">#</th><th class="px-4 py-3">Jugador</th><th class="px-4 py-3">Puntos</th><th class="px-4 py-3">PJ</th><th class="px-4 py-3">V-E-D</th></tr></thead><tbody class="divide-y divide-ink/[.06]">${rows.length ? rows.map((player, index) => `<tr><td class="px-5 py-3 text-sm font-bold text-pitch-700">${index + 1}</td><td class="px-4 py-2"><div class="flex items-center gap-1"><span class="text-sm font-semibold">${escapeHtml(player.alias)}</span>${profileButton(player.id, player.alias)}</div></td><td class="px-4 py-3"><span class="rounded-full bg-pitch-100 px-2.5 py-1 text-xs font-extrabold text-pitch-900">${player.points}</span></td><td class="px-4 py-3 text-sm text-ink/55">${player.matches_played}</td><td class="px-4 py-3 text-sm text-ink/55">${player.wins}-${player.draws}-${player.losses}</td></tr>`).join("") : `<tr><td colspan="5" class="px-5 py-8 text-center text-sm text-ink/45">La clasificación empieza con el primer resultado.</td></tr>`}</tbody></table></div></section>`;
+  return `<section class="mb-7 overflow-hidden rounded-3xl border border-ink/[.07] bg-white shadow-sm"><div class="flex flex-col gap-3 border-b border-ink/[.07] p-5 sm:flex-row sm:items-center sm:justify-between sm:px-6"><div><p class="text-xs font-bold uppercase tracking-[.12em] text-pitch-700">Temporada</p><h2 class="display mt-1 text-2xl font-extrabold">Clasificación</h2><p class="mt-1 text-xs text-ink/50">Puntos globales por asistencia y resultado.</p></div><div class="rounded-2xl bg-lime/35 px-4 py-3"><p class="text-[10px] font-bold uppercase tracking-[.12em] text-pitch-900/60">Bote acumulado</p><p data-pot-balance class="display text-xl font-extrabold text-pitch-900">${formatMoney(data.pot)}</p></div></div><div class="overflow-x-auto"><table class="w-full min-w-[600px] text-left"><thead class="bg-paper/70 text-[10px] font-bold uppercase tracking-[.12em] text-ink/45"><tr><th class="px-5 py-3">#</th><th class="px-4 py-3">Jugador</th><th class="px-4 py-3">Puntos</th><th class="px-4 py-3">PJ</th><th class="px-4 py-3">V-E-D</th></tr></thead><tbody class="divide-y divide-ink/[.06]">${rows.length ? rows.map((player, index) => `<tr><td class="px-5 py-3 text-sm font-bold text-pitch-700">${index + 1}</td><td class="px-4 py-2"><div class="flex items-center gap-1"><span class="text-sm font-semibold">${escapeHtml(player.alias)}</span>${profileButton(player.id, player.alias)}</div></td><td class="px-4 py-3"><span class="rounded-full bg-pitch-100 px-2.5 py-1 text-xs font-extrabold text-pitch-900">${player.points}</span></td><td class="px-4 py-3 text-sm text-ink/55">${player.matches_played}</td><td class="px-4 py-3 text-sm text-ink/55">${player.wins}-${player.draws}-${player.losses}</td></tr>`).join("") : `<tr><td colspan="5" class="px-5 py-8 text-center text-sm text-ink/45">La clasificación empieza con el primer resultado.</td></tr>`}</tbody></table></div></section>`;
 }
 
 function renderStandingsAdjustmentPanel(data, adjustments = []) {
@@ -692,7 +692,15 @@ function renderPlayerManagementPanel(players, pending) {
 function renderFinancePanel(data, matchesData) {
   const players = data.players || [];
   const transactions = data.transactions || [];
+  const potTransactions = data.potTransactions || [];
   const playerOptions = players.map((player) => `<option value="${player.id}">${escapeHtml(player.name)}</option>`).join("");
+  const potMovementLabel = (movementType) => ({
+    match_remainder: "Remanente automático de partido",
+    match_adjustment: "Corrección de partido",
+    manual_income: "Ingreso manual",
+    manual_expense: "Gasto manual",
+    opening_balance: "Saldo previo del bote",
+  }[movementType] || "Movimiento del bote");
   const adjustmentControl = (transaction) => {
     if (!transaction.can_adjust) {
       return `<span class="text-xs text-ink/45">${transaction.transaction_type === "adjustment" ? "Asiento de ajuste" : "—"}</span>`;
@@ -711,8 +719,20 @@ function renderFinancePanel(data, matchesData) {
           : "Registrada";
   const transactionCards = transactions.map((transaction) => `<article class="grid gap-2 py-3 first:pt-0 last:pb-0"><div class="flex items-start justify-between gap-3"><div><p class="text-xs text-ink/45">${escapeHtml(transaction.date)}</p><p class="mt-1 text-sm font-bold">${escapeHtml(transaction.name)}</p></div><span class="shrink-0 text-sm font-extrabold ${transaction.amount < 0 ? "text-red-700" : "text-pitch-800"}">${formatMoney(transaction.amount)}</span></div><p class="text-xs leading-5 text-ink/60">${escapeHtml(transaction.concept)}</p><div class="flex items-center justify-between gap-2"><span class="rounded-full bg-paper px-2.5 py-1 text-[10px] font-bold text-ink/60">${statusLabel(transaction)}</span>${transaction.match_id ? `<span class="text-[10px] text-ink/40">Partido #${transaction.match_id}</span>` : ""}</div>${adjustmentControl(transaction)}</article>`).join("");
   const transactionRows = transactions.map((transaction) => `<tr><td class="px-4 py-3 text-xs text-ink/50">${escapeHtml(transaction.date)}</td><td class="px-4 py-3 text-sm font-semibold">${escapeHtml(transaction.name)}</td><td class="px-4 py-3 text-sm text-ink/65"><span>${escapeHtml(transaction.concept)}</span><span class="mt-1 block text-[10px] text-ink/40">${transaction.match_id ? `Partido #${transaction.match_id} · ` : ""}${statusLabel(transaction)}</span></td><td class="px-4 py-3 text-right text-sm font-bold ${transaction.amount < 0 ? "text-red-700" : "text-pitch-800"}">${formatMoney(transaction.amount)}</td><td class="px-4 py-3">${adjustmentControl(transaction)}</td></tr>`).join("");
-  return `<div class="mb-5 grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end"><div><p class="text-xs font-bold uppercase tracking-[.12em] text-pitch-700">Gestión financiera</p><h2 class="display mt-1 text-2xl font-extrabold">Saldos y movimientos</h2><p class="mt-1 text-sm text-ink/50">Los ajustes quedan anotados en el historial de cada jugador.</p></div><div class="rounded-2xl bg-lime/35 px-5 py-3"><p class="text-[10px] font-bold uppercase tracking-[.12em] text-pitch-900/60">Bote acumulado</p><p class="display text-xl font-extrabold text-pitch-900">${formatMoney(data.pot)}</p></div></div>
+  const potMovementCards = potTransactions.map((movement) => `<article class="grid gap-2 py-3 first:pt-0 last:pb-0"><div class="flex items-start justify-between gap-3"><div><p class="text-xs text-ink/45">${escapeHtml(String(movement.created_at))}</p><p class="mt-1 text-sm font-bold">${escapeHtml(potMovementLabel(movement.movement_type))}</p></div><span class="shrink-0 text-sm font-extrabold ${Number(movement.amount) < 0 ? "text-red-700" : "text-pitch-800"}">${formatMoney(movement.amount)}</span></div><p class="text-xs leading-5 text-ink/60">${escapeHtml(movement.concept)}</p><div class="flex flex-wrap justify-between gap-2 text-[11px] text-ink/45"><span>Saldo del bote: <b class="text-ink/70">${formatMoney(movement.balance_after)}</b></span><span>${movement.match_id ? `Partido #${movement.match_id}` : movement.created_by_alias ? `Admin @${escapeHtml(movement.created_by_alias)}` : ""}</span></div></article>`).join("");
+  const potMovementRows = potTransactions.map((movement) => `<tr><td class="px-4 py-3 text-xs text-ink/50">${escapeHtml(String(movement.created_at))}</td><td class="px-4 py-3 text-xs font-semibold">${escapeHtml(potMovementLabel(movement.movement_type))}</td><td class="px-4 py-3 text-sm text-ink/65">${escapeHtml(movement.concept)}${movement.match_id ? `<span class="mt-1 block text-[10px] text-ink/40">Partido #${movement.match_id}</span>` : ""}</td><td class="px-4 py-3 text-right text-sm font-bold ${Number(movement.amount) < 0 ? "text-red-700" : "text-pitch-800"}">${formatMoney(movement.amount)}</td><td class="px-4 py-3 text-right text-sm font-semibold">${formatMoney(movement.balance_after)}</td></tr>`).join("");
+  return `<div class="mb-5 grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end"><div><p class="text-xs font-bold uppercase tracking-[.12em] text-pitch-700">Gestión financiera</p><h2 class="display mt-1 text-2xl font-extrabold">Saldos y movimientos</h2><p class="mt-1 text-sm text-ink/50">Los ajustes quedan anotados en el historial de cada jugador.</p></div><div class="rounded-2xl bg-lime/35 px-5 py-3"><p class="text-[10px] font-bold uppercase tracking-[.12em] text-pitch-900/60">Bote acumulado</p><p data-pot-balance class="display text-xl font-extrabold text-pitch-900">${formatMoney(data.pot)}</p></div></div>
     ${renderMatchFinanceControl(matchesData)}
+    <section class="mb-5 rounded-2xl border border-pitch-700/15 bg-pitch-50/60 p-4 shadow-sm sm:p-5">
+      <div class="mb-4"><p class="text-xs font-bold uppercase tracking-[.12em] text-pitch-700">Bote del grupo</p><h3 class="mt-1 font-bold">Ajustes Manuales del Bote General</h3><p class="mt-1 text-xs leading-5 text-ink/55">Registra ingresos o gastos directamente en el fondo común. Estos movimientos no modifican el saldo de ningún jugador.</p></div>
+      <form id="pot-adjustment-form" class="grid gap-3 sm:grid-cols-[1.5fr_1fr_1fr_auto] sm:items-end">
+        <label class="text-xs font-semibold text-ink/60">Concepto / Descripción<input name="concept" required maxlength="160" placeholder="Ej. Compra de balones" class="mt-1.5 block w-full rounded-xl border border-ink/10 bg-white px-3 py-2.5 text-sm"/></label>
+        <label class="text-xs font-semibold text-ink/60">Importe (€)<input name="amount" type="number" min="0.01" step="0.01" required placeholder="Ej. 25,00" class="mt-1.5 block w-full rounded-xl border border-ink/10 bg-white px-3 py-2.5 text-sm"/></label>
+        <label class="text-xs font-semibold text-ink/60">Tipo de operación<select name="operation" required class="mt-1.5 block w-full rounded-xl border border-ink/10 bg-white px-3 py-2.5 text-sm"><option value="income">Ingreso / Sumar</option><option value="expense">Gasto / Restar</option></select></label>
+        <button type="submit" class="rounded-xl bg-pitch-900 px-4 py-2.5 text-sm font-bold text-white">Registrar ajuste en el Bote</button>
+        <p class="text-[11px] text-ink/45 sm:col-span-4">Introduce el importe como positivo; el tipo elegido determina si se suma o se resta.</p>
+      </form>
+    </section>
     <form id="balance-adjust-form" class="mb-5 grid gap-3 rounded-2xl border border-ink/[.07] bg-white p-4 shadow-sm sm:grid-cols-[1fr_1fr_1.5fr_auto] sm:items-end">
       <label class="text-xs font-semibold text-ink/60">Jugador<select name="user_id" required class="mt-1.5 block w-full rounded-xl border border-ink/10 bg-white px-3 py-2.5 text-sm">${playerOptions}</select></label>
       <label class="text-xs font-semibold text-ink/60">Ajuste (€)<input name="amount" type="number" step="0.01" required placeholder="+10 o -5" class="mt-1.5 block w-full rounded-xl border border-ink/10 bg-white px-3 py-2.5 text-sm"/></label>
@@ -725,6 +745,9 @@ function renderFinancePanel(data, matchesData) {
     </section>
     <section class="overflow-hidden rounded-2xl border border-ink/[.07] bg-white shadow-sm"><header class="border-b border-ink/[.07] px-4 py-3.5"><h3 class="font-bold">Historial financiero</h3><p class="mt-0.5 text-xs text-ink/45">Hasta 100 movimientos. Los cargos ajustables conservan su asiento original.</p></header>
       ${transactions.length ? `<div class="divide-y divide-ink/[.06] p-4 sm:hidden">${transactionCards}</div><div class="hidden overflow-x-auto sm:block"><table class="w-full min-w-[920px] text-left"><thead class="bg-paper/70 text-[10px] font-bold uppercase tracking-[.12em] text-ink/45"><tr><th class="px-4 py-3">Fecha</th><th class="px-4 py-3">Jugador</th><th class="px-4 py-3">Concepto / estado</th><th class="px-4 py-3 text-right">Importe</th><th class="px-4 py-3">Acción</th></tr></thead><tbody class="divide-y divide-ink/[.06]">${transactionRows}</tbody></table></div>` : `<p class="px-4 py-8 text-center text-sm text-ink/45">Aún no hay movimientos financieros.</p>`}
+    </section>
+    <section class="mt-5 overflow-hidden rounded-2xl border border-ink/[.07] bg-white shadow-sm"><header class="border-b border-ink/[.07] px-4 py-3.5"><h3 class="font-bold">Movimientos del Bote General</h3><p class="mt-0.5 text-xs text-ink/45">Historial de remanentes de partidos, correcciones e ingresos y gastos manuales, con el saldo resultante.</p></header>
+      ${potTransactions.length ? `<div class="divide-y divide-ink/[.06] p-4 sm:hidden">${potMovementCards}</div><div class="hidden overflow-x-auto sm:block"><table class="w-full min-w-[760px] text-left"><thead class="bg-paper/70 text-[10px] font-bold uppercase tracking-[.12em] text-ink/45"><tr><th class="px-4 py-3">Fecha</th><th class="px-4 py-3">Tipo</th><th class="px-4 py-3">Concepto</th><th class="px-4 py-3 text-right">Importe</th><th class="px-4 py-3 text-right">Saldo resultante</th></tr></thead><tbody class="divide-y divide-ink/[.06]">${potMovementRows}</tbody></table></div>` : `<p class="px-4 py-8 text-center text-sm text-ink/45">Todavía no hay movimientos del bote.</p>`}
     </section>`;
 }
 
@@ -1198,6 +1221,28 @@ async function renderAdmin() {
       });
       showToast("Ajuste registrado en el historial financiero.");
        activeAdminTab = "partidos";
+      await renderAdmin();
+    } catch (error) {
+      showToast(error.message);
+      button.disabled = false;
+    }
+  });
+  document.querySelector("#pot-adjustment-form")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const button = form.querySelector('button[type="submit"]');
+    button.disabled = true;
+    try {
+      const result = await api("/api/admin/finance/pot-transactions", {
+        method: "POST",
+        body: JSON.stringify({
+          concept: form.elements.concept.value,
+          amount: Number(form.elements.amount.value),
+          operation: form.elements.operation.value,
+        }),
+      });
+      showToast(`Movimiento registrado. Bote acumulado: ${formatMoney(result.pot)}.`);
+      activeAdminTab = "finanzas";
       await renderAdmin();
     } catch (error) {
       showToast(error.message);
@@ -1941,6 +1986,25 @@ async function refreshConvocationIfChanged() {
   }
 }
 
+let pollingPot = false;
+async function refreshPotBalance() {
+  if (!currentUser || document.visibilityState !== "visible" || pollingPot) return;
+  pollingPot = true;
+  try {
+    const { pot } = await api("/api/pot");
+    const amount = Number(pot);
+    if (!Number.isFinite(amount) || Number(standingsData.pot) === amount) return;
+    standingsData = { ...standingsData, pot: amount };
+    document.querySelectorAll("[data-pot-balance]").forEach((element) => {
+      element.textContent = formatMoney(amount);
+    });
+  } catch {
+    // Keep the last displayed total while temporarily offline.
+  } finally {
+    pollingPot = false;
+  }
+}
+
 let pollingDraft = false;
 async function refreshLiveDraftIfChanged() {
   if (!currentUser || document.visibilityState !== "visible" || pollingDraft ||
@@ -1965,6 +2029,7 @@ async function refreshLiveDraftIfChanged() {
 }
 
 setInterval(refreshConvocationIfChanged, 15000);
+setInterval(refreshPotBalance, 5000);
 setInterval(refreshLiveDraftIfChanged, 4000);
 
 async function registerServiceWorkerWithUpdates() {
