@@ -1136,10 +1136,6 @@ app.patch("/api/users/:id/profile", requireUser, async (req, res) => {
   if (!current) return res.status(404).json({ error: "No se encontró la ficha de ese jugador." });
 
   const body = req.body || {};
-  if (!isAdmin && (Object.keys(body).some((field) => field !== "photo_url") || body.photo_url === undefined)) {
-    return res.status(403).json({ error: "Los jugadores solo pueden actualizar su propia fotografía de perfil." });
-  }
-
   let photoUrl = current.photo_url;
   if (body.photo_url !== undefined) {
     photoUrl = body.photo_url === null || body.photo_url === "" ? null : body.photo_url;
@@ -1162,8 +1158,41 @@ app.patch("/api/users/:id/profile", requireUser, async (req, res) => {
     }
   }
 
+  const fields = [
+    ["strong_points", 1000, "Los puntos fuertes"],
+    ["weak_points", 1000, "Los puntos débiles"],
+    ["preferred_position", 60, "La posición preferida"],
+    ["other_details", 2000, "Otros datos"],
+  ];
+
   if (!isAdmin) {
-    await db.prepare("UPDATE users SET photo_url = ? WHERE id = ?").run(photoUrl, id);
+    const allowedFields = new Set(["photo_url", ...fields.map(([field]) => field)]);
+    if (Object.keys(body).some((field) => !allowedFields.has(field))) {
+      return res.status(403).json({
+        error: "Solo puedes editar tu fotografía y tus propios datos técnicos.",
+      });
+    }
+
+    const updates = [];
+    const values = [];
+    if (body.photo_url !== undefined) {
+      updates.push("photo_url = ?");
+      values.push(photoUrl);
+    }
+    for (const [field, limit, label] of fields) {
+      if (body[field] === undefined) continue;
+      const value = typeof body[field] === "string" ? body[field].trim() : null;
+      if (value === null || value.length > limit) {
+        return res.status(400).json({ error: `${label} debe ser texto de ${limit} caracteres o menos.` });
+      }
+      updates.push(`${field} = ?`);
+      values.push(value);
+    }
+    if (!updates.length) {
+      return res.status(400).json({ error: "No hay cambios de perfil para guardar." });
+    }
+    values.push(id);
+    await db.prepare(`UPDATE users SET ${updates.join(", ")} WHERE id = ?`).run(...values);
     return res.json({
       profile: await db.prepare(`
         SELECT id, alias, photo_url, strong_points, weak_points, preferred_position, other_details
@@ -1182,12 +1211,6 @@ app.patch("/api/users/:id/profile", requireUser, async (req, res) => {
     return res.status(409).json({ error: "Ese alias ya está en uso." });
   }
 
-  const fields = [
-    ["strong_points", 1000, "Los puntos fuertes"],
-    ["weak_points", 1000, "Los puntos débiles"],
-    ["preferred_position", 60, "La posición preferida"],
-    ["other_details", 2000, "Otros datos"],
-  ];
   const profileValues = {};
   for (const [field, limit, label] of fields) {
     const value = body[field] === undefined
@@ -1229,48 +1252,117 @@ app.patch("/api/users/:id/profile", requireUser, async (req, res) => {
 
 app.get("/api/admin/pending-users", requireAdmin, async (_req, res) => {
   const pendingUsers = await db.prepare(`
-    SELECT id, first_name, last_name, name, alias, created_at
-    FROM users
-    WHERE role != 'admin' AND account_status = 'pending' AND deleted_at IS NULL
-      AND alias IS NOT NULL AND password_hash IS NOT NULL
-    ORDER BY created_at, id
+    SELECT u.id, u.first_name, u.last_name, u.name, u.alias, u.created_at,
+      u.ranking_position, (r.id IS NOT NULL) AS substitute_invitation,
+      inviter.alias AS invited_by_alias, m.match_date AS invitation_match_date
+    FROM users u
+    LEFT JOIN substitute_approval_requests r
+      ON r.user_id = u.id AND r.status = 'pending'
+    LEFT JOIN users inviter ON inviter.id = r.invited_by_user_id
+    LEFT JOIN matches m ON m.id = r.match_id
+    WHERE u.role != 'admin' AND u.account_status = 'pending' AND u.deleted_at IS NULL
+      AND u.alias IS NOT NULL AND u.password_hash IS NOT NULL
+    ORDER BY u.created_at, u.id
   `).all();
   res.json(pendingUsers);
 });
 
 app.post("/api/admin/pending-users/:id/approve", requireAdmin, async (req, res) => {
   const id = Number(req.params.id);
-  const pending = await db.prepare(`
-    SELECT id FROM users
-    WHERE id = ? AND role != 'admin' AND account_status = 'pending' AND deleted_at IS NULL
-      AND alias IS NOT NULL AND password_hash IS NOT NULL
-  `).get(id);
-  if (!pending) return res.status(404).json({ error: "No se encontró una solicitud pendiente válida." });
-  const baseRole = req.body?.base_role;
-  const rankingPosition = Number(req.body?.ranking_position);
-  const balance = Number(req.body?.balance);
-  if (!["principal", "suplente"].includes(baseRole)) {
-    return res.status(400).json({ error: "El rol base debe ser principal o suplente." });
+  if (!Number.isInteger(id) || id < 1) {
+    return res.status(400).json({ error: "La solicitud seleccionada no es válida." });
   }
-  if (!Number.isInteger(rankingPosition) || rankingPosition < 1) {
-    return res.status(400).json({ error: "La posición del ranking debe ser un entero positivo." });
+  try {
+    const approval = await db.transaction(async () => {
+      const pending = await db.prepare(`
+        SELECT id FROM users
+        WHERE id = ? AND role != 'admin' AND account_status = 'pending' AND deleted_at IS NULL
+          AND alias IS NOT NULL AND password_hash IS NOT NULL
+        FOR UPDATE
+      `).get(id);
+      if (!pending) {
+        const error = new Error("No se encontró una solicitud pendiente válida.");
+        error.status = 404;
+        throw error;
+      }
+
+      const invitation = await db.prepare(`
+        SELECT r.id, r.match_id, r.invited_by_user_id, m.status AS match_status
+        FROM substitute_approval_requests r
+        LEFT JOIN matches m ON m.id = r.match_id
+        WHERE r.user_id = ? AND r.status = 'pending'
+        ORDER BY r.id DESC LIMIT 1
+        FOR UPDATE OF r
+      `).get(id);
+      if (invitation && invitation.match_status !== "open") {
+        const error = new Error("La convocatoria asociada ya no está abierta. No se ha aprobado la cuenta.");
+        error.status = 409;
+        throw error;
+      }
+
+      const baseRole = invitation ? "suplente" : req.body?.base_role;
+      const rankingPosition = Number(req.body?.ranking_position);
+      const balance = invitation ? 0 : Number(req.body?.balance);
+      if (!["principal", "suplente"].includes(baseRole)) {
+        const error = new Error("El rol base debe ser principal o suplente.");
+        error.status = 400;
+        throw error;
+      }
+      if (!Number.isInteger(rankingPosition) || rankingPosition < 1) {
+        const error = new Error("La posición del ranking debe ser un entero positivo.");
+        error.status = 400;
+        throw error;
+      }
+      if (!Number.isFinite(balance) || !Number.isSafeInteger(moneyCents(balance))) {
+        const error = new Error("El saldo inicial debe ser válido.");
+        error.status = 400;
+        throw error;
+      }
+      if (await db.prepare(`
+        SELECT id FROM users
+        WHERE account_status = 'active' AND role != 'admin'
+          AND ranking_position = ? AND id != ?
+      `).get(rankingPosition, id)) {
+        const error = new Error("Esa posición ya está asignada a otro jugador activo.");
+        error.status = 409;
+        throw error;
+      }
+
+      await db.prepare(`
+        UPDATE users
+        SET role = ?, base_role = ?, ranking_position = ?, balance = ?,
+          account_status = 'active', must_change_password = CASE WHEN ? THEN 1 ELSE must_change_password END
+        WHERE id = ?
+      `).run(baseRole, baseRole, rankingPosition, moneyCents(balance) / 100, Boolean(invitation), id);
+      if (moneyCents(balance)) {
+        await db.prepare("INSERT INTO transactions (user_id, amount, concept) VALUES (?, ?, ?)")
+          .run(id, moneyCents(balance) / 100, "Saldo inicial al aprobar la cuenta");
+      }
+      if (invitation) {
+        await db.prepare(`
+          INSERT INTO convocations (match_id, user_id, status, updated_at, invited_by_user_id)
+          VALUES (?, ?, 'suplente', CURRENT_TIMESTAMP, ?)
+          ON CONFLICT(match_id, user_id)
+          DO UPDATE SET status = 'suplente', updated_at = CURRENT_TIMESTAMP,
+            invited_by_user_id = excluded.invited_by_user_id
+        `).run(invitation.match_id, id, invitation.invited_by_user_id);
+        await db.prepare(`
+          UPDATE substitute_approval_requests
+          SET status = 'approved', approved_at = CURRENT_TIMESTAMP
+          WHERE id = ? AND status = 'pending'
+        `).run(invitation.id);
+      }
+      return { invited: Boolean(invitation) };
+    })();
+    res.json({
+      approved: true,
+      added_to_convocation: approval.invited,
+      user: publicUser(await db.prepare("SELECT * FROM users WHERE id = ?").get(id)),
+    });
+  } catch (error) {
+    if (error.status) return res.status(error.status).json({ error: error.message });
+    throw error;
   }
-  if (!Number.isFinite(balance) || !Number.isSafeInteger(moneyCents(balance))) return res.status(400).json({ error: "El saldo inicial debe ser válido." });
-  if (await db.prepare("SELECT id FROM users WHERE account_status = 'active' AND role != 'admin' AND ranking_position = ? AND id != ?").get(rankingPosition, id)) {
-    return res.status(409).json({ error: "Esa posición ya está asignada a otro jugador activo." });
-  }
-  await db.transaction(async () => {
-    await db.prepare(`
-      UPDATE users
-      SET role = ?, base_role = ?, ranking_position = ?, balance = ?, account_status = 'active'
-      WHERE id = ?
-    `).run(baseRole, baseRole, rankingPosition, moneyCents(balance) / 100, id);
-    if (moneyCents(balance)) {
-      await db.prepare("INSERT INTO transactions (user_id, amount, concept) VALUES (?, ?, ?)")
-        .run(id, moneyCents(balance) / 100, "Saldo inicial al aprobar la cuenta");
-    }
-  })();
-  res.json({ approved: true, user: publicUser(await db.prepare("SELECT * FROM users WHERE id = ?").get(id)) });
 });
 
 app.get("/api/session", async (req, res) => {
@@ -2090,7 +2182,7 @@ app.post("/api/convocations/current/add-new-suplente", requirePlayer, async (req
   if (!/^[\p{L}\p{N}._-]{3,24}$/u.test(alias)) {
     return res.status(400).json({ error: "El alias debe tener entre 3 y 24 letras, números, puntos, guiones o guiones bajos." });
   }
-    const match = await getCurrentMatch();
+  const match = await getCurrentMatch();
   if (!match || match.status !== "open") {
     return res.status(409).json({ error: "No hay una convocatoria abierta." });
   }
@@ -2116,17 +2208,17 @@ app.post("/api/convocations/current/add-new-suplente", requirePlayer, async (req
       const created = await db.prepare(`
         INSERT INTO users (name, first_name, last_name, alias, password_hash, account_status,
           must_change_password, role, base_role, ranking_position, balance, created_at)
-        VALUES (?, ?, ?, ?, ?, 'active', 1, 'suplente', 'suplente', ?, 0, CURRENT_TIMESTAMP) RETURNING id
+        VALUES (?, ?, ?, ?, ?, 'pending', 1, 'suplente', 'suplente', ?, 0, CURRENT_TIMESTAMP) RETURNING id
       `).run(name, firstName, lastName, alias, passwordHash, rankingPosition);
       const userId = Number(created.lastInsertRowid);
       await db.prepare(`
-        INSERT INTO convocations (match_id, user_id, status, updated_at, invited_by_user_id)
-        VALUES (?, ?, 'suplente', CURRENT_TIMESTAMP, ?)
-      `).run(match.id, userId, req.session.user.id);
+        INSERT INTO substitute_approval_requests (user_id, match_id, invited_by_user_id)
+        VALUES (?, ?, ?)
+      `).run(userId, match.id, req.session.user.id);
       return userId;
     })();
     res.status(201).json({
-      ...await getConvocationData(match, req.session.user.id),
+      pending_approval: true,
       added_player: await db.prepare("SELECT id, alias FROM users WHERE id = ?").get(createdUserId),
     });
   } catch (error) {

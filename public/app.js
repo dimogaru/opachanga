@@ -651,9 +651,23 @@ function renderStandingsAdjustmentPanel(data, adjustments = []) {
 
 function renderApprovalPanel(pending) {
   const cards = pending.length
-    ? pending.map((user) => `<form class="pending-approval-card grid gap-3 border-t border-ink/[.06] p-4 sm:grid-cols-[1fr_1fr_1fr_1fr_auto] sm:items-end" data-user-id="${user.id}"><div><p class="font-bold">${escapeHtml(`${user.first_name} ${user.last_name}`)}</p><p class="mt-0.5 text-xs text-ink/45">@${escapeHtml(user.alias)}</p></div><label><span class="mb-1 block text-[11px] font-semibold text-ink/55">Rol base</span><select name="base_role" class="w-full rounded-lg border border-ink/10 bg-white px-2.5 py-2 text-sm"><option value="principal">Principal</option><option value="suplente">Suplente</option></select></label><label><span class="mb-1 block text-[11px] font-semibold text-ink/55">Posición fija</span><input name="ranking_position" type="number" min="1" step="1" required placeholder="1" class="w-full rounded-lg border border-ink/10 px-2.5 py-2 text-sm"/></label><label><span class="mb-1 block text-[11px] font-semibold text-ink/55">Saldo inicial (€)</span><input name="balance" type="number" step="0.01" required value="0" class="w-full rounded-lg border border-ink/10 px-2.5 py-2 text-sm"/></label><button class="rounded-xl bg-pitch-900 px-4 py-2.5 text-xs font-bold text-white">Aprobar</button></form>`).join("")
+    ? pending.map((user) => {
+      const invitedSubstitute = user.substitute_invitation === true;
+      const invitationNote = invitedSubstitute
+        ? `<p class="mt-1 text-[11px] font-semibold leading-4 text-amber-800">Nuevo suplente · invitado por @${escapeHtml(user.invited_by_alias || "jugador")}${user.invitation_match_date ? ` · Partido ${escapeHtml(user.invitation_match_date)}` : ""}</p>`
+        : "";
+      return `<form class="pending-approval-card grid gap-3 border-t border-ink/[.06] p-4 sm:grid-cols-[1.4fr_1fr_1fr_1fr_auto] sm:items-end" data-user-id="${user.id}">
+        <div><p class="font-bold">${escapeHtml(`${user.first_name} ${user.last_name}`)}</p><p class="mt-0.5 text-xs text-ink/45">@${escapeHtml(user.alias)}</p>${invitationNote}</div>
+        ${invitedSubstitute
+          ? `<div><span class="mb-1 block text-[11px] font-semibold text-ink/55">Rol base</span><p class="rounded-lg bg-paper px-2.5 py-2 text-sm font-semibold">Suplente</p><input type="hidden" name="base_role" value="suplente"/></div>`
+          : `<label><span class="mb-1 block text-[11px] font-semibold text-ink/55">Rol base</span><select name="base_role" class="w-full rounded-lg border border-ink/10 bg-white px-2.5 py-2 text-sm"><option value="principal">Principal</option><option value="suplente">Suplente</option></select></label>`}
+        <label><span class="mb-1 block text-[11px] font-semibold text-ink/55">Posición fija</span><input name="ranking_position" type="number" min="1" step="1" required value="${Number(user.ranking_position) || ""}" placeholder="1" class="w-full rounded-lg border border-ink/10 px-2.5 py-2 text-sm"/></label>
+        <label><span class="mb-1 block text-[11px] font-semibold text-ink/55">Saldo inicial (€)</span><input name="balance" type="number" step="0.01" required value="0" ${invitedSubstitute ? "readonly" : ""} class="w-full rounded-lg border border-ink/10 px-2.5 py-2 text-sm"/></label>
+        <button class="rounded-xl bg-pitch-900 px-4 py-2.5 text-xs font-bold text-white">${invitedSubstitute ? "Aprobar y añadir" : "Aprobar"}</button>
+      </form>`;
+    }).join("")
     : `<p class="px-5 py-7 text-center text-sm text-ink/45">No hay solicitudes pendientes de revisión.</p>`;
-  return `<section class="mb-7 overflow-hidden rounded-2xl border border-ink/[.07] bg-white shadow-sm"><header class="flex items-center justify-between px-5 py-4"><div><h2 class="font-bold">Aprobaciones pendientes</h2><p class="mt-1 text-xs text-ink/45">Asigna rol base, posición fija y saldo inicial para activar la cuenta.</p></div><span class="rounded-full bg-amber-50 px-3 py-1 text-xs font-bold text-amber-800">${pending.length}</span></header>${cards}</section>`;
+  return `<section class="mb-7 overflow-hidden rounded-2xl border border-ink/[.07] bg-white shadow-sm"><header class="flex items-center justify-between px-5 py-4"><div><h2 class="font-bold">Aprobaciones pendientes</h2><p class="mt-1 text-xs text-ink/45">Revisa las nuevas cuentas y solicitudes de suplentes antes de activarlas.</p></div><span class="rounded-full bg-amber-50 px-3 py-1 text-xs font-bold text-amber-800">${pending.length}</span></header>${cards}</section>`;
 }
 
 function renderPlayerManagementPanel(players, pending) {
@@ -1363,11 +1377,13 @@ function bindApprovalActions() {
       submit.disabled = true;
       try {
         const payload = Object.fromEntries(new FormData(form).entries());
-        await api(`/api/admin/pending-users/${form.dataset.userId}/approve`, {
+        const result = await api(`/api/admin/pending-users/${form.dataset.userId}/approve`, {
           method: "POST",
           body: JSON.stringify(payload),
         });
-        showToast("Cuenta aprobada y activada.");
+        showToast(result.added_to_convocation
+          ? "Suplente aprobado y añadido a la convocatoria."
+          : "Cuenta aprobada y activada.");
         await renderAdmin();
       } catch (error) {
         showToast(error.message);
@@ -1501,9 +1517,9 @@ async function openSubstituteModal() {
           <label class="block"><span class="mb-1.5 block text-sm font-semibold">Apellidos</span><input name="last_name" required maxlength="80" autocomplete="family-name" class="w-full rounded-xl border border-ink/15 px-4 py-3 text-sm outline-none focus:border-pitch-700"/></label>
         </div>
         <label class="block"><span class="mb-1.5 block text-sm font-semibold">Alias único</span><input name="alias" required minlength="3" maxlength="24" pattern="[A-Za-zÀ-ÿ0-9._-]{3,24}" autocomplete="username" placeholder="Ej. Alex10" class="w-full rounded-xl border border-ink/15 px-4 py-3 text-sm outline-none focus:border-pitch-700"/><span class="mt-1 block text-xs text-ink/45">Entre 3 y 24 caracteres; debe estar libre.</span></label>
-        <p class="rounded-xl bg-lime/20 px-3 py-3 text-xs leading-5 text-ink/70">Contraseña inicial: <b>Pachanga123#</b>. La cuenta se activa al momento y el nuevo jugador deberá cambiarla al entrar.</p>
+      <p class="rounded-xl bg-amber-50 px-3 py-3 text-xs leading-5 text-amber-900">El suplente quedará pendiente de aprobación. Cuando el Admin lo apruebe, se activará y se añadirá a esta convocatoria.</p>
         <div id="new-substitute-error" class="hidden rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700" role="alert"></div>
-        <button type="submit" class="w-full rounded-xl bg-pitch-900 px-4 py-3 text-sm font-bold text-white transition hover:bg-pitch-800 disabled:cursor-not-allowed disabled:opacity-50">Crear y añadir suplente</button>
+        <button type="submit" class="w-full rounded-xl bg-pitch-900 px-4 py-3 text-sm font-bold text-white transition hover:bg-pitch-800 disabled:cursor-not-allowed disabled:opacity-50">Enviar solicitud de aprobación</button>
       </form>
     </section>`;
   document.body.append(overlay);
@@ -1584,7 +1600,7 @@ async function openSubstituteModal() {
       });
       const alias = response.added_player?.alias || body.alias;
       close();
-      showToast(`Cuenta ${alias} creada. Contraseña inicial: Pachanga123#`);
+      showToast("El suplente ha sido registrado y requiere la aprobación del Admin para incorporarse.");
       await renderHome();
     } catch (error) {
       const errorBox = overlay.querySelector("#new-substitute-error");
@@ -1661,8 +1677,9 @@ async function openPlayerProfile(userId) {
     return;
   }
 
-  const canEditText = currentUser?.role === "admin";
-  const canEditPhoto = canEditText || currentUser?.id === profile.id;
+  const canEditAlias = currentUser?.role === "admin";
+  const canEditText = canEditAlias || currentUser?.id === profile.id;
+  const canEditPhoto = canEditText;
   const overlay = document.createElement("div");
   overlay.className = "fixed inset-0 z-50 grid place-items-center overflow-y-auto bg-pitch-950/65 p-3 backdrop-blur-sm sm:p-5";
   overlay.innerHTML = `
@@ -1670,7 +1687,7 @@ async function openPlayerProfile(userId) {
       <header class="relative overflow-hidden bg-pitch-900 px-5 pb-5 pt-4 text-white sm:px-7 sm:pb-6">
         <div class="absolute -right-8 -top-16 h-48 w-48 rounded-full border border-white/10"></div>
         <div class="relative flex items-start justify-between gap-4">
-          <div><p class="text-[10px] font-bold uppercase tracking-[.16em] text-lime">${canEditPhoto ? "Ficha de jugador" : "Perfil de jugador"}</p><h2 id="profile-modal-title" class="display mt-1 text-2xl font-extrabold">Perfil de ${escapeHtml(profile.alias)}</h2><p class="mt-1 text-xs text-white/60">${canEditText ? "Edita los datos técnicos del jugador." : canEditPhoto ? "Puedes actualizar tu foto; los datos de juego los gestiona el Admin." : "Ficha técnica del jugador."}</p></div>
+          <div><p class="text-[10px] font-bold uppercase tracking-[.16em] text-lime">${canEditText ? "Ficha de jugador" : "Perfil de jugador"}</p><h2 id="profile-modal-title" class="display mt-1 text-2xl font-extrabold">Perfil de ${escapeHtml(profile.alias)}</h2><p class="mt-1 text-xs text-white/60">${canEditAlias ? "Edita los datos técnicos del jugador." : canEditText ? "Puedes editar tu foto y tus datos técnicos." : "Ficha técnica del jugador."}</p></div>
           <button type="button" class="close-profile grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-white/10 text-white transition hover:bg-white/20" aria-label="Cerrar perfil">✕</button>
         </div>
         <div class="relative mt-5 flex items-center gap-4">
@@ -1679,8 +1696,8 @@ async function openPlayerProfile(userId) {
         </div>
       </header>
       <form id="profile-form" class="space-y-4 p-5 sm:p-7">
-        ${canEditPhoto ? `<div class="rounded-2xl border border-ink/[.07] bg-white p-4"><label class="block text-xs font-bold text-ink/60">Foto de perfil<input id="profile-photo-file" type="file" accept="image/*" capture="user" class="mt-2 block w-full text-xs file:mr-3 file:rounded-lg file:border-0 file:bg-pitch-100 file:px-3 file:py-2 file:font-bold file:text-pitch-900"/></label><div class="mt-2 flex items-center justify-between gap-3"><span class="text-[11px] text-ink/45">Recorte cuadrado, se muestra redondeada. Máximo 256 KB tras comprimir.</span><button type="button" id="clear-profile-photo" class="shrink-0 text-[11px] font-bold text-red-700 ${profile.photo_url ? "" : "hidden"}">Quitar foto</button></div><p id="profile-photo-error" class="mt-2 hidden text-xs font-semibold text-red-700" role="alert"></p></div>` : ""}
-        <label class="block text-xs font-bold text-ink/60">Alias público<input name="alias" required minlength="3" maxlength="24" pattern="[A-Za-zÀ-ÿ0-9._-]{3,24}" value="${escapeHtml(profile.alias)}" ${canEditText ? "" : "readonly"} class="mt-1.5 w-full rounded-xl border border-ink/10 ${canEditText ? "bg-white" : "bg-paper"} px-3.5 py-3 text-sm font-semibold text-ink outline-none focus:border-pitch-700"/></label>
+        ${canEditPhoto ? `<div class="rounded-2xl border border-ink/[.07] bg-white p-4"><label class="block text-xs font-bold text-ink/60">Foto de perfil<input id="profile-photo-file" type="file" accept="image/*" class="mt-2 block w-full text-xs file:mr-3 file:rounded-lg file:border-0 file:bg-pitch-100 file:px-3 file:py-2 file:font-bold file:text-pitch-900"/></label><div class="mt-2 flex items-center justify-between gap-3"><span class="text-[11px] text-ink/45">Selecciona una imagen de tu dispositivo; se recorta cuadrada y se muestra redondeada. Máximo 256 KB tras comprimir.</span><button type="button" id="clear-profile-photo" class="shrink-0 text-[11px] font-bold text-red-700 ${profile.photo_url ? "" : "hidden"}">Quitar foto</button></div><p id="profile-photo-error" class="mt-2 hidden text-xs font-semibold text-red-700" role="alert"></p></div>` : ""}
+        <label class="block text-xs font-bold text-ink/60">Alias público<input name="alias" required minlength="3" maxlength="24" pattern="[A-Za-zÀ-ÿ0-9._-]{3,24}" value="${escapeHtml(profile.alias)}" ${canEditAlias ? "" : "readonly"} class="mt-1.5 w-full rounded-xl border border-ink/10 ${canEditAlias ? "bg-white" : "bg-paper"} px-3.5 py-3 text-sm font-semibold text-ink outline-none focus:border-pitch-700"/></label>
         <div class="grid gap-3 sm:grid-cols-2">
           <label class="block text-xs font-bold text-ink/60">Dónde juega<input name="preferred_position" list="profile-position-options" maxlength="60" value="${escapeHtml(profile.preferred_position || "")}" placeholder="Ej. Extremo izquierdo" ${canEditText ? "" : "readonly"} class="mt-1.5 w-full rounded-xl border border-ink/10 ${canEditText ? "bg-white" : "bg-paper"} px-3.5 py-3 text-sm font-normal outline-none focus:border-pitch-700"/></label>
           <datalist id="profile-position-options"><option value="Portero"><option value="Defensa"><option value="Centrocampista"><option value="Delantero"><option value="Extremo"><option value="Lateral"><option value="Mediocentro"></datalist>
@@ -1691,7 +1708,7 @@ async function openPlayerProfile(userId) {
         <div id="profile-form-error" class="hidden rounded-xl bg-red-50 px-3 py-2.5 text-sm text-red-700" role="alert"></div>
         ${canEditPhoto
           ? `<button type="submit" class="w-full rounded-xl bg-pitch-900 px-4 py-3 text-sm font-extrabold text-white transition hover:bg-pitch-800 disabled:opacity-50">${canEditText ? "Guardar cambios" : "Guardar fotografía"}</button>`
-          : `<p class="rounded-xl bg-white px-4 py-3 text-center text-xs text-ink/45">Solo el Administrador puede modificar estos datos.</p>`}
+          : `<p class="rounded-xl bg-white px-4 py-3 text-center text-xs text-ink/45">Solo el jugador o el Administrador pueden modificar estos datos.</p>`}
         ${currentUser?.id === profile.id ? `<div class="flex justify-end border-t border-ink/10 pt-3"><button id="profile-logout" type="button" class="rounded-lg px-2 py-1.5 text-xs font-semibold text-red-700 transition hover:bg-red-50 hover:text-red-900">Cerrar sesión</button></div>` : ""}
       </form>
     </section>`;
@@ -1750,7 +1767,10 @@ async function openPlayerProfile(userId) {
     const errorBox = form.querySelector("#profile-form-error");
     submit.disabled = true;
     errorBox.classList.add("hidden");
-    const values = canEditText ? Object.fromEntries(new FormData(form).entries()) : {};
+    const values = canEditText
+      ? Object.fromEntries(new FormData(form).entries())
+      : {};
+    if (!canEditAlias) delete values.alias;
     values.photo_url = photoUrl;
     try {
       const response = await api(`/api/users/${profile.id}/profile`, {
@@ -1768,7 +1788,8 @@ async function openPlayerProfile(userId) {
       submit.disabled = false;
     }
   });
-  if (canEditText) form.elements.alias.focus();
+  if (canEditAlias) form.elements.alias.focus();
+  else if (currentUser?.id === profile.id) form.elements.preferred_position.focus();
   else photoInput.focus();
 }
 

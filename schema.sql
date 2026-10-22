@@ -131,6 +131,16 @@ CREATE TABLE IF NOT EXISTS balance_alert_campaigns (
   sent_at TEXT
 );
 
+CREATE TABLE IF NOT EXISTS substitute_approval_requests (
+  id BIGSERIAL PRIMARY KEY,
+  user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
+  match_id BIGINT REFERENCES matches(id) ON DELETE SET NULL,
+  invited_by_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved')),
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  approved_at TEXT
+);
+
 CREATE TABLE IF NOT EXISTS user_sessions (
   sid VARCHAR NOT NULL PRIMARY KEY,
   sess JSON NOT NULL,
@@ -145,6 +155,8 @@ CREATE INDEX IF NOT EXISTS idx_transactions_match
   ON transactions(match_id, date DESC);
 CREATE INDEX IF NOT EXISTS idx_transactions_adjustment
   ON transactions(adjustment_of, id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_substitute_requests_pending_user
+  ON substitute_approval_requests(user_id) WHERE status = 'pending' AND user_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_users_alias_unique
   ON users(LOWER(alias)) WHERE alias IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_user_sessions_expire
