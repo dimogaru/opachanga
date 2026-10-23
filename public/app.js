@@ -343,13 +343,24 @@ function listPanel(title, usersInList, colorClass, icon, isAdmin = false, showBa
     ? list.map((user) => {
       const canRemove = title === "Lista de suplentes" && canRemoveSubstitutes &&
         (currentUser?.role === "admin" || Number(user.invited_by_user_id) === Number(currentUser?.id));
-      return `<li class="flex items-center gap-3 px-4 py-3 ${isAdmin && title === "Lista de suplentes" ? "pr-2" : ""}">
+      const isAdminPrincipalRow = isAdmin && title === "Lista principal";
+      const roleLabel = user.base_role === "suplente" && user.response === "principal"
+        ? "Suplente promovido"
+        : user.response === "suplente"
+          ? "Suplente"
+          : "Principal";
+      return `<li class="flex items-center gap-2.5 px-3 py-3 sm:gap-3 sm:px-4 ${isAdmin && title === "Lista de suplentes" ? "pr-2" : ""}">
         <span class="grid h-8 w-8 shrink-0 place-items-center rounded-xl ${colorClass} text-[11px] font-bold">${escapeHtml(String(user.alias || "").slice(0, 2).toUpperCase())}</span>
-        <span class="flex min-w-0 flex-1 items-center gap-1.5"><span class="min-w-0 flex-1 truncate text-sm font-semibold">${escapeHtml(user.alias)}${title === "Lista de suplentes" && user.invited_by_alias ? `<span class="ml-1 font-normal text-ink/50">(${escapeHtml(user.invited_by_alias)})</span>` : ""}</span>${profileButton(user.id, user.alias)}</span>
-        ${showBaseRole ? `<span class="hidden text-[11px] text-ink/40 sm:inline">${`${user.base_role === "principal" ? "Principal" : "Suplente"}${user.base_role === "suplente" && user.response === "principal" ? " · promovido" : ""}`}</span>` : ""}
+        <span class="min-w-0 flex-1">
+          <span class="block truncate text-sm font-extrabold leading-5 ${isAdminPrincipalRow ? "text-left" : ""}">${escapeHtml(user.alias)}${title === "Lista de suplentes" && user.invited_by_alias ? `<span class="ml-1 font-normal text-ink/50">(${escapeHtml(user.invited_by_alias)})</span>` : ""}</span>
+          ${showBaseRole ? `<span class="block truncate text-[10px] leading-4 text-ink/45">${escapeHtml(isAdminPrincipalRow ? roleLabel : `${user.base_role === "principal" ? "Principal" : "Suplente"}${user.base_role === "suplente" && user.response === "principal" ? " · promovido" : ""}`)}</span>` : ""}
+        </span>
+        ${!isAdminPrincipalRow ? profileButton(user.id, user.alias) : ""}
         ${isAdmin && title === "Lista de suplentes" ? `<button class="promote-player shrink-0 rounded-lg border border-pitch-700/20 px-2.5 py-1.5 text-[11px] font-bold text-pitch-800 transition hover:bg-pitch-100" data-user-id="${user.id}" aria-label="Promover a ${escapeHtml(user.alias)} a principal">↑ Principal</button>` : ""}
-        ${isAdmin && title === "Lista principal" ? `<button class="notify-promoted shrink-0 rounded-lg border border-ink/10 px-2.5 py-1.5 text-[11px] font-bold text-ink/65 transition hover:bg-paper" data-user-id="${user.id}" aria-label="Enviar aviso a ${escapeHtml(user.alias)}">Avisar</button>` : ""}
-        ${canDemotePrincipals && title === "Lista principal" ? `<button type="button" class="demote-principal shrink-0 rounded-lg border border-red-700/20 px-2.5 py-1.5 text-[11px] font-bold text-red-700 transition hover:bg-red-50 disabled:opacity-50" data-user-id="${user.id}" data-alias="${escapeHtml(user.alias)}" aria-label="Bajar a ${escapeHtml(user.alias)} a NO VAN">↓ NO VAN</button>` : ""}
+        ${canDemotePrincipals && title === "Lista principal" ? `<span class="ml-auto flex shrink-0 items-center gap-1">
+          <button type="button" class="change-principal-status rounded-lg border border-amber-700/20 px-2 py-2 text-[9px] font-extrabold leading-none text-amber-800 transition hover:bg-amber-50 disabled:opacity-50 sm:px-2.5 sm:text-[10px]" data-user-id="${user.id}" data-alias="${escapeHtml(user.alias)}" data-status="suplente" aria-label="Mover a ${escapeHtml(user.alias)} a Suplentes">A SUPLENTE</button>
+          <button type="button" class="change-principal-status rounded-lg border border-red-700/20 px-2 py-2 text-[9px] font-extrabold leading-none text-red-700 transition hover:bg-red-50 disabled:opacity-50 sm:px-2.5 sm:text-[10px]" data-user-id="${user.id}" data-alias="${escapeHtml(user.alias)}" data-status="no_va" aria-label="Mover a ${escapeHtml(user.alias)} a NO VAN">NO VAN</button>
+        </span>` : ""}
         ${canRemove ? `<button type="button" class="remove-substitute grid h-9 w-9 shrink-0 place-items-center rounded-lg text-red-700 transition hover:bg-red-50 disabled:opacity-50" data-user-id="${user.id}" data-alias="${escapeHtml(user.alias)}" aria-label="Quitar a ${escapeHtml(user.alias)} de la convocatoria" title="Quitar suplente">×</button>` : ""}
       </li>`;
     }).join("")
@@ -1378,20 +1389,23 @@ function bindConvocationActions(isAdmin = false) {
     });
   }
   if (isAdmin) {
-    document.querySelectorAll(".demote-principal").forEach((button) => {
+    document.querySelectorAll(".change-principal-status").forEach((button) => {
       button.addEventListener("click", async () => {
         const alias = button.dataset.alias || "este jugador";
-        if (!confirm(`¿Bajar a @${alias} a la Lista NO VAN? Si ya se cobró el partido, se devolverá su cuota.`)) return;
+        const targetStatus = button.dataset.status;
+        const targetLabel = targetStatus === "suplente" ? "la Lista de Suplentes" : "la Lista NO VAN";
+        if (!confirm(`¿Mover a @${alias} a ${targetLabel}? Si ya se cobró el partido, se devolverá su cuota.`)) return;
         button.disabled = true;
         try {
-          convocationData = await api(`/api/admin/convocations/current/${button.dataset.userId}/no-va`, {
+          convocationData = await api(`/api/admin/convocations/current/${button.dataset.userId}/status`, {
             method: "POST",
-            body: "{}",
+            body: JSON.stringify({ status: targetStatus }),
           });
           const refunded = Number(convocationData.refunded || 0);
+          const destination = convocationData.movedTo === "suplente" ? "la Lista de Suplentes" : "la Lista NO VAN";
           showToast(refunded > 0
-            ? `@${convocationData.removedAlias} pasó a NO VAN; se devolvieron ${formatMoney(refunded)}.`
-            : `@${convocationData.removedAlias} pasó a la Lista NO VAN.`);
+            ? `@${convocationData.removedAlias} pasó a ${destination}; se devolvieron ${formatMoney(refunded)}.`
+            : `@${convocationData.removedAlias} pasó a ${destination}.`);
           activeAdminTab = "convocatoria";
           await renderAdmin();
         } catch (error) {

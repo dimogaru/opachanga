@@ -35,9 +35,9 @@ description: Reglas de negocio semanales para convocatorias, equipos, cobros y c
 
 **How to apply:** validar en backend el estado abierto, la disponibilidad y unicidad del alias; crear/inscribir la cuenta en una transacción, asignar ranking al final y guardar el ID del invitador. Para retirar, autorizar por ID de usuario invitador o rol Admin, mostrar el control solo a quien pueda usarlo y mantener la promoción detrás de `requireAdmin`.
 
-**Baja de principal:** Admin puede mover un jugador de la Lista Principal a NO VAN en una convocatoria abierta. Si ya tiene un cargo de ese partido, se devuelve el saldo pendiente con un asiento de ajuste, sin borrar el cargo original; también se recalculan los totales financieros del partido. El jugador recibe aviso Push si tiene una suscripción disponible.
+**Baja de principal:** Admin puede mover un jugador de la Lista Principal a NO VAN o devolverlo a Suplentes en una convocatoria abierta. Si ya tiene un cargo de ese partido, se devuelve el saldo pendiente con un asiento de ajuste, sin borrar el cargo original; también se recalculan los totales financieros del partido. Al moverlo a NO VAN, el jugador recibe aviso Push si tiene una suscripción disponible.
 
-**Why:** el usuario pidió liberar plazas desde el panel de Admin y conservar intacto el historial financiero al revertir un cargo.
+**Why:** el usuario pidió liberar plazas desde el panel de Admin hacia NO VAN o Suplentes y conservar intacto el historial financiero al revertir un cargo.
 
 **How to apply:** restringir la operación a Admin y bloquear el cambio si el cargo o los totales financieros son inconsistentes. Actualizar asistencia y finanzas en una transacción; enviar Push tras confirmar los cambios y dejar que fallos de notificación no reviertan la baja.
 

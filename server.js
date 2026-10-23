@@ -2403,11 +2403,18 @@ app.delete("/api/convocations/current/suplentes/:userId", requireUser, async (re
   }
 });
 
-app.post("/api/admin/convocations/current/:userId/no-va", requireAdmin, async (req, res) => {
+app.post([
+  "/api/admin/convocations/current/:userId/status",
+  "/api/admin/convocations/current/:userId/no-va",
+], requireAdmin, async (req, res) => {
   const match = await getCurrentMatch();
   if (!match) return res.status(409).json({ error: "No hay una convocatoria abierta." });
   if (match.status !== "open") {
     return res.status(409).json({ error: "La convocatoria está cerrada; ya no se pueden cambiar las listas." });
+  }
+  const targetStatus = req.body.status || "no_va";
+  if (!["suplente", "no_va"].includes(targetStatus)) {
+    return res.status(400).json({ error: "El destino debe ser Suplentes o NO VAN." });
   }
   const userId = Number(req.params.userId);
   if (!Number.isSafeInteger(userId) || userId < 1) {
@@ -2482,7 +2489,7 @@ app.post("/api/admin/convocations/current/:userId/no-va", requireAdmin, async (r
           `).run(
             userId,
             currentChargeCents / 100,
-            `Devolución del cargo del partido #${match.id}: baja a NO VAN`,
+            `Devolución del cargo del partido #${match.id}: cambio de Lista Principal a ${targetStatus === "suplente" ? "Suplentes" : "NO VAN"}`,
             match.id,
             charge.id,
           );
@@ -2527,27 +2534,30 @@ app.post("/api/admin/convocations/current/:userId/no-va", requireAdmin, async (r
 
       const changed = await db.prepare(`
         UPDATE convocations
-        SET status = 'no_va', updated_at = CURRENT_TIMESTAMP
+        SET status = ?, updated_at = CURRENT_TIMESTAMP
         WHERE match_id = ? AND user_id = ? AND status = 'principal'
         RETURNING user_id
-      `).get(match.id, userId);
+      `).get(targetStatus, match.id, userId);
       if (!changed) {
         const error = new Error("No se pudo actualizar la respuesta del jugador.");
         error.status = 409;
         throw error;
       }
-      return { alias: principal.alias, refunded: refundedCents / 100 };
+      return { alias: principal.alias, refunded: refundedCents / 100, status: targetStatus };
     })();
 
     if (outcome.error) return res.status(outcome.status).json({ error: outcome.error });
-    await sendRosterRemovalNotification(userId, outcome.alias, match.id);
+    if (outcome.status === "no_va") {
+      await sendRosterRemovalNotification(userId, outcome.alias, match.id);
+    }
     res.json({
       ...await getConvocationData(match, req.session.user.id),
       removedAlias: outcome.alias,
       refunded: outcome.refunded,
+      movedTo: outcome.status,
     });
   } catch (error) {
-    console.error("No se pudo bajar al jugador a NO VAN:", error.message);
+    console.error("No se pudo actualizar el estado del jugador en la convocatoria:", error.message);
     if (error.status) return res.status(error.status).json({ error: error.message });
     res.status(500).json({ error: "No se pudo actualizar la Lista Principal." });
   }
