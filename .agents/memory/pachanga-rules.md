@@ -35,6 +35,12 @@ description: Reglas de negocio semanales para convocatorias, equipos, cobros y c
 
 **How to apply:** validar en backend el estado abierto, la disponibilidad y unicidad del alias; crear/inscribir la cuenta en una transacción, asignar ranking al final y guardar el ID del invitador. Para retirar, autorizar por ID de usuario invitador o rol Admin, mostrar el control solo a quien pueda usarlo y mantener la promoción detrás de `requireAdmin`.
 
+**Baja de principal:** Admin puede mover un jugador de la Lista Principal a NO VAN en una convocatoria abierta. Si ya tiene un cargo de ese partido, se devuelve el saldo pendiente con un asiento de ajuste, sin borrar el cargo original; también se recalculan los totales financieros del partido. El jugador recibe aviso Push si tiene una suscripción disponible.
+
+**Why:** el usuario pidió liberar plazas desde el panel de Admin y conservar intacto el historial financiero al revertir un cargo.
+
+**How to apply:** restringir la operación a Admin y bloquear el cambio si el cargo o los totales financieros son inconsistentes. Actualizar asistencia y finanzas en una transacción; enviar Push tras confirmar los cambios y dejar que fallos de notificación no reviertan la baja.
+
 ## Fotos de perfil
 
 **Regla:** Las fotos de perfil se comprimen en el navegador y se guardan como data URL en la base activa, con un límite de 256 KB por imagen; el selector acepta archivos de galería/dispositivo y no fuerza la cámara. Las respuestas de listas no incluyen estos datos; se consultan al abrir la ficha. Cada jugador puede editar su propia foto y sus datos técnicos (puntos fuertes, puntos débiles, posición y otros datos), pero no su alias. Solo Admin puede editar los datos técnicos y el alias de cualquier jugador.

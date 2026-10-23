@@ -1068,6 +1068,40 @@ async function sendPromotionNotification(userId, recipientLabel, payload) {
   }
 }
 
+async function sendRosterRemovalNotification(userId, alias, matchId) {
+  const label = `jugador @${alias}`;
+  if (!pushConfigured) {
+    console.warn(`[Web Push convocatoria] No se pudo avisar a ${label}: VAPID no está configurado.`);
+    return;
+  }
+  try {
+    const subscriptions = await db.prepare(`
+      SELECT COUNT(*)::integer AS count FROM push_subscriptions WHERE user_id = ?
+    `).get(userId);
+    if (!subscriptions?.count) {
+      console.info(`[Web Push convocatoria] ${label} no tiene dispositivos suscritos.`);
+      return;
+    }
+    const result = await sendUserNotification(userId, {
+      title: "Actualización de Convocatoria",
+      body: "El Administrador te ha movido a la lista NO VAN para el próximo partido.",
+      url: "/",
+      tag: `no-va-${matchId}-${userId}`,
+    }, { cleanupExpired: false });
+    if (result.delivered > 0) {
+      console.info(`[Web Push convocatoria] Aviso de baja enviado a ${label}: ${result.delivered} dispositivo(s).`);
+    }
+    if (result.failed > 0) {
+      console.warn(`[Web Push convocatoria] Fallaron ${result.failed} envío(s) a ${label}.`);
+    }
+    if (result.delivered === 0 && result.failed === 0) {
+      console.info(`[Web Push convocatoria] No hay una suscripción activa para ${label}.`);
+    }
+  } catch (error) {
+    console.error(`[Web Push convocatoria] Error al avisar a ${label}; la baja se mantiene:`, error.message);
+  }
+}
+
 async function sendCancellationNotifications(match) {
   if (!pushConfigured) return { status: "disabled", delivered: 0 };
   const recipients = await db.prepare(`
@@ -2366,6 +2400,156 @@ app.delete("/api/convocations/current/suplentes/:userId", requireUser, async (re
     if (error.status) return res.status(error.status).json({ error: error.message });
     console.error("No se pudo quitar al suplente:", error.message);
     res.status(500).json({ error: "No se pudo quitar al suplente de la convocatoria." });
+  }
+});
+
+app.post("/api/admin/convocations/current/:userId/no-va", requireAdmin, async (req, res) => {
+  const match = await getCurrentMatch();
+  if (!match) return res.status(409).json({ error: "No hay una convocatoria abierta." });
+  if (match.status !== "open") {
+    return res.status(409).json({ error: "La convocatoria está cerrada; ya no se pueden cambiar las listas." });
+  }
+  const userId = Number(req.params.userId);
+  if (!Number.isSafeInteger(userId) || userId < 1) {
+    return res.status(400).json({ error: "Selecciona un jugador válido." });
+  }
+
+  try {
+    const outcome = await db.transaction(async () => {
+      const latestMatch = await db.prepare("SELECT status FROM matches WHERE id = ? FOR UPDATE").get(match.id);
+      if (latestMatch?.status !== "open") {
+        return { error: "La convocatoria ya no está abierta.", status: 409 };
+      }
+      const principal = await db.prepare(`
+        SELECT c.user_id, u.alias
+        FROM convocations c
+        JOIN users u ON u.id = c.user_id
+        WHERE c.match_id = ? AND c.user_id = ? AND c.status = 'principal'
+          AND u.role != 'admin' AND u.account_status = 'active' AND u.deleted_at IS NULL
+        FOR UPDATE OF c, u
+      `).get(match.id, userId);
+      if (!principal) {
+        return { error: "El jugador ya no está en la Lista Principal de esta convocatoria.", status: 409 };
+      }
+
+      let refundedCents = 0;
+      const finance = await db.prepare(`
+        SELECT * FROM match_finances WHERE match_id = ? FOR UPDATE
+      `).get(match.id);
+      let updatedCollectedCents = 0;
+      let updatedPotAddedCents = 0;
+      let updatedParticipants = null;
+      if (finance) {
+        updatedCollectedCents = moneyCents(finance.total_collected);
+        updatedPotAddedCents = moneyCents(finance.pot_added);
+        updatedParticipants = Number(finance.participants) - 1;
+        if (![updatedCollectedCents, updatedPotAddedCents, updatedParticipants].every(Number.isSafeInteger) ||
+            updatedParticipants < 0) {
+          return { error: "Los datos financieros del partido son inconsistentes; no se ha cambiado la convocatoria.", status: 409 };
+        }
+      }
+      const charge = await db.prepare(`
+        SELECT id FROM transactions
+        WHERE user_id = ? AND match_id = ? AND transaction_type = 'match_charge'
+        ORDER BY id LIMIT 1 FOR UPDATE
+      `).get(userId, match.id);
+      if (charge) {
+        const netCents = (await db.prepare(`
+          SELECT COALESCE(SUM(CAST(ROUND(amount * 100) AS INTEGER)), 0) AS cents
+          FROM transactions WHERE id = ? OR adjustment_of = ?
+        `).get(charge.id, charge.id)).cents;
+        const currentChargeCents = -netCents;
+        if (!Number.isSafeInteger(currentChargeCents) || currentChargeCents < 0) {
+          return { error: "El historial del cargo es inconsistente; no se ha cambiado la convocatoria.", status: 409 };
+        }
+
+        if (currentChargeCents > 0) {
+          let updatedPotCents = null;
+          if (finance) {
+            updatedCollectedCents -= currentChargeCents;
+            updatedPotAddedCents -= currentChargeCents;
+            updatedPotCents = await lockCurrentPotCents() - currentChargeCents;
+            if (![updatedCollectedCents, updatedPotAddedCents, updatedPotCents].every(Number.isSafeInteger) ||
+                updatedCollectedCents < 0) {
+              return { error: "No se pudo recalcular el cobro del partido; no se ha cambiado la convocatoria.", status: 409 };
+            }
+          }
+
+          await db.prepare(`
+            INSERT INTO transactions
+              (user_id, amount, concept, match_id, transaction_type, adjustment_of)
+            VALUES (?, ?, ?, ?, 'adjustment', ?)
+          `).run(
+            userId,
+            currentChargeCents / 100,
+            `Devolución del cargo del partido #${match.id}: baja a NO VAN`,
+            match.id,
+            charge.id,
+          );
+          await db.prepare("UPDATE users SET balance = ROUND((balance + ?) * 100) / 100 WHERE id = ?")
+            .run(currentChargeCents / 100, userId);
+          await db.prepare(`
+            UPDATE transactions SET status = 'refunded', adjusted_by = ?, adjusted_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+          `).run(req.session.user.id, charge.id);
+          if (finance) {
+            await db.prepare(`
+              INSERT INTO bote_transactions
+                (match_id, concept, amount, movement_type, balance_after, created_by)
+              VALUES (?, ?, ?, 'match_adjustment', ?, ?)
+            `).run(
+              match.id,
+              `Devolución de cuota de @${principal.alias} · Partido #${match.id}`,
+              -(currentChargeCents / 100),
+              updatedPotCents / 100,
+              req.session.user.id,
+            );
+            await db.prepare(`
+              INSERT INTO app_settings (key, value) VALUES ('pot_cents', ?)
+              ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            `).run(String(updatedPotCents));
+          }
+          refundedCents = currentChargeCents;
+        }
+      }
+      if (finance) {
+        await db.prepare(`
+          UPDATE match_finances
+          SET participants = ?, total_collected = ?, pot_added = ?
+          WHERE match_id = ?
+        `).run(
+          updatedParticipants,
+          updatedCollectedCents / 100,
+          updatedPotAddedCents / 100,
+          match.id,
+        );
+      }
+
+      const changed = await db.prepare(`
+        UPDATE convocations
+        SET status = 'no_va', updated_at = CURRENT_TIMESTAMP
+        WHERE match_id = ? AND user_id = ? AND status = 'principal'
+        RETURNING user_id
+      `).get(match.id, userId);
+      if (!changed) {
+        const error = new Error("No se pudo actualizar la respuesta del jugador.");
+        error.status = 409;
+        throw error;
+      }
+      return { alias: principal.alias, refunded: refundedCents / 100 };
+    })();
+
+    if (outcome.error) return res.status(outcome.status).json({ error: outcome.error });
+    await sendRosterRemovalNotification(userId, outcome.alias, match.id);
+    res.json({
+      ...await getConvocationData(match, req.session.user.id),
+      removedAlias: outcome.alias,
+      refunded: outcome.refunded,
+    });
+  } catch (error) {
+    console.error("No se pudo bajar al jugador a NO VAN:", error.message);
+    if (error.status) return res.status(error.status).json({ error: error.message });
+    res.status(500).json({ error: "No se pudo actualizar la Lista Principal." });
   }
 });
 
