@@ -1869,7 +1869,19 @@ app.post("/api/admin/convocations/new", requireAdmin, async (req, res) => {
 });
 
 app.get("/api/matches", requireUser, async (req, res) => {
-  const rawMatches = await db.prepare("SELECT * FROM matches ORDER BY COALESCE(match_date, start_date) DESC, id DESC LIMIT 12").all();
+  const today = madridDate();
+  const fallbackStartDate = shiftDate(today, -7);
+  const rawMatches = await db.prepare(`
+    SELECT * FROM matches
+    WHERE id IN (
+      SELECT id FROM matches
+      ORDER BY COALESCE(match_date, start_date) DESC, id DESC
+      LIMIT 12
+    )
+    OR match_date >= ?
+    OR (match_date IS NULL AND start_date >= ?)
+    ORDER BY COALESCE(match_date, start_date) DESC, id DESC
+  `).all(today, fallbackStartDate);
   const currentMatch = await getCurrentMatch();
   const matches = await Promise.all(rawMatches.map(async (match) => ({
     ...await matchDetails(match),
@@ -2126,8 +2138,11 @@ app.post("/api/admin/matches/:id/teams/manual", requireAdmin, async (req, res) =
       const match = await db.prepare("SELECT * FROM matches WHERE id = ? FOR UPDATE").get(matchId);
       if (!match) return { error: "No se encontró el partido.", status: 404 };
       const activeMatch = await getCurrentMatch();
-      if (activeMatch?.id !== matchId) {
-        return { error: "La asignación manual solo está disponible para la convocatoria actual.", status: 409 };
+      const matchDate = match.match_date || shiftDate(match.start_date, 7);
+      const isCurrentOrFuture = activeMatch?.id === matchId ||
+        (isValidDateOnly(matchDate) && matchDate >= madridDate());
+      if (!isCurrentOrFuture) {
+        return { error: "La asignación manual solo está disponible para partidos actuales o futuros.", status: 409 };
       }
       if (match.status !== "closed" || match.result) {
         return { error: "La asignación manual requiere una convocatoria cerrada y sin resultado.", status: 409 };
@@ -2136,9 +2151,6 @@ app.post("/api/admin/matches/:id/teams/manual", requireAdmin, async (req, res) =
         return { error: "No se puede modificar una alineación que ya tiene cobros aplicados.", status: 409 };
       }
       const previousDraft = readJson(match.draft_state, {});
-      if (previousDraft.status === "in_progress") {
-        return { error: "El draft de capitanes sigue en curso. Espera a que se publique la alineación antes de reasignar.", status: 409 };
-      }
 
       const participants = await db.prepare(`
         SELECT u.id
@@ -2167,13 +2179,18 @@ app.post("/api/admin/matches/:id/teams/manual", requireAdmin, async (req, res) =
       const revisionHistory = Array.isArray(previousDraft.adminRevisionHistory)
         ? previousDraft.adminRevisionHistory.slice(-49)
         : [];
-      if (isTeamsPublishedStatus(previousDraft.status)) {
+      if (previousDraft.status === "in_progress" || isTeamsPublishedStatus(previousDraft.status) ||
+          previousTeamA.length > 0 || previousTeamB.length > 0) {
+        const previousDraftSnapshot = { ...previousDraft };
+        delete previousDraftSnapshot.adminRevisionHistory;
+        delete previousDraftSnapshot.teamNotification;
         revisionHistory.push({
           changedAt: new Date().toISOString(),
           changedBy: req.session.user.id,
           previousMode: previousDraft.mode || "captains",
           teamA: previousTeamA,
           teamB: previousTeamB,
+          draftState: previousDraftSnapshot,
         });
       }
       const manualDraft = {

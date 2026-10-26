@@ -591,6 +591,10 @@ function renderManualAssignmentPanel(match, principalPlayers, isSaved = false) {
   }
 
   const players = principalPlayers || [];
+  const rosterIds = new Set(players.map((player) => Number(player.id)));
+  for (const id of manualTeamAssignments.keys()) {
+    if (!rosterIds.has(Number(id))) manualTeamAssignments.delete(id);
+  }
   const half = players.length / 2;
   const teamAPlayers = players.filter((player) => manualTeamAssignments.get(Number(player.id)) === "A");
   const teamBPlayers = players.filter((player) => manualTeamAssignments.get(Number(player.id)) === "B");
@@ -602,8 +606,9 @@ function renderManualAssignmentPanel(match, principalPlayers, isSaved = false) {
     return `<li class="flex min-w-0 items-center gap-2 border-b border-ink/[.06] px-3 py-2.5 last:border-0 sm:gap-3">
       <span class="min-w-0 flex-1 truncate text-sm font-bold">@${escapeHtml(player.alias)}</span>
       <div class="flex shrink-0 gap-1">
-        <button type="button" class="manual-team-choice rounded-lg border px-2 py-2 text-[9px] font-extrabold leading-none transition sm:px-2.5 sm:text-[10px] ${assigned === "A" ? "border-pitch-900 bg-pitch-900 text-white" : "border-pitch-900/15 bg-white text-pitch-900"}" data-player-id="${player.id}" data-team="A" aria-pressed="${assigned === "A"}">BLANCOS</button>
-        <button type="button" class="manual-team-choice rounded-lg border px-2 py-2 text-[9px] font-extrabold leading-none transition sm:px-2.5 sm:text-[10px] ${assigned === "B" ? "border-amber-800 bg-amber-800 text-white" : "border-amber-800/15 bg-white text-amber-900"}" data-player-id="${player.id}" data-team="B" aria-pressed="${assigned === "B"}">COLOR</button>
+        <button type="button" class="manual-team-choice rounded-lg border px-2 py-2 text-[8px] font-extrabold leading-none transition sm:px-2.5 sm:text-[10px] ${assigned === "A" ? "border-pitch-900 bg-pitch-900 text-white" : "border-pitch-900/15 bg-white text-pitch-900"}" data-player-id="${player.id}" data-team="A" aria-label="+ BLANCOS" aria-pressed="${assigned === "A"}">+ BLANCOS</button>
+        <button type="button" class="manual-team-choice rounded-lg border px-2 py-2 text-[8px] font-extrabold leading-none transition sm:px-2.5 sm:text-[10px] ${assigned === "B" ? "border-amber-800 bg-amber-800 text-white" : "border-amber-800/15 bg-white text-amber-900"}" data-player-id="${player.id}" data-team="B" aria-label="+ COLOR" aria-pressed="${assigned === "B"}">+ COLOR</button>
+        ${assigned ? `<button type="button" class="manual-team-choice rounded-lg border border-ink/10 bg-paper px-2 py-2 text-[8px] font-extrabold leading-none text-ink/65 transition sm:px-2.5 sm:text-[10px]" data-player-id="${player.id}" data-team="${assigned === "A" ? "B" : "A"}" aria-label="⇄ Cambiar de equipo">⇄ Cambiar</button>` : ""}
       </div>
     </li>`;
   }).join("");
@@ -616,7 +621,7 @@ function renderManualAssignmentPanel(match, principalPlayers, isSaved = false) {
 
   return `<section class="mt-3 rounded-xl border border-ink/[.07] bg-white p-3 sm:p-4" aria-live="polite">
     <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
-      <div><h4 class="text-sm font-extrabold">Asignación manual por Admin</h4><p class="mt-1 text-[11px] text-ink/50">Toca BLANCOS o COLOR junto a cada alias para cambiar su equipo.</p></div>
+      <div><h4 class="text-sm font-extrabold">Asignación manual por Admin</h4><p class="mt-1 text-[11px] text-ink/50">Usa + BLANCOS o + COLOR para asignar; ⇄ Cambiar mueve al jugador al otro equipo.</p></div>
       <span class="rounded-full bg-paper px-3 py-1.5 text-[11px] font-extrabold">${isSaved ? "FORMACIÓN GUARDADA" : "SIN GUARDAR"}</span>
     </div>
     <div class="mb-3 grid grid-cols-2 gap-2">
@@ -629,7 +634,7 @@ function renderManualAssignmentPanel(match, principalPlayers, isSaved = false) {
       ${validationMessage}
       <div class="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
         ${isSaved ? `<button id="cancel-edit-manual-teams" type="button" class="w-full rounded-xl border border-ink/15 px-4 py-3 text-sm font-bold text-ink/65 sm:w-auto">Cancelar</button>` : ""}
-        <button id="save-manual-teams" type="button" ${canSave ? "" : "disabled"} class="w-full rounded-xl bg-pitch-900 px-4 py-3 text-sm font-extrabold text-white transition hover:bg-pitch-800 disabled:cursor-not-allowed disabled:opacity-40 sm:w-auto">${isSaved ? "Guardar cambios" : "Guardar Equipos"}</button>
+        <button id="save-manual-teams" type="button" ${canSave ? "" : "disabled"} class="w-full rounded-xl bg-pitch-900 px-4 py-3 text-sm font-extrabold text-white transition hover:bg-pitch-800 disabled:cursor-not-allowed disabled:opacity-40 sm:w-auto">Guardar Equipos y Notificar</button>
       </div>
     </div>
   </section>`;
@@ -668,35 +673,44 @@ function renderMatchPanel(matchesData, isAdmin = false, showFinance = isAdmin) {
     : users.find((player) => player.id === draft.captainB)?.alias || "Capitán de COLOR";
   const selection = `<label class="block"><span class="mb-1.5 block text-xs font-semibold text-ink/55">Seleccionar partido</span><select id="match-picker" class="w-full rounded-xl border border-ink/10 bg-white px-3 py-2.5 text-sm font-semibold outline-none focus:border-pitch-700">${matches.map((match) => `<option value="${match.id}" ${match.id === selected.id ? "selected" : ""}>${escapeHtml(matchLabel(match))} · ${matchStatusLabel(match.status)}</option>`).join("")}</select></label>`;
   let adminControls = "";
-  const canAdminRepairPublished = isAdmin && selected.status === "closed" && isTeamsPublished(draft.status) &&
-    selected.isCurrent && !selected.result && !selected.finance;
-  const publishedEditButton = `<button id="edit-published-teams" type="button" class="w-full rounded-xl bg-pitch-900 px-4 py-3 text-sm font-extrabold text-white sm:w-auto">Editar Equipos / Reasignar</button>`;
+  const isCurrentOrFuture = selected.isCurrent ||
+    (typeof selected.match_date === "string" && selected.match_date >= madridDateInputValue());
+  const canAdminEditTeams = isAdmin && selected.status === "closed" && isCurrentOrFuture &&
+    !selected.result && !selected.finance;
+  const hasBalancedRoster = principalPlayers.length === 14 || principalPlayers.length === 16;
+  const editTeamsButton = `<button id="edit-teams-manually" type="button" class="w-full rounded-xl bg-pitch-900 px-4 py-3 text-sm font-extrabold text-white sm:w-auto">Asignar / Editar Equipos manualmente</button>`;
   const teamNotificationBanner = isAdmin && selected.teamNotification
     ? `<p role="status" class="mt-3 rounded-xl bg-pitch-50 px-4 py-3 text-xs font-semibold text-pitch-900">${escapeHtml(teamNotificationMessage(selected.teamNotification))}</p>`
     : "";
   if (selected.draftValidationError) {
-    const editPublishedTeams = canAdminRepairPublished
+    const manualRepair = canAdminEditTeams && hasBalancedRoster
       ? manualAssignmentMode
-        ? `<div class="mt-3 rounded-xl bg-white p-3"><p class="mb-3 text-sm font-bold">Corrección administrativa · los capitanes permanecen bloqueados</p>${renderManualAssignmentPanel(selected, principalPlayers, true)}</div>`
-        : `<div class="mt-3">${publishedEditButton}</div>`
+        ? `<div class="mt-3 rounded-xl bg-white p-3"><p class="mb-3 text-sm font-bold">Corrección administrativa · al guardar, los capitanes quedan bloqueados</p>${renderManualAssignmentPanel(selected, principalPlayers, true)}</div>`
+        : `<div class="mt-3">${editTeamsButton}</div>`
       : "";
-    adminControls = `<div class="mt-4 rounded-xl border border-red-700/20 bg-red-50 p-4 text-sm text-red-800" role="alert"><p class="font-bold">Validación del draft bloqueada</p><p class="mt-1">${escapeHtml(selected.draftValidationError)} No se podrá confirmar el resultado ni aplicar el cobro hasta revisar la alineación.</p>${editPublishedTeams}</div>`;
+    adminControls = `<div class="mt-4 rounded-xl border border-red-700/20 bg-red-50 p-4 text-sm text-red-800" role="alert"><p class="font-bold">Validación del draft bloqueada</p><p class="mt-1">${escapeHtml(selected.draftValidationError)} No se podrá confirmar el resultado ni aplicar el cobro hasta revisar la alineación.</p>${manualRepair}</div>`;
   } else if (isAdmin && selected.status === "closed" && draft.status === "in_progress") {
-    adminControls = `<div class="mt-4 rounded-xl bg-paper p-4"><p class="text-sm font-bold">Elección en curso · Turno de ${teamLabel(draft.currentTurn)}</p><p class="mt-1 text-xs text-ink/50">Le toca a ${escapeHtml(turnName)}. Los capitanes eligen desde sus perfiles; la lista se actualiza automáticamente.</p></div>`;
+    adminControls = !canAdminEditTeams
+      ? `<div class="mt-4 rounded-xl bg-paper p-4"><p class="text-sm font-bold">Elección en curso · Turno de ${teamLabel(draft.currentTurn)}</p><p class="mt-1 text-xs text-ink/50">${selected.result || selected.finance ? "No se permiten cambios después de registrar resultado o cobros." : "La edición manual queda limitada a partidos actuales o futuros todavía no jugados."}</p></div>`
+      : manualAssignmentMode
+        ? `<div class="mt-4 rounded-xl bg-paper p-4"><p class="mb-3 text-sm font-bold">Draft en curso · la asignación manual sustituirá el draft y bloqueará a los capitanes</p>${renderManualAssignmentPanel(selected, principalPlayers, true)}</div>`
+        : `<div class="mt-4 flex flex-col gap-3 rounded-xl bg-paper p-4 sm:flex-row sm:items-center sm:justify-between"><div><p class="text-sm font-bold">Elección en curso · Turno de ${teamLabel(draft.currentTurn)}</p><p class="mt-1 text-xs text-ink/50">Le toca a ${escapeHtml(turnName)}. Admin puede asignar los equipos manualmente en cualquier momento antes de jugar.</p></div>${hasBalancedRoster ? editTeamsButton : `<p class="text-xs text-amber-800">Se necesitan 14 o 16 principales para guardar equipos equilibrados.</p>`}</div>`;
   } else if (isAdmin && selected.status === "closed" && isTeamsPublished(draft.status)) {
-    if (!selected.isCurrent) {
-      adminControls = `<p class="mt-4 rounded-xl bg-paper p-4 text-sm text-ink/55">La jornada histórica es de solo consulta; la alineación publicada no puede modificarse.</p>`;
-    } else if (selected.result || selected.finance) {
+    if (selected.result || selected.finance) {
       adminControls = `<p class="mt-4 rounded-xl bg-pitch-100 p-4 text-sm font-bold text-pitch-900">BLANCOS y COLOR publicados. No se pueden cambiar después de registrar el resultado o aplicar cobros.</p>`;
+    } else if (!canAdminEditTeams) {
+      adminControls = `<p class="mt-4 rounded-xl bg-paper p-4 text-sm text-ink/55">La edición manual está disponible en partidos actuales o futuros, antes del resultado y de los cobros.</p>`;
+    } else if (!hasBalancedRoster) {
+      adminControls = `<p class="mt-4 rounded-xl bg-amber-50 p-4 text-sm text-amber-800">Se necesitan exactamente 14 o 16 jugadores principales para reasignar equipos equilibrados.</p>`;
     } else if (manualAssignmentMode) {
       adminControls = `<div class="mt-4 rounded-xl bg-paper p-4"><div class="mb-3 flex flex-wrap items-center justify-between gap-2"><p class="text-sm font-bold">Alineación publicada · edición exclusiva de Admin</p><span class="rounded-full bg-pitch-100 px-3 py-1.5 text-[11px] font-extrabold text-pitch-900">CAPITANES BLOQUEADOS</span></div>${renderManualAssignmentPanel(selected, principalPlayers, true)}</div>`;
     } else {
-      adminControls = `<div class="mt-4 flex flex-col gap-3 rounded-xl bg-pitch-100 p-4 sm:flex-row sm:items-center sm:justify-between"><div><p class="text-sm font-extrabold text-pitch-900">Equipos publicados · Capitanes bloqueados</p><p class="mt-1 text-xs leading-5 text-pitch-900/70">Solo Admin puede modificar esta alineación antes del resultado.</p></div>${publishedEditButton}</div>`;
+      adminControls = `<div class="mt-4 flex flex-col gap-3 rounded-xl bg-pitch-100 p-4 sm:flex-row sm:items-center sm:justify-between"><div><p class="text-sm font-extrabold text-pitch-900">Equipos publicados · Capitanes bloqueados</p><p class="mt-1 text-xs leading-5 text-pitch-900/70">Admin puede reasignar la formación antes del resultado y los cobros.</p></div>${editTeamsButton}</div>`;
     }
   } else if (isAdmin && selected.status === "closed" && !draft.status) {
     const count = selected.principalCount ?? convocationData?.principalCount ?? 0;
-    if (!selected.isCurrent) {
-      adminControls = `<p class="mt-4 rounded-xl bg-paper p-4 text-sm text-ink/55">La jornada histórica es de solo consulta; la asignación solo se puede modificar en la convocatoria actual.</p>`;
+    if (!canAdminEditTeams) {
+      adminControls = `<p class="mt-4 rounded-xl bg-paper p-4 text-sm text-ink/55">La asignación manual está disponible tras cerrar la convocatoria, para jornadas actuales o futuras y antes del resultado/cobro.</p>`;
     } else if (count !== 14 && count !== 16) {
       adminControls = `<p class="mt-4 rounded-xl bg-amber-50 p-4 text-sm text-amber-800">${count === 15 ? "No se puede formar una alineación equilibrada con 15 jugadores. Ajusta la Lista Principal a 14 o 16." : `El reparto equilibrado requiere 14 o 16 confirmados; hay ${count}.`}</p>`;
     } else {
@@ -1650,7 +1664,7 @@ function bindMatchActions(isAdmin = false) {
       await renderAdmin();
     });
   });
-  document.querySelector("#edit-published-teams")?.addEventListener("click", async () => {
+  document.querySelector("#edit-teams-manually")?.addEventListener("click", async () => {
     manualAssignmentMode = true;
     manualAssignmentMatchId = Number(selectedMatchId);
     manualTeamAssignments = new Map();
