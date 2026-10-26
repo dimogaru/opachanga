@@ -16,6 +16,9 @@ let standingAdjustmentsData = [];
 let pendingUsers = [];
 let financeData = { players: [], transactions: [], pot: 0 };
 let activeAdminTab = "convocatoria";
+let manualAssignmentMode = false;
+let manualAssignmentMatchId = null;
+let manualTeamAssignments = new Map();
 
 async function api(url, options = {}) {
   const response = await fetch(url, {
@@ -46,6 +49,10 @@ function profileButton(userId, alias) {
     <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="8" r="3.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 20c.6-3.4 3.2-5.5 7-5.5s6.4 2.1 7 5.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
     <span>Perfil</span>
   </button>`;
+}
+
+function teamLabel(team) {
+  return team === "A" ? "BLANCOS" : "COLOR";
 }
 
 function profileAvatar(photoUrl, alias, size = "h-24 w-24") {
@@ -309,9 +316,9 @@ function renderConvocationHistorySummary(match) {
   const allPlayers = [...teamA, ...teamB];
   const aliasFor = (id) => allPlayers.find((player) => player.id === id)?.alias || "—";
   const captains = match.draft?.captainA && match.draft?.captainB
-    ? `<div class="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-xs text-ink/55"><span>Capitán A: <b class="text-ink">${escapeHtml(aliasFor(match.draft.captainA))}</b></span><span>Capitán B: <b class="text-ink">${escapeHtml(aliasFor(match.draft.captainB))}</b></span></div>`
+    ? `<div class="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-xs text-ink/55"><span>Capitán de BLANCOS: <b class="text-ink">${escapeHtml(aliasFor(match.draft.captainA))}</b></span><span>Capitán de COLOR: <b class="text-ink">${escapeHtml(aliasFor(match.draft.captainB))}</b></span></div>`
     : "";
-  const resultLabel = match.result === "draw" ? "Empate" : match.result ? `Ganó el Equipo ${match.result}` : "Sin resultado registrado";
+  const resultLabel = match.result === "draw" ? "Empate" : match.result ? `Ganó ${teamLabel(match.result)}` : "Sin resultado registrado";
   const finance = match.finance;
   const financeSummary = finance
     ? `<div class="mt-4 grid gap-2 rounded-xl bg-paper p-3 text-xs text-ink/60 sm:grid-cols-2 lg:grid-cols-4"><span>Coste de pista: <b class="text-ink">${formatMoney(finance.pitch_cost)}</b></span><span>Cuota por jugador: <b class="text-ink">${formatMoney(finance.fee_per_player)}</b></span><span>Total cobrado: <b class="text-ink">${formatMoney(finance.total_collected)}</b></span><span>Añadido al bote: <b class="text-pitch-800">${formatMoney(finance.pot_added)}</b></span></div>`
@@ -330,7 +337,7 @@ function renderConvocationHistorySummary(match) {
   return `<section class="mb-5 rounded-2xl border border-ink/[.07] bg-white p-4 shadow-sm sm:p-5">
     <div class="flex flex-wrap items-center justify-between gap-2"><div><p class="text-[10px] font-extrabold uppercase tracking-[.12em] text-pitch-700">Resumen guardado</p><h3 class="mt-1 font-bold">Partido · ${escapeHtml(resultLabel)}</h3></div><span class="rounded-full bg-paper px-3 py-1.5 text-xs font-bold text-ink/55">${teamA.length + teamB.length} jugadores en equipos</span></div>
     ${captains}
-    <div class="mt-4 grid gap-3 sm:grid-cols-2">${renderTeamCard("Equipo A", teamA, "bg-pitch-100 text-pitch-900")}${renderTeamCard("Equipo B", teamB, "bg-amber-50 text-amber-900")}</div>
+    <div class="mt-4 grid gap-3 sm:grid-cols-2">${renderTeamCard("BLANCOS", teamA, "bg-pitch-100 text-pitch-900")}${renderTeamCard("COLOR", teamB, "bg-amber-50 text-amber-900")}</div>
     ${financeSummary}
     ${transactionsSummary}
   </section>`;
@@ -441,14 +448,14 @@ function renderConvocationBoard(data, isAdmin = false, history = []) {
     ? `<div class="border-t border-white/10 bg-white/[.03] p-4 text-xs text-white/60 sm:px-7">Jornada histórica · vista de solo consulta.</div>`
     : open
     ? `<form id="close-convocation-form" class="grid gap-3 border-t border-white/10 bg-white/[.03] p-4 sm:grid-cols-[1fr_1fr_auto] sm:items-end sm:px-7">
-        ${data.validForMatch ? `<label class="text-xs font-semibold text-white/70">Capitán A<select name="captainA" required class="mt-1.5 w-full rounded-xl border border-white/15 bg-pitch-800 px-3 py-2.5 text-sm text-white">${captainOptionsA}</select></label><label class="text-xs font-semibold text-white/70">Capitán B<select name="captainB" required class="mt-1.5 w-full rounded-xl border border-white/15 bg-pitch-800 px-3 py-2.5 text-sm text-white">${captainOptionsB}</select></label>` : `<p class="text-xs text-white/60 sm:col-span-2">Se puede cerrar con cualquier recuento; el draft equilibrado solo se habilita con 14 o 16 principales.</p>`}
+        ${data.validForMatch ? `<label class="text-xs font-semibold text-white/70">Capitán de BLANCOS<select name="captainA" required class="mt-1.5 w-full rounded-xl border border-white/15 bg-pitch-800 px-3 py-2.5 text-sm text-white">${captainOptionsA}</select></label><label class="text-xs font-semibold text-white/70">Capitán de COLOR<select name="captainB" required class="mt-1.5 w-full rounded-xl border border-white/15 bg-pitch-800 px-3 py-2.5 text-sm text-white">${captainOptionsB}</select></label>` : `<p class="text-xs text-white/60 sm:col-span-2">Se puede cerrar con cualquier recuento; el draft equilibrado solo se habilita con 14 o 16 principales.</p>`}
         <button class="rounded-xl bg-lime px-4 py-2.5 text-xs font-extrabold text-pitch-950">${data.validForMatch ? "Cerrar y guardar capitanes" : "Cerrar convocatoria"}</button>
       </form>${canCancel ? `<div class="border-t border-white/10 bg-white/[.03] px-4 pb-4 pt-3 sm:px-7">${cancelButton}</div>` : ""}`
     : data.match.status === "cancelled"
       ? `<div class="border-t border-white/10 bg-white/[.03] p-4 text-xs text-white/60 sm:px-7">Convocatoria cancelada: no se alcanzó el mínimo de 14 jugadores.</div>`
     : data.match.status === "played"
       ? `<div class="border-t border-white/10 bg-white/[.03] p-4 text-xs text-white/60 sm:px-7">Partido jugado; la convocatoria no se puede reabrir.</div>`
-      : `<div class="flex flex-col gap-3 border-t border-white/10 bg-white/[.03] p-4 sm:flex-row sm:items-center sm:justify-between sm:px-7"><span class="text-xs text-white/60">Convocatoria cerrada. ${data.match.draft?.status === "in_progress" ? `Capitanes designados; turno del Equipo ${data.match.draft.currentTurn}.` : data.validForMatch ? "Revisa los capitanes en Partidos." : "No se puede iniciar el draft con este recuento."}</span><div class="flex flex-wrap gap-2">${canReopen ? `<button id="open-convocation" class="rounded-xl border border-white/20 px-4 py-2.5 text-xs font-bold text-white transition hover:bg-white/10">Abrir convocatoria</button>` : ""}${cancelButton}</div></div>`;
+      : `<div class="flex flex-col gap-3 border-t border-white/10 bg-white/[.03] p-4 sm:flex-row sm:items-center sm:justify-between sm:px-7"><span class="text-xs text-white/60">Convocatoria cerrada. ${data.match.draft?.status === "in_progress" ? `Capitanes designados; turno de ${teamLabel(data.match.draft.currentTurn)}.` : data.validForMatch ? "Revisa los capitanes en Partidos." : "No se puede iniciar el draft con este recuento."}</span><div class="flex flex-wrap gap-2">${canReopen ? `<button id="open-convocation" class="rounded-xl border border-white/20 px-4 py-2.5 text-xs font-bold text-white transition hover:bg-white/10">Abrir convocatoria</button>` : ""}${cancelButton}</div></div>`;
   return `
     ${data.match.status === "cancelled" ? renderCancellationAlert(data.match) : ""}
     ${isAdmin ? renderConvocationHistorySelector(data, history) : ""}
@@ -525,23 +532,73 @@ function renderCaptainDraft(match) {
   const myTeam = currentUser.id === draft.captainA ? "A" : "B";
   const isMyTurn = draft.currentTurn === myTeam;
   const activeCaptainName = draft.currentTurn === "A"
-    ? users.find((player) => player.id === draft.captainA)?.alias || "Capitán A"
-    : users.find((player) => player.id === draft.captainB)?.alias || "Capitán B";
+    ? users.find((player) => player.id === draft.captainA)?.alias || "Capitán de BLANCOS"
+    : users.find((player) => player.id === draft.captainB)?.alias || "Capitán de COLOR";
   const available = match.available || [];
   const remaining = draft.remaining?.length || 0;
   const selectionHint = remaining === 3
-    ? "Quedan tres: el capitán A elige dos seguidos y el último jugador se asigna automáticamente al Equipo B."
+    ? "Quedan tres: BLANCOS elige dos seguidos y el último jugador se asigna automáticamente a COLOR."
     : remaining === 2 && draft.currentTurn === "A"
-      ? "Al capitán A le queda una elección antes de que el último jugador se asigne automáticamente al Equipo B."
+      ? "Al capitán de BLANCOS le queda una elección antes de que el último jugador se asigne automáticamente a COLOR."
       : "Los capitanes alternan una elección cada uno.";
   const playerCards = available.length
     ? available.map((player) => `<button type="button" class="captain-draft-pick flex min-h-14 w-full items-center justify-between gap-3 rounded-xl border border-ink/10 bg-white px-4 py-3 text-left shadow-sm transition ${isMyTurn ? "hover:border-pitch-700 hover:bg-pitch-50 active:scale-[.99]" : "cursor-not-allowed opacity-55"}" data-match-id="${match.id}" data-player-id="${player.id}" data-final-pick="${remaining === 2 && draft.currentTurn === "A"}" ${isMyTurn ? "" : "disabled"}><span class="min-w-0 truncate text-sm font-semibold">${escapeHtml(player.alias)}</span><span class="shrink-0 rounded-lg bg-pitch-100 px-2.5 py-1.5 text-[11px] font-extrabold text-pitch-800">${isMyTurn ? "Elegir" : "En espera"}</span></button>`).join("")
     : `<p class="rounded-xl bg-white/70 p-4 text-sm text-ink/50">El draft se está completando.</p>`;
   return `<section class="my-4 rounded-2xl border border-pitch-700/15 bg-pitch-50 p-4 sm:p-5" aria-live="polite">
-    <div class="flex flex-wrap items-start justify-between gap-3"><div><p class="text-[10px] font-extrabold uppercase tracking-[.13em] text-pitch-700">Elección de equipos</p><h3 class="display mt-1 text-xl font-extrabold">Eres capitán del Equipo ${myTeam}</h3></div><span class="rounded-full ${isMyTurn ? "bg-pitch-900 text-white" : "bg-white text-ink/60"} px-3 py-1.5 text-xs font-extrabold">${isMyTurn ? "TU TURNO" : `Turno de ${escapeHtml(activeCaptainName)}`}</span></div>
+    <div class="flex flex-wrap items-start justify-between gap-3"><div><p class="text-[10px] font-extrabold uppercase tracking-[.13em] text-pitch-700">Elección de equipos</p><h3 class="display mt-1 text-xl font-extrabold">Eres capitán de ${teamLabel(myTeam)}</h3></div><span class="rounded-full ${isMyTurn ? "bg-pitch-900 text-white" : "bg-white text-ink/60"} px-3 py-1.5 text-xs font-extrabold">${isMyTurn ? "TU TURNO" : `Turno de ${escapeHtml(activeCaptainName)}`}</span></div>
     <p class="mt-2 text-sm leading-5 text-ink/60">${isMyTurn ? "Toca un jugador de la lista para sumarlo a tu equipo." : `${escapeHtml(activeCaptainName)} está eligiendo. La lista se actualizará automáticamente.`}</p>
     <div class="mt-3 grid gap-2 sm:grid-cols-2">${playerCards}</div>
     <p class="mt-3 text-[11px] leading-5 text-ink/45">${selectionHint} · ${remaining} ${remaining === 1 ? "jugador restante" : "jugadores restantes"}</p>
+  </section>`;
+}
+
+function renderManualAssignmentPanel(match, principalPlayers, isSaved = false) {
+  if (manualAssignmentMatchId !== match.id) {
+    manualAssignmentMatchId = match.id;
+    manualTeamAssignments = new Map();
+    for (const player of match.teamA || []) manualTeamAssignments.set(Number(player.id), "A");
+    for (const player of match.teamB || []) manualTeamAssignments.set(Number(player.id), "B");
+  }
+
+  const players = principalPlayers || [];
+  const half = players.length / 2;
+  const teamAPlayers = players.filter((player) => manualTeamAssignments.get(Number(player.id)) === "A");
+  const teamBPlayers = players.filter((player) => manualTeamAssignments.get(Number(player.id)) === "B");
+  const unassigned = players.filter((player) => !manualTeamAssignments.has(Number(player.id)));
+  const validRoster = players.length === 14 || players.length === 16;
+  const canSave = validRoster && teamAPlayers.length === half && teamBPlayers.length === half && unassigned.length === 0;
+  const rows = players.map((player) => {
+    const assigned = manualTeamAssignments.get(Number(player.id));
+    return `<li class="flex min-w-0 items-center gap-2 border-b border-ink/[.06] px-3 py-2.5 last:border-0 sm:gap-3">
+      <span class="min-w-0 flex-1 truncate text-sm font-bold">@${escapeHtml(player.alias)}</span>
+      <div class="flex shrink-0 gap-1">
+        <button type="button" class="manual-team-choice rounded-lg border px-2 py-2 text-[9px] font-extrabold leading-none transition sm:px-2.5 sm:text-[10px] ${assigned === "A" ? "border-pitch-900 bg-pitch-900 text-white" : "border-pitch-900/15 bg-white text-pitch-900"}" data-player-id="${player.id}" data-team="A" aria-pressed="${assigned === "A"}">BLANCOS</button>
+        <button type="button" class="manual-team-choice rounded-lg border px-2 py-2 text-[9px] font-extrabold leading-none transition sm:px-2.5 sm:text-[10px] ${assigned === "B" ? "border-amber-800 bg-amber-800 text-white" : "border-amber-800/15 bg-white text-amber-900"}" data-player-id="${player.id}" data-team="B" aria-pressed="${assigned === "B"}">COLOR</button>
+      </div>
+    </li>`;
+  }).join("");
+  const previewRows = (team) => team.length
+    ? `<ul class="divide-y divide-ink/[.06]">${team.map((player) => `<li class="truncate px-3 py-2 text-xs font-semibold">@${escapeHtml(player.alias)}</li>`).join("")}</ul>`
+    : `<p class="px-3 py-4 text-xs text-ink/45">Sin jugadores asignados.</p>`;
+  const validationMessage = canSave
+    ? `<p class="text-xs font-semibold text-pitch-800">Reparto equilibrado: ${half} jugadores por equipo.</p>`
+    : `<p class="text-xs font-semibold text-amber-800">${unassigned.length ? `Asigna los ${unassigned.length} jugador(es) pendientes. ` : ""}BLANCOS: ${teamAPlayers.length} / COLOR: ${teamBPlayers.length}; deben quedar ${half} por equipo.</p>`;
+
+  return `<section class="mt-3 rounded-xl border border-ink/[.07] bg-white p-3 sm:p-4" aria-live="polite">
+    <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+      <div><h4 class="text-sm font-extrabold">Asignación manual por Admin</h4><p class="mt-1 text-[11px] text-ink/50">Toca BLANCOS o COLOR junto a cada alias para cambiar su equipo.</p></div>
+      <span class="rounded-full bg-paper px-3 py-1.5 text-[11px] font-extrabold">${isSaved ? "FORMACIÓN GUARDADA" : "SIN GUARDAR"}</span>
+    </div>
+    <div class="mb-3 grid grid-cols-2 gap-2">
+      <section class="overflow-hidden rounded-xl border border-pitch-900/15 bg-pitch-50"><header class="flex items-center justify-between px-3 py-2"><b class="text-xs text-pitch-900">BLANCOS</b><span class="rounded-full bg-white px-2 py-1 text-[10px] font-extrabold">${teamAPlayers.length} / ${half || 0}</span></header>${previewRows(teamAPlayers)}</section>
+      <section class="overflow-hidden rounded-xl border border-amber-800/15 bg-amber-50"><header class="flex items-center justify-between px-3 py-2"><b class="text-xs text-amber-900">COLOR</b><span class="rounded-full bg-white px-2 py-1 text-[10px] font-extrabold">${teamBPlayers.length} / ${half || 0}</span></header>${previewRows(teamBPlayers)}</section>
+    </div>
+    ${unassigned.length ? `<p class="mb-2 rounded-lg bg-paper px-3 py-2 text-[11px] text-ink/55">Sin asignar: ${unassigned.map((player) => `@${escapeHtml(player.alias)}`).join(" · ")}</p>` : ""}
+    <ul class="overflow-hidden rounded-xl border border-ink/[.07]">${rows}</ul>
+    <div class="mt-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      ${validationMessage}
+      <button id="save-manual-teams" type="button" ${canSave ? "" : "disabled"} class="w-full rounded-xl bg-pitch-900 px-4 py-3 text-sm font-extrabold text-white transition hover:bg-pitch-800 disabled:cursor-not-allowed disabled:opacity-40 sm:w-auto">${isSaved ? "Guardar Equipos" : "Guardar Equipos"}</button>
+    </div>
   </section>`;
 }
 
@@ -558,6 +615,11 @@ function renderMatchPanel(matchesData, isAdmin = false, showFinance = isAdmin) {
       matches.find((match) => match.status === "played") || matches[0];
     selectedMatchId = selected.id;
   }
+  if (manualAssignmentMatchId !== selected.id) {
+    manualAssignmentMatchId = null;
+    manualTeamAssignments = new Map();
+    manualAssignmentMode = false;
+  }
   const draft = selected.draft || {};
   const completed = draft.status === "complete";
   const available = selected.available || [];
@@ -569,27 +631,42 @@ function renderMatchPanel(matchesData, isAdmin = false, showFinance = isAdmin) {
     `<option value="${player.id}" ${player.id === draft.captainB || (!draft.captainB && index === 1) ? "selected" : ""}>${escapeHtml(player.alias)}</option>`,
   ).join("");
   const turnName = draft.currentTurn === "A"
-    ? users.find((player) => player.id === draft.captainA)?.alias || "Capitán 1"
-    : users.find((player) => player.id === draft.captainB)?.alias || "Capitán 2";
+    ? users.find((player) => player.id === draft.captainA)?.alias || "Capitán de BLANCOS"
+    : users.find((player) => player.id === draft.captainB)?.alias || "Capitán de COLOR";
   const selection = `<label class="block"><span class="mb-1.5 block text-xs font-semibold text-ink/55">Seleccionar partido</span><select id="match-picker" class="w-full rounded-xl border border-ink/10 bg-white px-3 py-2.5 text-sm font-semibold outline-none focus:border-pitch-700">${matches.map((match) => `<option value="${match.id}" ${match.id === selected.id ? "selected" : ""}>${escapeHtml(matchLabel(match))} · ${matchStatusLabel(match.status)}</option>`).join("")}</select></label>`;
   let adminControls = "";
   if (selected.draftValidationError) {
     adminControls = `<div class="mt-4 rounded-xl border border-red-700/20 bg-red-50 p-4 text-sm text-red-800" role="alert"><p class="font-bold">Validación del draft bloqueada</p><p class="mt-1">${escapeHtml(selected.draftValidationError)} No se podrá confirmar el resultado ni aplicar el cobro hasta revisar la alineación.</p></div>`;
-  } else if (isAdmin && selected.status === "closed" && !["in_progress", "complete"].includes(draft.status)) {
+  } else if (isAdmin && selected.status === "closed" && draft.status === "in_progress") {
+    adminControls = `<div class="mt-4 rounded-xl bg-paper p-4"><p class="text-sm font-bold">Elección en curso · Turno de ${teamLabel(draft.currentTurn)}</p><p class="mt-1 text-xs text-ink/50">Le toca a ${escapeHtml(turnName)}. Los capitanes eligen desde sus perfiles; la lista se actualiza automáticamente.</p></div>`;
+  } else if (isAdmin && selected.status === "closed" &&
+      (!draft.status || (draft.status === "complete" && draft.mode === "manual"))) {
     const count = selected.principalCount ?? convocationData?.principalCount ?? 0;
-      adminControls = count === 14 || count === 16
-      ? `<form id="start-draft-form" data-match-id="${selected.id}" class="mt-4 rounded-xl bg-paper p-4"><p class="text-sm font-bold">Convocatoria cerrada · ${count} principales</p><p class="mt-1 text-xs text-ink/50">Elige los capitanes A y B. El capitán B empieza; al quedar tres jugadores, el capitán A elige dos y el último se asigna automáticamente al Equipo B para igualar las plantillas.</p><div class="mt-3 grid gap-2 sm:grid-cols-[1fr_1fr_auto] sm:items-end"><label class="text-xs font-semibold text-ink/55">Capitán A<select name="captainA" required class="mt-1 block w-full rounded-xl border border-ink/10 bg-white px-3 py-2.5 text-sm">${captainOptionsA}</select></label><label class="text-xs font-semibold text-ink/55">Capitán B<select name="captainB" required class="mt-1 block w-full rounded-xl border border-ink/10 bg-white px-3 py-2.5 text-sm">${captainOptionsB}</select></label><button class="rounded-xl bg-pitch-900 px-4 py-2.5 text-sm font-bold text-white">Iniciar draft</button></div></form>`
-      : `<p class="mt-4 rounded-xl bg-amber-50 p-4 text-sm text-amber-800">${count === 15 ? "No se puede iniciar un draft equilibrado con 15 jugadores. Ajusta la Lista Principal a 14 o 16." : `El draft requiere 14 o 16 confirmados principales; hay ${count}.`}</p>`;
-  } else if (isAdmin && draft.status === "in_progress") {
-    adminControls = `<div class="mt-4 rounded-xl bg-paper p-4"><p class="text-sm font-bold">Elección en curso · Turno del Equipo ${draft.currentTurn}</p><p class="mt-1 text-xs text-ink/50">Le toca a ${escapeHtml(turnName)}. Los capitanes eligen desde sus perfiles; la lista se actualiza automáticamente.</p></div>`;
+    const isSavedManual = draft.status === "complete" && draft.mode === "manual";
+    if (!selected.isCurrent) {
+      adminControls = `<p class="mt-4 rounded-xl bg-paper p-4 text-sm text-ink/55">La jornada histórica es de solo consulta; la asignación solo se puede modificar en la convocatoria actual.</p>`;
+    } else if (count !== 14 && count !== 16) {
+      adminControls = `<p class="mt-4 rounded-xl bg-amber-50 p-4 text-sm text-amber-800">${count === 15 ? "No se puede formar una alineación equilibrada con 15 jugadores. Ajusta la Lista Principal a 14 o 16." : `El reparto equilibrado requiere 14 o 16 confirmados; hay ${count}.`}</p>`;
+    } else {
+      const modeTabs = isSavedManual
+        ? `<p class="rounded-xl bg-pitch-100 px-3 py-2 text-xs font-extrabold text-pitch-900">Modo activo: Asignación Manual por Admin</p>`
+        : `<div class="grid grid-cols-2 gap-2" role="group" aria-label="Método de selección de equipos">
+            <button type="button" class="draft-mode-choice rounded-xl px-3 py-2.5 text-xs font-extrabold transition ${manualAssignmentMode ? "border border-ink/10 bg-white text-ink/60" : "bg-pitch-900 text-white"}" data-manual-mode="false" aria-pressed="${!manualAssignmentMode}">Draft de capitanes</button>
+            <button type="button" class="draft-mode-choice rounded-xl px-3 py-2.5 text-xs font-extrabold transition ${manualAssignmentMode ? "bg-pitch-900 text-white" : "border border-ink/10 bg-white text-ink/60"}" data-manual-mode="true" aria-pressed="${manualAssignmentMode}">Asignación Manual por Admin</button>
+          </div>`;
+      const modeContent = manualAssignmentMode || isSavedManual
+        ? renderManualAssignmentPanel(selected, principalPlayers, isSavedManual)
+        : `<form id="start-draft-form" data-match-id="${selected.id}" class="mt-3 rounded-xl bg-paper p-4"><p class="text-sm font-bold">Draft de capitanes · ${count} principales</p><p class="mt-1 text-xs text-ink/50">Designa los capitanes de BLANCOS y COLOR. COLOR empieza; al quedar tres jugadores, BLANCOS elige dos y el último se asigna automáticamente a COLOR para igualar las plantillas.</p><div class="mt-3 grid gap-2 sm:grid-cols-[1fr_1fr_auto] sm:items-end"><label class="text-xs font-semibold text-ink/55">Capitán de BLANCOS<select name="captainA" required class="mt-1 block w-full rounded-xl border border-ink/10 bg-white px-3 py-2.5 text-sm">${captainOptionsA}</select></label><label class="text-xs font-semibold text-ink/55">Capitán de COLOR<select name="captainB" required class="mt-1 block w-full rounded-xl border border-ink/10 bg-white px-3 py-2.5 text-sm">${captainOptionsB}</select></label><button class="rounded-xl bg-pitch-900 px-4 py-2.5 text-sm font-bold text-white">Iniciar draft</button></div></form>`;
+      adminControls = `<div class="mt-4 rounded-xl bg-paper p-4"><p class="mb-3 text-sm font-bold">Convocatoria cerrada · ${count} principales</p>${modeTabs}${modeContent}</div>`;
+    }
   } else if (selected.status === "cancelled") {
     adminControls = `<div class="mt-4 rounded-xl border border-red-700/20 bg-red-50 p-4 text-sm text-red-800" role="alert"><p class="font-bold">Convocatoria cancelada</p><p class="mt-1">No se registrará resultado, cobro ni puntuación para este evento.</p></div>`;
   } else if (selected.status === "open") {
     adminControls = `<p class="mt-4 rounded-xl bg-paper p-4 text-sm text-ink/55">El draft estará disponible después de cerrar la convocatoria.</p>`;
   } else if (draft.status === "complete") {
-    adminControls = `<p class="mt-4 rounded-xl bg-pitch-100 p-4 text-sm font-bold text-pitch-900">Draft completo. Composición de equipos guardada.</p>`;
+    adminControls = `<p class="mt-4 rounded-xl bg-pitch-100 p-4 text-sm font-bold text-pitch-900">${draft.mode === "manual" ? "Asignación manual guardada." : "Draft completo. Composición de equipos guardada."}</p>`;
   }
-  const scoreText = selected.result === "draw" ? "Empate" : selected.result ? `Victoria del Equipo ${selected.result}` : "";
+  const scoreText = selected.result === "draw" ? "Empate" : selected.result ? `Victoria de ${teamLabel(selected.result)}` : "";
   const finance = selected.finance;
   const financeControl = isAdmin && showFinance
     ? selected.status === "cancelled"
@@ -603,13 +680,13 @@ function renderMatchPanel(matchesData, isAdmin = false, showFinance = isAdmin) {
     ? canSaveResult
       ? `<form id="match-result-form" data-match-id="${selected.id}" data-existing="${selected.status === "played"}" class="mt-4 grid gap-3 rounded-xl bg-white p-4 sm:grid-cols-[1fr_auto] sm:items-end">
           <div class="sm:col-span-2"><h3 class="font-bold">Registrar Resultado del Partido</h3><p class="mt-1 text-xs text-ink/50">${selected.status === "played" ? "Si corriges el resultado, se sustituyen los puntos anteriores de este partido." : "La clasificación se actualizará al guardar el resultado."}</p></div>
-          <label class="block"><span class="mb-1.5 block text-xs font-semibold text-ink/55">Resultado final</span><select name="result" required class="w-full rounded-xl border border-ink/10 bg-white px-3 py-2.5 text-sm"><option value="A" ${selected.result === "A" ? "selected" : ""}>Ganó Equipo A</option><option value="B" ${selected.result === "B" ? "selected" : ""}>Ganó Equipo B</option><option value="draw" ${selected.result === "draw" ? "selected" : ""}>Empate</option></select></label>
+          <label class="block"><span class="mb-1.5 block text-xs font-semibold text-ink/55">Resultado final</span><select name="result" required class="w-full rounded-xl border border-ink/10 bg-white px-3 py-2.5 text-sm"><option value="A" ${selected.result === "A" ? "selected" : ""}>Ganó BLANCOS</option><option value="B" ${selected.result === "B" ? "selected" : ""}>Ganó COLOR</option><option value="draw" ${selected.result === "draw" ? "selected" : ""}>Empate</option></select></label>
           <button class="rounded-xl bg-lime px-4 py-2.5 text-sm font-extrabold text-pitch-950">${selected.status === "played" ? "Actualizar resultado y puntos" : finance ? "Guardar resultado y puntos" : "Guardar resultado y cobrar"}</button>
           ${selected.status !== "played" && !finance ? `<p class="text-xs text-ink/45 sm:col-span-2">Se cobrará ${formatMoney(selected.pitch_price)} entre quienes jugaron; cualquier redondeo se suma al bote.</p>` : ""}
         </form>`
       : `<p class="mt-4 rounded-xl bg-amber-50 p-4 text-sm text-amber-800">Antes de guardar el resultado, define el Precio por Partido en Finanzas.</p>`
     : selected.status === "played" ? `<p class="mt-4 rounded-xl bg-lime/20 p-4 text-sm font-bold text-pitch-900">Resultado: ${scoreText}. Puntuación guardada: asistencia +1, victoria +3 extra, empate +1 extra.</p>` : "";
-  return `<section class="mb-7 rounded-3xl border border-ink/[.07] bg-white p-5 shadow-sm sm:p-6"><div class="mb-4 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between"><div><p class="text-xs font-bold uppercase tracking-[.12em] text-pitch-700">Partidos</p><h2 class="display mt-1 text-2xl font-extrabold">${escapeHtml(matchLabel(selected))}</h2><p class="mt-1 text-xs text-ink/50">${selected.status === "cancelled" ? "Convocatoria cancelada" : selected.status === "played" ? "Partido jugado" : selected.status === "closed" ? "Convocatoria cerrada" : "Convocatoria abierta"}</p></div><div class="w-full sm:max-w-xs">${selection}</div></div><div class="grid gap-3 sm:grid-cols-2">${renderTeamCard("Equipo A", selected.teamA || [], "bg-pitch-100 text-pitch-900")}${renderTeamCard("Equipo B", selected.teamB || [], "bg-amber-50 text-amber-900")}</div>${isAdmin ? adminControls : renderCaptainDraft(selected)}${financeControl}${resultControl}</section>`;
+  return `<section class="mb-7 rounded-3xl border border-ink/[.07] bg-white p-5 shadow-sm sm:p-6"><div class="mb-4 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between"><div><p class="text-xs font-bold uppercase tracking-[.12em] text-pitch-700">Partidos</p><h2 class="display mt-1 text-2xl font-extrabold">${escapeHtml(matchLabel(selected))}</h2><p class="mt-1 text-xs text-ink/50">${selected.status === "cancelled" ? "Convocatoria cancelada" : selected.status === "played" ? "Partido jugado" : selected.status === "closed" ? "Convocatoria cerrada" : "Convocatoria abierta"}</p></div><div class="w-full sm:max-w-xs">${selection}</div></div><div class="grid gap-3 sm:grid-cols-2">${renderTeamCard("BLANCOS", selected.teamA || [], "bg-pitch-100 text-pitch-900")}${renderTeamCard("COLOR", selected.teamB || [], "bg-amber-50 text-amber-900")}</div>${isAdmin ? adminControls : renderCaptainDraft(selected)}${financeControl}${resultControl}</section>`;
 }
 
 function renderMatchFinanceControl(matchesData) {
@@ -1167,7 +1244,7 @@ async function renderAdmin() {
         body: JSON.stringify(payload),
       });
        showToast(closed.match.draft?.status === "in_progress"
-         ? "Convocatoria cerrada. Empieza el capitán B desde su perfil."
+       ? "Convocatoria cerrada. Empieza el capitán de COLOR desde su perfil."
          : "Convocatoria cerrada.");
       activeAdminTab = "convocatoria";
       await renderAdmin();
@@ -1478,17 +1555,23 @@ function bindApprovalActions() {
 function bindMatchActions(isAdmin = false) {
   document.querySelector("#match-picker")?.addEventListener("change", async (event) => {
     selectedMatchId = Number(event.target.value);
+    manualAssignmentMatchId = null;
+    manualTeamAssignments = new Map();
+    manualAssignmentMode = false;
     await renderHome();
   });
   document.querySelector("#finance-match-picker")?.addEventListener("change", async (event) => {
     selectedMatchId = Number(event.target.value);
+    manualAssignmentMatchId = null;
+    manualTeamAssignments = new Map();
+    manualAssignmentMode = false;
     activeAdminTab = "finanzas";
     await renderAdmin();
   });
   document.querySelectorAll(".captain-draft-pick").forEach((button) => {
     button.addEventListener("click", async () => {
       if (button.dataset.finalPick === "true" &&
-          !confirm("Esta es la última elección manual. El jugador restante pasará automáticamente al Equipo B. ¿Confirmar la alineación?")) return;
+          !confirm("Esta es la última elección del draft. El jugador restante pasará automáticamente a COLOR. ¿Confirmar la alineación?")) return;
       button.disabled = true;
       try {
         const match = await api(`/api/matches/${button.dataset.matchId}/draft/pick`, {
@@ -1496,7 +1579,7 @@ function bindMatchActions(isAdmin = false) {
           body: JSON.stringify({ userId: Number(button.dataset.playerId) }),
         });
         selectedMatchId = match.id;
-        showToast(match.draft.status === "complete" ? "Draft completo. Los equipos ya están publicados." : "Elección guardada.");
+        showToast(match.draft.status === "complete" ? "Draft completo. BLANCOS y COLOR ya están publicados." : "Elección guardada.");
         await renderHome();
       } catch (error) {
         showToast(error.message);
@@ -1505,6 +1588,48 @@ function bindMatchActions(isAdmin = false) {
     });
   });
   if (!isAdmin) return;
+  document.querySelectorAll(".draft-mode-choice").forEach((button) => {
+    button.addEventListener("click", async () => {
+      manualAssignmentMode = button.dataset.manualMode === "true";
+      manualAssignmentMatchId = Number(selectedMatchId);
+      manualTeamAssignments = new Map();
+      await renderAdmin();
+    });
+  });
+  document.querySelectorAll(".manual-team-choice").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const playerId = Number(button.dataset.playerId);
+      const team = button.dataset.team;
+      if (!Number.isSafeInteger(playerId) || !["A", "B"].includes(team)) return;
+      manualAssignmentMatchId = Number(selectedMatchId);
+      manualTeamAssignments.set(playerId, team);
+      await renderAdmin();
+    });
+  });
+  document.querySelector("#save-manual-teams")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    if (button.disabled) return;
+    const teamA = [...manualTeamAssignments.entries()].filter(([, team]) => team === "A").map(([id]) => id);
+    const teamB = [...manualTeamAssignments.entries()].filter(([, team]) => team === "B").map(([id]) => id);
+    if (!confirm(`¿Guardar la formación equilibrada: BLANCOS ${teamA.length} y COLOR ${teamB.length}?`)) return;
+    button.disabled = true;
+    try {
+      const match = await api(`/api/admin/matches/${selectedMatchId}/teams/manual`, {
+        method: "POST",
+        body: JSON.stringify({ teamA, teamB }),
+      });
+      selectedMatchId = match.id;
+      manualAssignmentMatchId = null;
+      manualTeamAssignments = new Map();
+      manualAssignmentMode = false;
+      showToast("Equipos BLANCOS y COLOR guardados y publicados.");
+      activeAdminTab = "partidos";
+      await renderAdmin();
+    } catch (error) {
+      showToast(error.message);
+      button.disabled = false;
+    }
+  });
   document.querySelector("#start-draft-form")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = event.currentTarget;
@@ -1521,8 +1646,11 @@ function bindMatchActions(isAdmin = false) {
         body: JSON.stringify(payload),
       });
       selectedMatchId = match.id;
-      showToast("Draft iniciado. Empieza el capitán B.");
-      activeAdminTab = "finanzas";
+      manualAssignmentMatchId = null;
+      manualTeamAssignments = new Map();
+      manualAssignmentMode = false;
+      showToast("Draft iniciado. Empieza el capitán de COLOR.");
+      activeAdminTab = "partidos";
       await renderAdmin();
     } catch (error) {
       showToast(error.message);
@@ -2050,7 +2178,10 @@ async function refreshLiveDraftIfChanged() {
     match.draft?.status === "in_progress" &&
     [match.draft.captainA, match.draft.captainB].includes(currentUser.id),
   );
-  if (!isDesignatedCaptain) return;
+  const hasCurrentPublishedTeams = matchData?.matches?.some((match) =>
+    match.isCurrent && match.status === "closed" && match.draft?.status === "complete",
+  );
+  if (!isDesignatedCaptain && !hasCurrentPublishedTeams) return;
   pollingDraft = true;
   try {
     const latest = await api("/api/matches");

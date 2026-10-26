@@ -572,6 +572,24 @@ async function validateDraftState(matchId, draft, teamA, teamB) {
       roster.some((id) => !confirmedIds.has(id))) {
     return "El draft requiere exactamente 14 o 16 jugadores confirmados para formar equipos iguales.";
   }
+  if (draft.mode === "manual") {
+    const numericTeamA = teamA.map(Number);
+    const numericTeamB = teamB.map(Number);
+    const allTeamIds = [...numericTeamA, ...numericTeamB];
+    const rosterSet = new Set(roster);
+    const maxTeamSize = roster.length / 2;
+    if (draft.status !== "complete" ||
+        !Array.isArray(draft.remaining) || draft.remaining.length !== 0 ||
+        draft.currentTurn !== null || draft.captainA != null || draft.captainB != null ||
+        draft.picks.length !== 0 ||
+        numericTeamA.length !== maxTeamSize || numericTeamB.length !== maxTeamSize ||
+        new Set(allTeamIds).size !== roster.length ||
+        allTeamIds.some((id) => !rosterSet.has(id)) ||
+        roster.some((id) => !allTeamIds.includes(id))) {
+      return "La asignación manual debe incluir a todos los confirmados una sola vez y repartirlos por igual entre BLANCOS y COLOR.";
+    }
+    return null;
+  }
   if (!Number.isInteger(draft.captainA) || !Number.isInteger(draft.captainB) ||
       draft.captainA === draft.captainB || !roster.includes(draft.captainA) || !roster.includes(draft.captainB)) {
     return "Los capitanes no son válidos para esta lista.";
@@ -1100,6 +1118,30 @@ async function sendRosterRemovalNotification(userId, alias, matchId) {
   } catch (error) {
     console.error(`[Web Push convocatoria] Error al avisar a ${label}; la baja se mantiene:`, error.message);
   }
+}
+
+async function sendTeamAssignmentNotifications(matchId, teamA, teamB) {
+  if (!pushConfigured) {
+    console.warn(`[Web Push equipos] No se pudieron notificar las alineaciones del partido #${matchId}: VAPID no está configurado.`);
+    return;
+  }
+  const recipients = [
+    ...teamA.map((userId) => ({ userId, team: "BLANCOS" })),
+    ...teamB.map((userId) => ({ userId, team: "COLOR" })),
+  ];
+  const results = await Promise.allSettled(recipients.map(({ userId, team }) =>
+    sendUserNotification(userId, {
+      title: "Equipos definidos: BLANCOS y COLOR",
+      body: `La alineación está publicada. Te ha tocado ${team}; abre la app para verla.`,
+      url: "/",
+      tag: `teams-${matchId}-${userId}`,
+    }, { cleanupExpired: false }),
+  ));
+  const delivered = results.reduce((sum, result) =>
+    sum + (result.status === "fulfilled" ? Number(result.value?.delivered || 0) : 0), 0);
+  const failed = results.reduce((sum, result) =>
+    sum + (result.status === "rejected" ? 1 : Number(result.value?.failed || 0)), 0);
+  console.info(`[Web Push equipos] Partido #${matchId}: ${delivered} aviso(s) enviados, ${failed} fallo(s).`);
 }
 
 async function sendCancellationNotifications(match) {
@@ -1766,7 +1808,11 @@ app.post("/api/admin/convocations/new", requireAdmin, async (req, res) => {
 
 app.get("/api/matches", requireUser, async (_req, res) => {
   const rawMatches = await db.prepare("SELECT * FROM matches ORDER BY COALESCE(match_date, start_date) DESC, id DESC LIMIT 12").all();
-  const matches = await Promise.all(rawMatches.map(matchDetails));
+  const currentMatch = await getCurrentMatch();
+  const matches = await Promise.all(rawMatches.map(async (match) => ({
+    ...await matchDetails(match),
+    isCurrent: currentMatch?.id === match.id,
+  })));
   res.json({ matches, pot: await currentPot() });
 });
 
@@ -1983,6 +2029,87 @@ app.post("/api/admin/matches/:id/draft/start", requireAdmin, async (req, res) =>
   res.json(await matchDetails(await db.prepare("SELECT * FROM matches WHERE id = ?").get(matchId)));
 });
 
+app.post("/api/admin/matches/:id/teams/manual", requireAdmin, async (req, res) => {
+  const matchId = Number(req.params.id);
+  if (!Number.isSafeInteger(matchId) || matchId < 1) {
+    return res.status(400).json({ error: "Selecciona un partido válido." });
+  }
+  const submittedA = req.body?.teamA;
+  const submittedB = req.body?.teamB;
+  if (!Array.isArray(submittedA) || !Array.isArray(submittedB) ||
+      submittedA.some((id) => !Number.isSafeInteger(Number(id)) || Number(id) < 1) ||
+      submittedB.some((id) => !Number.isSafeInteger(Number(id)) || Number(id) < 1)) {
+    return res.status(400).json({ error: "Selecciona los jugadores de BLANCOS y COLOR." });
+  }
+  const teamA = submittedA.map(Number);
+  const teamB = submittedB.map(Number);
+
+  try {
+    const outcome = await db.transaction(async () => {
+      const match = await db.prepare("SELECT * FROM matches WHERE id = ? FOR UPDATE").get(matchId);
+      if (!match) return { error: "No se encontró el partido.", status: 404 };
+      const activeMatch = await getCurrentMatch();
+      if (activeMatch?.id !== matchId) {
+        return { error: "La asignación manual solo está disponible para la convocatoria actual.", status: 409 };
+      }
+      if (match.status !== "closed" || match.result) {
+        return { error: "La asignación manual requiere una convocatoria cerrada y sin resultado.", status: 409 };
+      }
+      if (await db.prepare("SELECT 1 FROM match_finances WHERE match_id = ?").get(matchId)) {
+        return { error: "No se puede modificar una alineación que ya tiene cobros aplicados.", status: 409 };
+      }
+      const previousDraft = readJson(match.draft_state, {});
+      if (previousDraft.status === "in_progress" ||
+          (previousDraft.status === "complete" && previousDraft.mode !== "manual")) {
+        return { error: "El draft de capitanes ya empezó o finalizó; no se puede reemplazar por una asignación manual.", status: 409 };
+      }
+
+      const participants = await db.prepare(`
+        SELECT u.id
+        FROM convocations c JOIN users u ON u.id = c.user_id
+        WHERE c.match_id = ? AND c.status = 'principal'
+          AND u.role != 'admin' AND u.account_status = 'active' AND u.deleted_at IS NULL
+        ORDER BY u.ranking_position IS NULL, u.ranking_position, LOWER(u.name)
+        FOR UPDATE OF c, u
+      `).all(matchId);
+      const roster = participants.map((player) => Number(player.id));
+      if (![14, 16].includes(roster.length)) {
+        return { error: "La asignación equilibrada requiere exactamente 14 o 16 jugadores en la Lista Principal.", status: 409 };
+      }
+      const half = roster.length / 2;
+      const allTeams = [...teamA, ...teamB];
+      const rosterSet = new Set(roster);
+      if (teamA.length !== half || teamB.length !== half ||
+          new Set(allTeams).size !== roster.length ||
+          allTeams.some((id) => !rosterSet.has(id)) ||
+          roster.some((id) => !allTeams.includes(id))) {
+        return { error: `Reparte a todos los confirmados una sola vez: ${half} en BLANCOS y ${half} en COLOR.`, status: 400 };
+      }
+
+      const manualDraft = {
+        status: "complete",
+        mode: "manual",
+        captainA: null,
+        captainB: null,
+        currentTurn: null,
+        roster,
+        remaining: [],
+        picks: [],
+      };
+      await db.prepare("UPDATE matches SET draft_state = ?, team_a = ?, team_b = ? WHERE id = ?")
+        .run(JSON.stringify(manualDraft), JSON.stringify(teamA), JSON.stringify(teamB), matchId);
+      return { matchId };
+    })();
+
+    if (outcome.error) return res.status(outcome.status).json({ error: outcome.error });
+    void sendTeamAssignmentNotifications(matchId, teamA, teamB);
+    res.json(await matchDetails(await db.prepare("SELECT * FROM matches WHERE id = ?").get(outcome.matchId)));
+  } catch (error) {
+    console.error("No se pudo guardar la asignación manual de equipos:", error.message);
+    res.status(500).json({ error: "No se pudo guardar la formación manual." });
+  }
+});
+
 app.post("/api/matches/:id/draft/pick", requirePlayer, async (req, res) => {
   const matchId = Number(req.params.id);
   const playerId = Number(req.body?.userId);
@@ -2044,6 +2171,9 @@ app.post("/api/matches/:id/draft/pick", requirePlayer, async (req, res) => {
   }
   await db.prepare("UPDATE matches SET draft_state = ?, team_a = ?, team_b = ? WHERE id = ?")
     .run(JSON.stringify(draft), JSON.stringify(teamA), JSON.stringify(teamB), matchId);
+  if (draft.status === "complete") {
+    void sendTeamAssignmentNotifications(matchId, teamA, teamB);
+  }
   res.json(await matchDetails(await db.prepare("SELECT * FROM matches WHERE id = ?").get(matchId)));
 });
 

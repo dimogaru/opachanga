@@ -49,6 +49,14 @@ description: Reglas de negocio semanales para convocatorias, equipos, cobros y c
 
 **How to apply:** Mantener la compresión y validación estricta de tipo y tamaño; limitar las escrituras del jugador a su propio perfil y campos permitidos tanto en la UI como en el backend. Proteger cambios de alias y perfiles ajenos con rol Admin; si el tamaño de la plantilla crece de forma sustancial, migrar las fotos a un almacenamiento persistente y mantener solo la URL/ruta en PostgreSQL.
 
+## Nombres y asignación de equipos
+
+**Regla:** Los identificadores internos A/B se conservan, pero en la interfaz y mensajes públicos se llaman BLANCOS/COLOR respectivamente. Admin puede elegir entre el draft de capitanes o una asignación manual en la convocatoria actual cerrada, antes del resultado/cobro; la opción manual exige 14 o 16 confirmados, incluir a cada uno exactamente una vez y formar equipos iguales. Una vez publicada, la alineación es visible para todos y los jugadores reciben avisos Push si hay suscripción disponible.
+
+**Why:** el usuario pidió renombrar los equipos oficialmente y permitir que Admin distribuya manualmente la plantilla sin alterar historiales de producción.
+
+**How to apply:** mapear A→BLANCOS y B→COLOR en etiquetas, resultados y notificaciones sin cambiar los códigos guardados; proteger la escritura con rol Admin, validar contra la lista principal actual y no permitir modificar jornadas históricas o partidos ya cobrados.
+
 ## Caché de la PWA
 
 **Regla:** Los recursos y páginas del mismo origen se consultan primero en la red y usan caché solo como respaldo offline. Las rutas `/api/` quedan fuera de caché para no conservar respuestas autenticadas del usuario.
