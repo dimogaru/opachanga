@@ -51,11 +51,11 @@ description: Reglas de negocio semanales para convocatorias, equipos, cobros y c
 
 ## Nombres y asignación de equipos
 
-**Regla:** Los identificadores internos A/B se conservan, pero en la interfaz y mensajes públicos se llaman BLANCOS/COLOR respectivamente. Admin puede elegir entre el draft de capitanes o una asignación manual en la convocatoria actual cerrada, antes del resultado/cobro; la opción manual exige 14 o 16 confirmados, incluir a cada uno exactamente una vez y formar equipos iguales. Una vez publicada, la alineación es visible para todos y los jugadores reciben avisos Push si hay suscripción disponible.
+**Regla:** Los identificadores internos A/B se conservan, pero en la interfaz y mensajes públicos se llaman BLANCOS/COLOR respectivamente. Admin puede elegir entre el draft de capitanes o una asignación manual en la convocatoria actual cerrada; la opción manual exige 14 o 16 confirmados, incluir a cada uno exactamente una vez y formar equipos iguales. Al publicarse, el estado del draft pasa a `teams_published`; ambos capitanes quedan bloqueados permanentemente para picks y solo Admin puede reasignar antes del resultado/cobro. La alineación es visible para todo el grupo y los jugadores reciben avisos Push si hay suscripción disponible.
 
-**Why:** el usuario pidió renombrar los equipos oficialmente y permitir que Admin distribuya manualmente la plantilla sin alterar historiales de producción.
+**Why:** el usuario pidió renombrar los equipos, bloquear de forma definitiva los cambios de los capitanes después de guardar y reservar la edición posterior a Admin, sin alterar historiales de producción.
 
-**How to apply:** mapear A→BLANCOS y B→COLOR en etiquetas, resultados y notificaciones sin cambiar los códigos guardados; proteger la escritura con rol Admin, validar contra la lista principal actual y no permitir modificar jornadas históricas o partidos ya cobrados.
+**How to apply:** mapear A→BLANCOS y B→COLOR en etiquetas, resultados y notificaciones sin cambiar los códigos guardados; proteger la escritura con rol Admin, validar contra la lista principal actual y no permitir picks de capitanes tras publicar. Permitir que Admin use “Editar Equipos / Reasignar” solo en la jornada actual antes del resultado/cobro; conservar cualquier revisión administrativa y dejar jornadas históricas en solo lectura.
 
 ## Caché de la PWA
 

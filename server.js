@@ -491,9 +491,10 @@ async function getConvocationData(match, userId, { historical = false } = {}) {
   return {
     match: {
       ...await matchDetails(match),
-      draft: readJson(match.draft_state, {}),
+      draft: publicDraftState(readJson(match.draft_state, {})),
       canReopen: !historical && match.status === "closed" &&
-        !["in_progress", "complete"].includes(readJson(match.draft_state, {}).status),
+        !(readJson(match.draft_state, {}).status === "in_progress" ||
+          isTeamsPublishedStatus(readJson(match.draft_state, {}).status)),
       readOnly: historical,
       transactions: historical || match.status === "played" ? await getMatchTransactions(match.id) : [],
     },
@@ -545,6 +546,16 @@ function readJson(value, fallback) {
   }
 }
 
+function isTeamsPublishedStatus(status) {
+  return status === "teams_published" || status === "complete";
+}
+
+function publicDraftState(draft = {}) {
+  const exposedDraft = { ...draft };
+  delete exposedDraft.adminRevisionHistory;
+  return exposedDraft;
+}
+
 async function principalRosterIds(matchId) {
   const rows = await db.prepare(`
     SELECT c.user_id
@@ -556,7 +567,9 @@ async function principalRosterIds(matchId) {
 }
 
 async function validateDraftState(matchId, draft, teamA, teamB) {
-  if (!["in_progress", "complete"].includes(draft?.status)) return "El estado del draft no es válido.";
+  if (draft?.status !== "in_progress" && !isTeamsPublishedStatus(draft?.status)) {
+    return "El estado del draft no es válido.";
+  }
   if (!Array.isArray(teamA) || !Array.isArray(teamB) || !Array.isArray(draft.picks)) {
     return "Faltan datos de elecciones o de equipos.";
   }
@@ -578,7 +591,7 @@ async function validateDraftState(matchId, draft, teamA, teamB) {
     const allTeamIds = [...numericTeamA, ...numericTeamB];
     const rosterSet = new Set(roster);
     const maxTeamSize = roster.length / 2;
-    if (draft.status !== "complete" ||
+    if (!isTeamsPublishedStatus(draft.status) ||
         !Array.isArray(draft.remaining) || draft.remaining.length !== 0 ||
         draft.currentTurn !== null || draft.captainA != null || draft.captainB != null ||
         draft.picks.length !== 0 ||
@@ -598,11 +611,11 @@ async function validateDraftState(matchId, draft, teamA, teamB) {
   const manualPicks = draft.picks.filter((pick) => !pick?.automatic);
   const automaticPicks = draft.picks.filter((pick) => pick?.automatic === true);
   if (automaticPicks.length > 1 ||
-      (draft.status === "complete" && automaticPicks.length !== 1) ||
+      (isTeamsPublishedStatus(draft.status) && automaticPicks.length !== 1) ||
       (draft.status === "in_progress" && automaticPicks.length !== 0)) {
     return "La asignación automática del último jugador no coincide con el estado del draft.";
   }
-  if (draft.status === "complete" && draft.picks.at(-1)?.automatic !== true) {
+  if (isTeamsPublishedStatus(draft.status) && draft.picks.at(-1)?.automatic !== true) {
     return "La asignación automática debe ser la última acción del draft.";
   }
 
@@ -627,7 +640,7 @@ async function validateDraftState(matchId, draft, teamA, teamB) {
   }
 
   const unpicked = pool.filter((id) => !chosen.has(id));
-  if (draft.status === "complete") {
+  if (isTeamsPublishedStatus(draft.status)) {
     const automaticPick = automaticPicks[0];
     const automaticId = Number(automaticPick?.userId);
     if (manualPicks.length !== pool.length - 1 || unpicked.length !== 1 ||
@@ -658,7 +671,7 @@ async function validateDraftState(matchId, draft, teamA, teamB) {
   if (numericTeamA.length > maxTeamSize || numericTeamB.length > maxTeamSize) {
     return "Un equipo no puede superar la mitad de los jugadores confirmados.";
   }
-  if (draft.status === "complete" &&
+  if (isTeamsPublishedStatus(draft.status) &&
       (numericTeamA.length !== maxTeamSize || numericTeamB.length !== maxTeamSize)) {
     return "El draft debe terminar con el mismo número de jugadores en ambos equipos.";
   }
@@ -764,14 +777,15 @@ async function matchDetails(match) {
   const teamAIds = Array.isArray(storedTeamA) ? storedTeamA : [];
   const teamBIds = Array.isArray(storedTeamB) ? storedTeamB : [];
   const draft = readJson(match.draft_state, {});
-  let draftValidationError = ["in_progress", "complete"].includes(draft.status)
+  const exposedDraft = publicDraftState(draft);
+  let draftValidationError = (draft.status === "in_progress" || isTeamsPublishedStatus(draft.status))
     ? !Array.isArray(storedTeamA) || !Array.isArray(storedTeamB)
       ? "Faltan datos de elecciones o de equipos."
       : await validateDraftState(match.id, draft, teamAIds, teamBIds)
     : null;
   if (!draftValidationError && ["closed", "played"].includes(match.status) &&
       (match.draft_state !== "{}" || teamAIds.length || teamBIds.length) &&
-      !["in_progress", "complete"].includes(draft.status)) {
+      !(draft.status === "in_progress" || isTeamsPublishedStatus(draft.status))) {
     draftValidationError = "El estado guardado del draft no es válido.";
   }
   const getTeam = async (ids, activeOnly = false) => ids.length
@@ -800,11 +814,12 @@ async function matchDetails(match) {
   `).all(match.id);
   return {
     ...match,
+    draft_state: JSON.stringify(exposedDraft),
     match_date: matchDate,
     match_date_label: formatSpanishDate(matchDate),
     match_time: matchTime,
     match_time_label: `${matchTime} h`,
-    draft,
+    draft: exposedDraft,
     draftValidationError,
     teamA: await getTeam(teamAIds),
     teamB: await getTeam(teamBIds),
@@ -1603,23 +1618,32 @@ app.get("/api/convocations/:matchId", requireUser, async (req, res) => {
 app.post("/api/admin/convocations/current/open", requireAdmin, async (req, res) => {
   const match = await getCurrentMatch();
   if (!match) return res.status(404).json({ error: "No hay una convocatoria cerrada para reabrir." });
-  const draft = readJson(match.draft_state, {});
-  if (match.status === "played" || ["in_progress", "complete"].includes(draft.status)) {
-    return res.status(409).json({ error: "No se puede reabrir una convocatoria con un draft iniciado o un partido jugado." });
-  }
-  if (match.status !== "closed") return res.status(409).json({ error: "La convocatoria ya está abierta." });
-  await db.prepare("UPDATE matches SET status = 'open', draft_state = '{}', team_a = '[]', team_b = '[]' WHERE id = ?")
-    .run(match.id);
+  const outcome = await db.transaction(async () => {
+    const current = await db.prepare("SELECT * FROM matches WHERE id = ? FOR UPDATE").get(match.id);
+    if (!current) return { error: "No se encontró la convocatoria.", status: 404 };
+    if ((await getCurrentMatch())?.id !== current.id) {
+      return { error: "La jornada activa cambió; vuelve a cargar la convocatoria.", status: 409 };
+    }
+    const draft = readJson(current.draft_state, {});
+    if (current.status === "played" || draft.status === "in_progress" || isTeamsPublishedStatus(draft.status)) {
+      return { error: "No se puede reabrir una convocatoria con un draft iniciado o equipos publicados.", status: 409 };
+    }
+    if (current.status !== "closed") return { error: "La convocatoria ya está abierta.", status: 409 };
+    await db.prepare("UPDATE matches SET status = 'open', draft_state = '{}', team_a = '[]', team_b = '[]' WHERE id = ?")
+      .run(current.id);
+    return { matchId: current.id };
+  })();
+  if (outcome.error) return res.status(outcome.status).json({ error: outcome.error });
   let notification = { status: "disabled" };
   if (pushConfigured) {
     try {
-      notification = await sendCampaign(await db.prepare("SELECT * FROM matches WHERE id = ?").get(match.id), "opening");
+      notification = await sendCampaign(await db.prepare("SELECT * FROM matches WHERE id = ?").get(outcome.matchId), "opening");
     } catch (error) {
       notification = { status: "failed", error: error.message };
     }
   }
   res.json({
-    ...await getConvocationData(await db.prepare("SELECT * FROM matches WHERE id = ?").get(match.id), req.session.user.id),
+    ...await getConvocationData(await db.prepare("SELECT * FROM matches WHERE id = ?").get(outcome.matchId), req.session.user.id),
     notification,
   });
 });
@@ -1990,43 +2014,55 @@ app.get("/api/pot", requireUser, async (_req, res) => {
 
 app.post("/api/admin/matches/:id/draft/start", requireAdmin, async (req, res) => {
   const matchId = Number(req.params.id);
-  const match = await db.prepare("SELECT * FROM matches WHERE id = ?").get(matchId);
-  if (!match) return res.status(404).json({ error: "No se encontró el partido." });
-  if (match.status !== "closed") return res.status(409).json({ error: "El draft solo se puede iniciar con la convocatoria cerrada." });
-  const previousDraft = readJson(match.draft_state, {});
-  if (["in_progress", "complete"].includes(previousDraft.status)) return res.status(409).json({ error: "El draft de este partido ya se inició." });
-  const participants = await db.prepare(`
-    SELECT u.id, u.name, u.ranking_position
-    FROM convocations c JOIN users u ON u.id = c.user_id
-    WHERE c.match_id = ? AND c.status = 'principal'
-      AND u.role != 'admin' AND u.account_status = 'active' AND u.deleted_at IS NULL
-    ORDER BY u.ranking_position IS NULL, u.ranking_position, LOWER(u.name)
-  `).all(matchId);
-  if (participants.length !== 14 && participants.length !== 16) {
-    return res.status(409).json({ error: "El draft requiere exactamente 14 o 16 jugadores confirmados para formar equipos iguales." });
-  }
-  const participantById = new Map(participants.map((player) => [player.id, player]));
-  const captainAId = Number(req.body?.captainA || previousDraft.captainA);
-  const captainBId = Number(req.body?.captainB || previousDraft.captainB);
-  if (!Number.isInteger(captainAId) || !Number.isInteger(captainBId) || captainAId === captainBId ||
-      !participantById.has(captainAId) || !participantById.has(captainBId)) {
-    return res.status(400).json({ error: "Designa dos jugadores distintos de la Lista Principal para iniciar el draft." });
-  }
-  const captainA = participantById.get(captainAId);
-  const captainB = participantById.get(captainBId);
-  const remaining = participants.filter((player) => player.id !== captainA.id && player.id !== captainB.id).map((player) => player.id);
-  const draft = {
-    status: "in_progress",
-    captainA: captainA.id,
-    captainB: captainB.id,
-    currentTurn: "B",
-    roster: participants.map((player) => player.id),
-    remaining,
-    picks: [],
-  };
-  await db.prepare("UPDATE matches SET draft_state = ?, team_a = ?, team_b = ? WHERE id = ?")
-    .run(JSON.stringify(draft), JSON.stringify([captainA.id]), JSON.stringify([captainB.id]), matchId);
-  res.json(await matchDetails(await db.prepare("SELECT * FROM matches WHERE id = ?").get(matchId)));
+  const outcome = await db.transaction(async () => {
+    const match = await db.prepare("SELECT * FROM matches WHERE id = ? FOR UPDATE").get(matchId);
+    if (!match) return { error: "No se encontró el partido.", status: 404 };
+    if (match.status !== "closed" || match.result) {
+      return { error: "El draft solo se puede iniciar con la convocatoria cerrada y sin resultado.", status: 409 };
+    }
+    const previousDraft = readJson(match.draft_state, {});
+    if (previousDraft.status === "in_progress" || isTeamsPublishedStatus(previousDraft.status)) {
+      return { error: "Los equipos ya se publicaron y no se puede reiniciar el draft. Solo Admin puede reasignar la formación.", status: 409 };
+    }
+    if (await db.prepare("SELECT 1 FROM match_finances WHERE match_id = ?").get(matchId)) {
+      return { error: "No se puede iniciar o reemplazar el draft después de aplicar cobros.", status: 409 };
+    }
+    const participants = await db.prepare(`
+      SELECT u.id, u.name, u.ranking_position
+      FROM convocations c JOIN users u ON u.id = c.user_id
+      WHERE c.match_id = ? AND c.status = 'principal'
+        AND u.role != 'admin' AND u.account_status = 'active' AND u.deleted_at IS NULL
+      ORDER BY u.ranking_position IS NULL, u.ranking_position, LOWER(u.name)
+      FOR UPDATE OF c, u
+    `).all(matchId);
+    if (participants.length !== 14 && participants.length !== 16) {
+      return { error: "El draft requiere exactamente 14 o 16 jugadores confirmados para formar equipos iguales.", status: 409 };
+    }
+    const participantById = new Map(participants.map((player) => [player.id, player]));
+    const captainAId = Number(req.body?.captainA || previousDraft.captainA);
+    const captainBId = Number(req.body?.captainB || previousDraft.captainB);
+    if (!Number.isInteger(captainAId) || !Number.isInteger(captainBId) || captainAId === captainBId ||
+        !participantById.has(captainAId) || !participantById.has(captainBId)) {
+      return { error: "Designa dos jugadores distintos de la Lista Principal para iniciar el draft.", status: 400 };
+    }
+    const captainA = participantById.get(captainAId);
+    const captainB = participantById.get(captainBId);
+    const remaining = participants.filter((player) => player.id !== captainA.id && player.id !== captainB.id).map((player) => player.id);
+    const draft = {
+      status: "in_progress",
+      captainA: captainA.id,
+      captainB: captainB.id,
+      currentTurn: "B",
+      roster: participants.map((player) => player.id),
+      remaining,
+      picks: [],
+    };
+    await db.prepare("UPDATE matches SET draft_state = ?, team_a = ?, team_b = ? WHERE id = ?")
+      .run(JSON.stringify(draft), JSON.stringify([captainA.id]), JSON.stringify([captainB.id]), matchId);
+    return { match: await db.prepare("SELECT * FROM matches WHERE id = ?").get(matchId) };
+  })();
+  if (outcome.error) return res.status(outcome.status).json({ error: outcome.error });
+  res.json(await matchDetails(outcome.match));
 });
 
 app.post("/api/admin/matches/:id/teams/manual", requireAdmin, async (req, res) => {
@@ -2059,9 +2095,8 @@ app.post("/api/admin/matches/:id/teams/manual", requireAdmin, async (req, res) =
         return { error: "No se puede modificar una alineación que ya tiene cobros aplicados.", status: 409 };
       }
       const previousDraft = readJson(match.draft_state, {});
-      if (previousDraft.status === "in_progress" ||
-          (previousDraft.status === "complete" && previousDraft.mode !== "manual")) {
-        return { error: "El draft de capitanes ya empezó o finalizó; no se puede reemplazar por una asignación manual.", status: 409 };
+      if (previousDraft.status === "in_progress") {
+        return { error: "El draft de capitanes sigue en curso. Espera a que se publique la alineación antes de reasignar.", status: 409 };
       }
 
       const participants = await db.prepare(`
@@ -2086,8 +2121,22 @@ app.post("/api/admin/matches/:id/teams/manual", requireAdmin, async (req, res) =
         return { error: `Reparte a todos los confirmados una sola vez: ${half} en BLANCOS y ${half} en COLOR.`, status: 400 };
       }
 
+      const previousTeamA = readJson(match.team_a, []);
+      const previousTeamB = readJson(match.team_b, []);
+      const revisionHistory = Array.isArray(previousDraft.adminRevisionHistory)
+        ? previousDraft.adminRevisionHistory.slice(-49)
+        : [];
+      if (isTeamsPublishedStatus(previousDraft.status)) {
+        revisionHistory.push({
+          changedAt: new Date().toISOString(),
+          changedBy: req.session.user.id,
+          previousMode: previousDraft.mode || "captains",
+          teamA: previousTeamA,
+          teamB: previousTeamB,
+        });
+      }
       const manualDraft = {
-        status: "complete",
+        status: "teams_published",
         mode: "manual",
         captainA: null,
         captainB: null,
@@ -2095,6 +2144,7 @@ app.post("/api/admin/matches/:id/teams/manual", requireAdmin, async (req, res) =
         roster,
         remaining: [],
         picks: [],
+        adminRevisionHistory: revisionHistory,
       };
       await db.prepare("UPDATE matches SET draft_state = ?, team_a = ?, team_b = ? WHERE id = ?")
         .run(JSON.stringify(manualDraft), JSON.stringify(teamA), JSON.stringify(teamB), matchId);
@@ -2114,67 +2164,76 @@ app.post("/api/matches/:id/draft/pick", requirePlayer, async (req, res) => {
   const matchId = Number(req.params.id);
   const playerId = Number(req.body?.userId);
   const pickerId = req.session.user.id;
-  const match = await db.prepare("SELECT * FROM matches WHERE id = ?").get(matchId);
-  if (!match) return res.status(404).json({ error: "No se encontró el partido." });
-  const draft = readJson(match.draft_state, {});
-  if (match.status !== "closed" || draft.status !== "in_progress") {
-    return res.status(409).json({ error: "No hay un draft abierto para este partido." });
-  }
-  const teamA = readJson(match.team_a, []);
-  const teamB = readJson(match.team_b, []);
-  const integrityError = await validateDraftState(matchId, draft, teamA, teamB);
-  if (integrityError) {
-    return res.status(409).json({
-      error: `Draft inconsistente. No se guardará esta elección: ${integrityError}`,
-      draftInvalid: true,
-    });
-  }
-  const expectedCaptainId = draft.currentTurn === "A" ? draft.captainA : draft.currentTurn === "B" ? draft.captainB : null;
-  if (pickerId !== expectedCaptainId) {
-    return res.status(403).json({ error: "Solo puede elegir el capitán que tiene el turno activo." });
-  }
-  const remaining = draft.remaining || [];
-  if (!Number.isInteger(playerId) || !remaining.includes(playerId)) {
-    return res.status(400).json({ error: "Selecciona un jugador disponible en el draft." });
-  }
-  if (!await db.prepare(`
-    SELECT 1 FROM convocations c JOIN users u ON u.id = c.user_id
-    WHERE c.match_id = ? AND c.user_id = ? AND c.status = 'principal'
-      AND u.role != 'admin' AND u.account_status = 'active' AND u.deleted_at IS NULL
-  `).get(matchId, playerId)) {
-    return res.status(400).json({ error: "Solo puedes elegir jugadores activos de la Lista Principal confirmada." });
-  }
-  const team = draft.currentTurn === "A" ? teamA : teamB;
-  team.push(playerId);
-  remaining.splice(remaining.indexOf(playerId), 1);
-  draft.picks.push({ userId: playerId, team: draft.currentTurn });
-  if (remaining.length === 0) {
-    draft.status = "complete";
-    draft.currentTurn = null;
-  } else if (remaining.length === 1 && draft.currentTurn === "A") {
-    teamB.push(remaining[0]);
-    draft.picks.push({ userId: remaining[0], team: "B", automatic: true });
-    remaining.length = 0;
-    draft.status = "complete";
-    draft.currentTurn = null;
-  } else if (remaining.length === 3) {
-    draft.currentTurn = "A";
-  } else if (remaining.length > 3) {
-    draft.currentTurn = draft.currentTurn === "A" ? "B" : "A";
-  }
-  const finalIntegrityError = await validateDraftState(matchId, draft, teamA, teamB);
-  if (finalIntegrityError) {
-    return res.status(409).json({
-      error: `No se puede confirmar la alineación final: ${finalIntegrityError}`,
-      draftInvalid: true,
-    });
-  }
-  await db.prepare("UPDATE matches SET draft_state = ?, team_a = ?, team_b = ? WHERE id = ?")
-    .run(JSON.stringify(draft), JSON.stringify(teamA), JSON.stringify(teamB), matchId);
-  if (draft.status === "complete") {
-    void sendTeamAssignmentNotifications(matchId, teamA, teamB);
-  }
-  res.json(await matchDetails(await db.prepare("SELECT * FROM matches WHERE id = ?").get(matchId)));
+  const outcome = await db.transaction(async () => {
+    const match = await db.prepare("SELECT * FROM matches WHERE id = ? FOR UPDATE").get(matchId);
+    if (!match) return { error: "No se encontró el partido.", status: 404 };
+    const draft = readJson(match.draft_state, {});
+    if (match.status !== "closed" || draft.status !== "in_progress") {
+      return { error: "El draft está cerrado: los capitanes ya no pueden modificar los equipos.", status: 409 };
+    }
+    const teamA = readJson(match.team_a, []);
+    const teamB = readJson(match.team_b, []);
+    const integrityError = await validateDraftState(matchId, draft, teamA, teamB);
+    if (integrityError) {
+      return {
+        error: `Draft inconsistente. No se guardará esta elección: ${integrityError}`,
+        status: 409,
+        draftInvalid: true,
+      };
+    }
+    const expectedCaptainId = draft.currentTurn === "A" ? draft.captainA : draft.currentTurn === "B" ? draft.captainB : null;
+    if (pickerId !== expectedCaptainId) {
+      return { error: "Solo puede elegir el capitán que tiene el turno activo.", status: 403 };
+    }
+    const remaining = draft.remaining || [];
+    if (!Number.isInteger(playerId) || !remaining.includes(playerId)) {
+      return { error: "Selecciona un jugador disponible en el draft.", status: 400 };
+    }
+    if (!await db.prepare(`
+      SELECT 1 FROM convocations c JOIN users u ON u.id = c.user_id
+      WHERE c.match_id = ? AND c.user_id = ? AND c.status = 'principal'
+        AND u.role != 'admin' AND u.account_status = 'active' AND u.deleted_at IS NULL
+    `).get(matchId, playerId)) {
+      return { error: "Solo puedes elegir jugadores activos de la Lista Principal confirmada.", status: 400 };
+    }
+    const team = draft.currentTurn === "A" ? teamA : teamB;
+    team.push(playerId);
+    remaining.splice(remaining.indexOf(playerId), 1);
+    draft.picks.push({ userId: playerId, team: draft.currentTurn });
+    if (remaining.length === 0) {
+      draft.status = "teams_published";
+      draft.currentTurn = null;
+    } else if (remaining.length === 1 && draft.currentTurn === "A") {
+      teamB.push(remaining[0]);
+      draft.picks.push({ userId: remaining[0], team: "B", automatic: true });
+      remaining.length = 0;
+      draft.status = "teams_published";
+      draft.currentTurn = null;
+    } else if (remaining.length === 3) {
+      draft.currentTurn = "A";
+    } else if (remaining.length > 3) {
+      draft.currentTurn = draft.currentTurn === "A" ? "B" : "A";
+    }
+    const finalIntegrityError = await validateDraftState(matchId, draft, teamA, teamB);
+    if (finalIntegrityError) {
+      return {
+        error: `No se puede confirmar la alineación final: ${finalIntegrityError}`,
+        status: 409,
+        draftInvalid: true,
+      };
+    }
+    await db.prepare("UPDATE matches SET draft_state = ?, team_a = ?, team_b = ? WHERE id = ?")
+      .run(JSON.stringify(draft), JSON.stringify(teamA), JSON.stringify(teamB), matchId);
+    return {
+      match: await db.prepare("SELECT * FROM matches WHERE id = ?").get(matchId),
+      published: isTeamsPublishedStatus(draft.status),
+      teamA,
+      teamB,
+    };
+  })();
+  if (outcome.error) return res.status(outcome.status).json({ error: outcome.error, draftInvalid: outcome.draftInvalid });
+  if (outcome.published) void sendTeamAssignmentNotifications(matchId, outcome.teamA, outcome.teamB);
+  res.json(await matchDetails(outcome.match));
 });
 
 app.post("/api/admin/matches/:id/price", requireAdmin, async (req, res) => {
@@ -2204,51 +2263,53 @@ app.post("/api/admin/matches/:id/finance", requireAdmin, (_req, res) =>
 app.post("/api/admin/matches/:id/result", requireAdmin, async (req, res) => {
   const matchId = Number(req.params.id);
   const result = req.body?.result;
-  const match = await db.prepare("SELECT * FROM matches WHERE id = ?").get(matchId);
-  if (!match) return res.status(404).json({ error: "No se encontró el partido." });
   if (!["A", "B", "draw"].includes(result)) return res.status(400).json({ error: "El resultado debe ser A, B o empate." });
-  if (match.status === "cancelled") return res.status(409).json({ error: "Una convocatoria cancelada no admite resultados, cobros ni puntos." });
-  if (!["closed", "played"].includes(match.status) || readJson(match.draft_state, {}).status !== "complete") {
-    return res.status(409).json({ error: "Cierra la convocatoria y completa el draft antes de guardar el resultado." });
-  }
-  const rawTeamA = readJson(match.team_a, []);
-  const rawTeamB = readJson(match.team_b, []);
-  const draftIntegrityError = await validateDraftState(matchId, readJson(match.draft_state, {}), rawTeamA, rawTeamB);
-  if (draftIntegrityError) {
-    return res.status(409).json({
-      error: `No se puede guardar el resultado ni cobrar: draft inconsistente. ${draftIntegrityError}`,
-      draftInvalid: true,
-    });
-  }
-  const teamA = await nonAdminPlayerIds(rawTeamA);
-  const teamB = await nonAdminPlayerIds(rawTeamB);
-  const existingFinance = await db.prepare("SELECT 1 FROM match_finances WHERE match_id = ?").get(matchId);
-  const shouldCharge = !existingFinance && match.status !== "played";
-  let charge = null;
-  if (shouldCharge) {
-    if (match.pitch_price == null) {
-      return res.status(409).json({ error: "Configura primero el Precio por Partido en la pestaña Finanzas." });
+  const outcome = await db.transaction(async () => {
+    const match = await db.prepare("SELECT * FROM matches WHERE id = ? FOR UPDATE").get(matchId);
+    if (!match) return { error: "No se encontró el partido.", status: 404 };
+    if (match.status === "cancelled") {
+      return { error: "Una convocatoria cancelada no admite resultados, cobros ni puntos.", status: 409 };
     }
-    const participants = [...new Set([...teamA, ...teamB])];
-    if (!participants.length) return res.status(409).json({ error: "No hay jugadores en los equipos para aplicar el cobro." });
-    const pitchCents = moneyCents(match.pitch_price);
-    const feeCents = Math.ceil(pitchCents / participants.length);
-    const collectedCents = feeCents * participants.length;
-    if (!Number.isSafeInteger(collectedCents)) {
-      return res.status(400).json({ error: "El precio es demasiado alto para calcular el cobro por jugador." });
+    if (!["closed", "played"].includes(match.status) ||
+        !isTeamsPublishedStatus(readJson(match.draft_state, {}).status)) {
+      return { error: "Cierra la convocatoria y completa el draft antes de guardar el resultado.", status: 409 };
     }
-    charge = {
-      participants,
-      pitchCents,
-      feeCents,
-      collectedCents,
-      potAddedCents: collectedCents - pitchCents,
-    };
-  }
-  const saveResult = db.transaction(async () => {
-    const latestMatch = await db.prepare("SELECT status FROM matches WHERE id = ?").get(matchId);
+    const rawTeamA = readJson(match.team_a, []);
+    const rawTeamB = readJson(match.team_b, []);
+    const draftIntegrityError = await validateDraftState(matchId, readJson(match.draft_state, {}), rawTeamA, rawTeamB);
+    if (draftIntegrityError) {
+      return {
+        error: `No se puede guardar el resultado ni cobrar: draft inconsistente. ${draftIntegrityError}`,
+        status: 409,
+        draftInvalid: true,
+      };
+    }
+    const teamA = await nonAdminPlayerIds(rawTeamA);
+    const teamB = await nonAdminPlayerIds(rawTeamB);
     const financeExists = await db.prepare("SELECT 1 FROM match_finances WHERE match_id = ?").get(matchId);
-    if (charge && (latestMatch?.status !== "closed" || financeExists)) charge = null;
+    let charge = null;
+    if (!financeExists && match.status !== "played") {
+      if (match.pitch_price == null) {
+        return { error: "Configura primero el Precio por Partido en la pestaña Finanzas.", status: 409 };
+      }
+      const participants = [...new Set([...teamA, ...teamB])];
+      if (!participants.length) {
+        return { error: "No hay jugadores en los equipos para aplicar el cobro.", status: 409 };
+      }
+      const pitchCents = moneyCents(match.pitch_price);
+      const feeCents = Math.ceil(pitchCents / participants.length);
+      const collectedCents = feeCents * participants.length;
+      if (!Number.isSafeInteger(collectedCents)) {
+        return { error: "El precio es demasiado alto para calcular el cobro por jugador.", status: 400 };
+      }
+      charge = {
+        participants,
+        pitchCents,
+        feeCents,
+        collectedCents,
+        potAddedCents: collectedCents - pitchCents,
+      };
+    }
     await db.prepare("UPDATE matches SET status = 'played', result = ? WHERE id = ?").run(result, matchId);
     if (charge) {
       const insertTransaction = db.prepare(`
@@ -2297,18 +2358,22 @@ app.post("/api/admin/matches/:id/result", requireAdmin, async (req, res) => {
       }
     }
     await recalculateMatchPoints(matchId, result, teamA, teamB);
+    return { matchId, charged: Boolean(charge) };
   });
   try {
-    await saveResult();
+    const saved = await outcome();
+    if (saved.error) {
+      return res.status(saved.status).json({ error: saved.error, draftInvalid: saved.draftInvalid });
+    }
+    res.json({
+      match: await matchDetails(await db.prepare("SELECT * FROM matches WHERE id = ?").get(matchId)),
+      pot: await currentPot(),
+      charged: saved.charged,
+    });
   } catch (error) {
     console.error("No se pudo guardar el resultado:", error.message);
     return res.status(500).json({ error: "No se pudo guardar el resultado." });
   }
-  res.json({
-    match: await matchDetails(await db.prepare("SELECT * FROM matches WHERE id = ?").get(matchId)),
-    pot: await currentPot(),
-    charged: Boolean(charge),
-  });
 });
 
 app.post("/api/admin/matches/:id/notify-negative-balances", requireAdmin, async (req, res) => {
