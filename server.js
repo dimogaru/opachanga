@@ -553,6 +553,7 @@ function isTeamsPublishedStatus(status) {
 function publicDraftState(draft = {}) {
   const exposedDraft = { ...draft };
   delete exposedDraft.adminRevisionHistory;
+  delete exposedDraft.teamNotification;
   return exposedDraft;
 }
 
@@ -1067,7 +1068,7 @@ async function sendUserNotification(userId, payload, { cleanupExpired = true } =
       await db.prepare("DELETE FROM push_subscriptions WHERE endpoint = ?").run(endpoint);
     }
   }
-  return { delivered, failed: results.length - delivered };
+  return { delivered, failed: results.length - delivered, total: subscriptions.length };
 }
 
 async function sendPromotionNotification(userId, recipientLabel, payload) {
@@ -1136,27 +1137,64 @@ async function sendRosterRemovalNotification(userId, alias, matchId) {
 }
 
 async function sendTeamAssignmentNotifications(matchId, teamA, teamB) {
+  const sentAt = new Date().toISOString();
   if (!pushConfigured) {
     console.warn(`[Web Push equipos] No se pudieron notificar las alineaciones del partido #${matchId}: VAPID no está configurado.`);
-    return;
+    return { status: "disabled", activePlayers: 0, delivered: 0, failed: 0, withoutSubscriptions: 0, sentAt };
   }
-  const recipients = [
-    ...teamA.map((userId) => ({ userId, team: "BLANCOS" })),
-    ...teamB.map((userId) => ({ userId, team: "COLOR" })),
-  ];
-  const results = await Promise.allSettled(recipients.map(({ userId, team }) =>
-    sendUserNotification(userId, {
-      title: "Equipos definidos: BLANCOS y COLOR",
-      body: `La alineación está publicada. Te ha tocado ${team}; abre la app para verla.`,
-      url: "/",
-      tag: `teams-${matchId}-${userId}`,
-    }, { cleanupExpired: false }),
-  ));
-  const delivered = results.reduce((sum, result) =>
-    sum + (result.status === "fulfilled" ? Number(result.value?.delivered || 0) : 0), 0);
-  const failed = results.reduce((sum, result) =>
-    sum + (result.status === "rejected" ? 1 : Number(result.value?.failed || 0)), 0);
-  console.info(`[Web Push equipos] Partido #${matchId}: ${delivered} aviso(s) enviados, ${failed} fallo(s).`);
+  try {
+    const recipients = await db.prepare(`
+      SELECT id FROM users
+      WHERE role != 'admin' AND account_status = 'active' AND deleted_at IS NULL
+      ORDER BY id
+    `).all();
+    const payload = {
+      title: "⚽ ¡Equipos Confirmados!",
+      body: "Los equipos ya se han realizado. Entra en la aplicación para ver si juegas con BLANCOS o COLOR.",
+      url: `/?view=convocatoria-equipos&match_id=${matchId}#match-teams`,
+      tag: `teams-published-${matchId}`,
+    };
+    const results = await Promise.allSettled(recipients.map(({ id }) =>
+      sendUserNotification(id, payload, { cleanupExpired: false }),
+    ));
+    const delivered = results.reduce((sum, result) =>
+      sum + (result.status === "fulfilled" ? Number(result.value?.delivered || 0) : 0), 0);
+    const failed = results.reduce((sum, result) =>
+      sum + (result.status === "rejected" ? 1 : Number(result.value?.failed || 0)), 0);
+    const withoutSubscriptions = results.filter((result) =>
+      result.status === "fulfilled" && Number(result.value?.total || 0) === 0,
+    ).length;
+    const status = failed ? delivered ? "partial" : "failed" : delivered ? "sent" : "empty";
+    console.info(
+      `[Web Push equipos] Partido #${matchId}: ${recipients.length} jugadores activos, ` +
+      `${delivered} aviso(s) enviados, ${withoutSubscriptions} sin suscripción, ${failed} fallo(s).`,
+    );
+    return { status, activePlayers: recipients.length, delivered, failed, withoutSubscriptions, sentAt };
+  } catch (error) {
+    console.error(`[Web Push equipos] Falló el aviso masivo del partido #${matchId}:`, error.message);
+    return { status: "failed", activePlayers: 0, delivered: 0, failed: 1, withoutSubscriptions: 0, sentAt };
+  }
+}
+
+async function recordTeamNotificationStatus(matchId, teamA, teamB, notification) {
+  const toIds = (ids) => (Array.isArray(ids) ? ids.map(Number) : []);
+  try {
+    await db.transaction(async () => {
+      const match = await db.prepare("SELECT draft_state, team_a, team_b FROM matches WHERE id = ? FOR UPDATE").get(matchId);
+      if (!match) return;
+      const storedA = readJson(match.team_a, []);
+      const storedB = readJson(match.team_b, []);
+      if (JSON.stringify(toIds(storedA)) !== JSON.stringify(toIds(teamA)) ||
+          JSON.stringify(toIds(storedB)) !== JSON.stringify(toIds(teamB))) return;
+      const draft = readJson(match.draft_state, {});
+      if (!isTeamsPublishedStatus(draft.status)) return;
+      draft.teamNotification = notification;
+      await db.prepare("UPDATE matches SET draft_state = ? WHERE id = ?")
+        .run(JSON.stringify(draft), matchId);
+    })();
+  } catch (error) {
+    console.error(`[Web Push equipos] No se pudo registrar el resultado de notificación del partido #${matchId}:`, error.message);
+  }
 }
 
 async function sendCancellationNotifications(match) {
@@ -1830,12 +1868,15 @@ app.post("/api/admin/convocations/new", requireAdmin, async (req, res) => {
   });
 });
 
-app.get("/api/matches", requireUser, async (_req, res) => {
+app.get("/api/matches", requireUser, async (req, res) => {
   const rawMatches = await db.prepare("SELECT * FROM matches ORDER BY COALESCE(match_date, start_date) DESC, id DESC LIMIT 12").all();
   const currentMatch = await getCurrentMatch();
   const matches = await Promise.all(rawMatches.map(async (match) => ({
     ...await matchDetails(match),
     isCurrent: currentMatch?.id === match.id,
+    ...(req.session.user.role === "admin"
+      ? { teamNotification: readJson(match.draft_state, {}).teamNotification || null }
+      : {}),
   })));
   res.json({ matches, pot: await currentPot() });
 });
@@ -2152,8 +2193,12 @@ app.post("/api/admin/matches/:id/teams/manual", requireAdmin, async (req, res) =
     })();
 
     if (outcome.error) return res.status(outcome.status).json({ error: outcome.error });
-    void sendTeamAssignmentNotifications(matchId, teamA, teamB);
-    res.json(await matchDetails(await db.prepare("SELECT * FROM matches WHERE id = ?").get(outcome.matchId)));
+    const notification = await sendTeamAssignmentNotifications(matchId, teamA, teamB);
+    await recordTeamNotificationStatus(matchId, teamA, teamB, notification);
+    res.json({
+      ...await matchDetails(await db.prepare("SELECT * FROM matches WHERE id = ?").get(outcome.matchId)),
+      notification,
+    });
   } catch (error) {
     console.error("No se pudo guardar la asignación manual de equipos:", error.message);
     res.status(500).json({ error: "No se pudo guardar la formación manual." });
@@ -2232,8 +2277,11 @@ app.post("/api/matches/:id/draft/pick", requirePlayer, async (req, res) => {
     };
   })();
   if (outcome.error) return res.status(outcome.status).json({ error: outcome.error, draftInvalid: outcome.draftInvalid });
-  if (outcome.published) void sendTeamAssignmentNotifications(matchId, outcome.teamA, outcome.teamB);
-  res.json(await matchDetails(outcome.match));
+  const notification = outcome.published
+    ? await sendTeamAssignmentNotifications(matchId, outcome.teamA, outcome.teamB)
+    : null;
+  if (notification) await recordTeamNotificationStatus(matchId, outcome.teamA, outcome.teamB, notification);
+  res.json({ ...await matchDetails(outcome.match), notification });
 });
 
 app.post("/api/admin/matches/:id/price", requireAdmin, async (req, res) => {

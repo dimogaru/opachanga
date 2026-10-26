@@ -19,6 +19,7 @@ let activeAdminTab = "convocatoria";
 let manualAssignmentMode = false;
 let manualAssignmentMatchId = null;
 let manualTeamAssignments = new Map();
+let lastAdminTeamNotificationKey = null;
 
 async function api(url, options = {}) {
   const response = await fetch(url, {
@@ -57,6 +58,30 @@ function teamLabel(team) {
 
 function isTeamsPublished(status) {
   return status === "teams_published" || status === "complete";
+}
+
+function teamNotificationMessage(notification) {
+  if (notification?.status === "sent" && notification.failed === 0) {
+    const missing = notification.withoutSubscriptions
+      ? ` (${notification.withoutSubscriptions} jugador(es) sin dispositivo suscrito)`
+      : "";
+    return `Equipos guardados y notificación enviada a toda la plantilla${missing}`;
+  }
+  if (notification?.status === "partial") {
+    return `Equipos guardados; aviso parcial: ${notification.delivered} enviados, ${notification.failed} fallidos.`;
+  }
+  if (notification?.status === "empty") {
+    return notification.activePlayers
+      ? "Equipos guardados; no hay dispositivos suscritos en la plantilla."
+      : "Equipos guardados; no hay jugadores activos a quienes avisar.";
+  }
+  if (notification?.status === "failed") return "Equipos guardados, pero falló el envío de la notificación push.";
+  return "Equipos guardados, pero no se envió el aviso push: revisa la configuración VAPID.";
+}
+
+function teamNotificationKey(match) {
+  const sentAt = match?.teamNotification?.sentAt;
+  return sentAt ? `${match.id}:${sentAt}` : null;
 }
 
 function profileAvatar(photoUrl, alias, size = "h-24 w-24") {
@@ -646,6 +671,9 @@ function renderMatchPanel(matchesData, isAdmin = false, showFinance = isAdmin) {
   const canAdminRepairPublished = isAdmin && selected.status === "closed" && isTeamsPublished(draft.status) &&
     selected.isCurrent && !selected.result && !selected.finance;
   const publishedEditButton = `<button id="edit-published-teams" type="button" class="w-full rounded-xl bg-pitch-900 px-4 py-3 text-sm font-extrabold text-white sm:w-auto">Editar Equipos / Reasignar</button>`;
+  const teamNotificationBanner = isAdmin && selected.teamNotification
+    ? `<p role="status" class="mt-3 rounded-xl bg-pitch-50 px-4 py-3 text-xs font-semibold text-pitch-900">${escapeHtml(teamNotificationMessage(selected.teamNotification))}</p>`
+    : "";
   if (selected.draftValidationError) {
     const editPublishedTeams = canAdminRepairPublished
       ? manualAssignmentMode
@@ -708,7 +736,7 @@ function renderMatchPanel(matchesData, isAdmin = false, showFinance = isAdmin) {
         </form>`
       : `<p class="mt-4 rounded-xl bg-amber-50 p-4 text-sm text-amber-800">Antes de guardar el resultado, define el Precio por Partido en Finanzas.</p>`
     : selected.status === "played" ? `<p class="mt-4 rounded-xl bg-lime/20 p-4 text-sm font-bold text-pitch-900">Resultado: ${scoreText}. Puntuación guardada: asistencia +1, victoria +3 extra, empate +1 extra.</p>` : "";
-  return `<section class="mb-7 rounded-3xl border border-ink/[.07] bg-white p-5 shadow-sm sm:p-6"><div class="mb-4 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between"><div><p class="text-xs font-bold uppercase tracking-[.12em] text-pitch-700">Partidos</p><h2 class="display mt-1 text-2xl font-extrabold">${escapeHtml(matchLabel(selected))}</h2><p class="mt-1 text-xs text-ink/50">${selected.status === "cancelled" ? "Convocatoria cancelada" : selected.status === "played" ? "Partido jugado" : selected.status === "closed" ? "Convocatoria cerrada" : "Convocatoria abierta"}</p></div><div class="w-full sm:max-w-xs">${selection}</div></div><div class="grid gap-3 sm:grid-cols-2">${renderTeamCard("BLANCOS", selected.teamA || [], "bg-pitch-100 text-pitch-900")}${renderTeamCard("COLOR", selected.teamB || [], "bg-amber-50 text-amber-900")}</div>${isAdmin ? adminControls : renderCaptainDraft(selected)}${financeControl}${resultControl}</section>`;
+  return `<section id="match-teams" class="mb-7 scroll-mt-4 rounded-3xl border border-ink/[.07] bg-white p-5 shadow-sm sm:p-6"><div class="mb-4 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between"><div><p class="text-xs font-bold uppercase tracking-[.12em] text-pitch-700">Partidos</p><h2 class="display mt-1 text-2xl font-extrabold">${escapeHtml(matchLabel(selected))}</h2><p class="mt-1 text-xs text-ink/50">${selected.status === "cancelled" ? "Convocatoria cancelada" : selected.status === "played" ? "Partido jugado" : selected.status === "closed" ? "Convocatoria cerrada" : "Convocatoria abierta"}</p></div><div class="w-full sm:max-w-xs">${selection}</div></div><div class="grid gap-3 sm:grid-cols-2">${renderTeamCard("BLANCOS", selected.teamA || [], "bg-pitch-100 text-pitch-900")}${renderTeamCard("COLOR", selected.teamB || [], "bg-amber-50 text-amber-900")}</div>${isAdmin ? adminControls : renderCaptainDraft(selected)}${teamNotificationBanner}${financeControl}${resultControl}</section>`;
 }
 
 function renderMatchFinanceControl(matchesData) {
@@ -960,6 +988,8 @@ function renderPasswordChange() {
       await loadUsers();
       await renderHome();
       void syncExistingPushSubscription();
+      if (initializeAdminTeamNotificationKey()) await renderHome();
+      scrollToNotificationTeams();
     } catch (error) {
       const errorBox = document.querySelector("#password-error");
       errorBox.textContent = error.message;
@@ -1002,6 +1032,8 @@ function renderLogin() {
         await loadUsers();
         await renderHome();
         void syncExistingPushSubscription();
+        if (initializeAdminTeamNotificationKey()) await renderHome();
+        scrollToNotificationTeams();
       }
     } catch (error) {
       const errorBox = document.querySelector("#login-error");
@@ -1651,15 +1683,17 @@ function bindMatchActions(isAdmin = false) {
     if (!confirm(`¿Guardar la formación equilibrada: BLANCOS ${teamA.length} y COLOR ${teamB.length}?`)) return;
     button.disabled = true;
     try {
-      const match = await api(`/api/admin/matches/${selectedMatchId}/teams/manual`, {
+      const response = await api(`/api/admin/matches/${selectedMatchId}/teams/manual`, {
         method: "POST",
         body: JSON.stringify({ teamA, teamB }),
       });
-      selectedMatchId = match.id;
+      selectedMatchId = response.id;
       manualAssignmentMatchId = null;
       manualTeamAssignments = new Map();
       manualAssignmentMode = false;
-      showToast("Equipos BLANCOS y COLOR guardados y publicados.");
+      const notification = response.notification;
+      lastAdminTeamNotificationKey = teamNotificationKey({ id: response.id, teamNotification: notification });
+      showToast(teamNotificationMessage(notification));
       activeAdminTab = "partidos";
       await renderAdmin();
     } catch (error) {
@@ -2132,6 +2166,8 @@ async function login(alias, password) {
       await loadUsers();
       await renderHome();
       void syncExistingPushSubscription();
+      if (initializeAdminTeamNotificationKey()) await renderHome();
+      scrollToNotificationTeams();
     }
   } catch (error) {
     showToast(error.message);
@@ -2156,6 +2192,19 @@ async function renderHome() {
   if (currentUser?.must_change_password) return renderPasswordChange();
   if (currentUser?.role === "admin") return renderAdmin();
   return renderPlayer();
+}
+
+function initializeAdminTeamNotificationKey() {
+  if (currentUser?.role !== "admin") return false;
+  const current = matchData?.matches?.find((match) =>
+    match.isCurrent && isTeamsPublished(match.draft?.status) && match.teamNotification?.sentAt,
+  );
+  lastAdminTeamNotificationKey = teamNotificationKey(current);
+  if (current && activeAdminTab !== "partidos") {
+    activeAdminTab = "partidos";
+    return true;
+  }
+  return false;
 }
 
 async function loadUsers() {
@@ -2218,13 +2267,30 @@ async function refreshLiveDraftIfChanged() {
   const hasCurrentPublishedTeams = matchData?.matches?.some((match) =>
     match.isCurrent && match.status === "closed" && isTeamsPublished(match.draft?.status),
   );
-  if (!isDesignatedCaptain && !hasCurrentPublishedTeams) return;
+  const adminWatchingCurrentMatch = currentUser.role === "admin" && matchData?.matches?.some((match) =>
+    match.isCurrent && match.status === "closed",
+  );
+  if (!isDesignatedCaptain && !hasCurrentPublishedTeams && !adminWatchingCurrentMatch) return;
   pollingDraft = true;
   try {
     const latest = await api("/api/matches");
     if (JSON.stringify(latest) !== JSON.stringify(matchData)) {
+      const publishedMatch = currentUser.role === "admin"
+        ? latest.matches?.find((match) =>
+          match.isCurrent && isTeamsPublished(match.draft?.status) && match.teamNotification?.sentAt,
+        )
+        : null;
+      const notificationKey = teamNotificationKey(publishedMatch);
+      const newAdminNotification = notificationKey && notificationKey !== lastAdminTeamNotificationKey
+        ? publishedMatch.teamNotification
+        : null;
+      if (newAdminNotification) {
+        lastAdminTeamNotificationKey = notificationKey;
+        activeAdminTab = "partidos";
+      }
       matchData = latest;
       await renderHome();
+      if (newAdminNotification) showToast(teamNotificationMessage(newAdminNotification));
     }
   } catch {
     // The next poll will refresh the draft when the connection returns.
@@ -2279,6 +2345,13 @@ async function registerServiceWorkerWithUpdates() {
 
 async function start() {
   void registerServiceWorkerWithUpdates();
+  const notificationLink = new URLSearchParams(window.location.search);
+  const notificationMatchId = Number(notificationLink.get("match_id"));
+  const openTeamsFromNotification = notificationLink.get("view") === "convocatoria-equipos";
+  if (openTeamsFromNotification && Number.isSafeInteger(notificationMatchId) && notificationMatchId > 0) {
+    selectedMatchId = notificationMatchId;
+    activeAdminTab = "partidos";
+  }
   try {
     const session = await api("/api/session");
     currentUser = session.user;
@@ -2286,11 +2359,20 @@ async function start() {
       await loadUsers();
       await renderHome();
       void syncExistingPushSubscription();
+      if (initializeAdminTeamNotificationKey()) await renderHome();
+      if (openTeamsFromNotification) scrollToNotificationTeams();
     } else renderLogin();
   } catch (error) {
     app.innerHTML = `<main class="grid min-h-screen place-items-center p-6"><div class="max-w-sm text-center"><div class="text-4xl">⚽</div><h1 class="display mt-4 text-2xl font-extrabold">No hay conexión con el servidor</h1><p class="mt-2 text-sm text-ink/55">Comprueba la conexión e inténtalo de nuevo.</p><button onclick="location.reload()" class="mt-5 rounded-xl bg-pitch-900 px-5 py-3 text-sm font-bold text-white">Reintentar</button></div></main>`;
     console.error(error);
   }
+}
+
+function scrollToNotificationTeams() {
+  if (new URLSearchParams(window.location.search).get("view") !== "convocatoria-equipos") return;
+  requestAnimationFrame(() => {
+    document.querySelector("#match-teams")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  });
 }
 
 window.addEventListener("beforeinstallprompt", (event) => {
