@@ -522,6 +522,8 @@ function moneyCents(value) {
   return Math.round(Number(value) * 100);
 }
 
+const maxNumericMoneyCents = 999_999_999_999;
+
 function roundMoney(value) {
   return Math.round(value * 100) / 100;
 }
@@ -2303,22 +2305,44 @@ app.post("/api/matches/:id/draft/pick", requirePlayer, async (req, res) => {
 
 app.post("/api/admin/matches/:id/price", requireAdmin, async (req, res) => {
   const matchId = Number(req.params.id);
-  const price = Number(req.body?.price_total);
-  const priceCents = moneyCents(price);
-  const match = await db.prepare("SELECT * FROM matches WHERE id = ?").get(matchId);
-  if (!match) return res.status(404).json({ error: "No se encontró el partido." });
-  if (match.status === "cancelled") return res.status(409).json({ error: "Una convocatoria cancelada no admite precio ni cobros." });
-  if (!Number.isFinite(price) || price < 0 || !Number.isSafeInteger(priceCents)) {
-    return res.status(400).json({ error: "Introduce un precio total válido, igual o superior a cero." });
+  const totalPriceRaw = req.body?.price_total;
+  const playerPriceRaw = req.body?.price_per_player;
+  const totalPrice = Number(totalPriceRaw);
+  const playerPrice = Number(playerPriceRaw);
+  const totalPriceCents = moneyCents(totalPrice);
+  const playerPriceCents = moneyCents(playerPrice);
+  const validMoney = (raw, value, cents) =>
+    raw !== undefined && raw !== null && String(raw).trim() !== "" &&
+    Number.isFinite(value) && value >= 0 && Number.isSafeInteger(cents) &&
+    cents <= maxNumericMoneyCents &&
+    Math.abs(value * 100 - cents) < 0.000001;
+  if (!validMoney(totalPriceRaw, totalPrice, totalPriceCents)) {
+    return res.status(400).json({ error: "Introduce un precio total válido con un máximo de dos decimales." });
   }
-  if (match.status === "played") {
-    return res.status(409).json({ error: "No se puede definir un precio retroactivo para un partido jugado." });
+  if (!validMoney(playerPriceRaw, playerPrice, playerPriceCents)) {
+    return res.status(400).json({ error: "Introduce un precio por jugador obligatorio con un máximo de dos decimales." });
   }
-  if (await db.prepare("SELECT 1 FROM match_finances WHERE match_id = ?").get(matchId)) {
-    return res.status(409).json({ error: "El cobro ya se aplicó al registrar el resultado y el precio no se puede cambiar." });
-  }
-  await db.prepare("UPDATE matches SET pitch_price = ? WHERE id = ?").run(priceCents / 100, matchId);
-  res.json({ match: await matchDetails(await db.prepare("SELECT * FROM matches WHERE id = ?").get(matchId)) });
+  const saved = await db.transaction(async () => {
+    const match = await db.prepare("SELECT * FROM matches WHERE id = ? FOR UPDATE").get(matchId);
+    if (!match) return { error: "No se encontró el partido.", status: 404 };
+    if (match.status === "cancelled") {
+      return { error: "Una convocatoria cancelada no admite precio ni cobros.", status: 409 };
+    }
+    if (match.status === "played") {
+      return { error: "No se puede definir un precio retroactivo para un partido jugado.", status: 409 };
+    }
+    if (await db.prepare("SELECT 1 FROM match_finances WHERE match_id = ?").get(matchId)) {
+      return { error: "El cobro ya se aplicó al registrar el resultado y el precio no se puede cambiar.", status: 409 };
+    }
+    await db.prepare(`
+      UPDATE matches
+      SET pitch_price = ?, total_match_price = ?, player_price = ?
+      WHERE id = ?
+    `).run(totalPriceCents / 100, totalPriceCents / 100, playerPriceCents / 100, matchId);
+    return { match: await db.prepare("SELECT * FROM matches WHERE id = ?").get(matchId) };
+  })();
+  if (saved.error) return res.status(saved.status).json({ error: saved.error });
+  res.json({ match: await matchDetails(saved.match) });
 });
 
 app.post("/api/admin/matches/:id/finance", requireAdmin, (_req, res) =>
@@ -2354,28 +2378,43 @@ app.post("/api/admin/matches/:id/result", requireAdmin, async (req, res) => {
     const financeExists = await db.prepare("SELECT 1 FROM match_finances WHERE match_id = ?").get(matchId);
     let charge = null;
     if (!financeExists && match.status !== "played") {
-      if (match.pitch_price == null) {
-        return { error: "Configura primero el Precio por Partido en la pestaña Finanzas.", status: 409 };
+      if (match.total_match_price == null || match.player_price == null) {
+        return { error: "Configura el precio total y el precio por jugador en la pestaña Finanzas.", status: 409 };
       }
       const participants = [...new Set([...teamA, ...teamB])];
       if (!participants.length) {
         return { error: "No hay jugadores en los equipos para aplicar el cobro.", status: 409 };
       }
-      const pitchCents = moneyCents(match.pitch_price);
-      const feeCents = Math.ceil(pitchCents / participants.length);
+      const pitchCents = moneyCents(match.total_match_price);
+      const feeCents = moneyCents(match.player_price);
       const collectedCents = feeCents * participants.length;
-      if (!Number.isSafeInteger(collectedCents)) {
-        return { error: "El precio es demasiado alto para calcular el cobro por jugador.", status: 400 };
+      // Only a positive remainder is an automatic contribution; a shortfall
+      // is not withdrawn from the existing group pot without explicit approval.
+      const potAddedCents = Math.max(0, collectedCents - pitchCents);
+      if (!Number.isSafeInteger(collectedCents) ||
+          collectedCents > maxNumericMoneyCents ||
+          !Number.isSafeInteger(potAddedCents) ||
+          potAddedCents > maxNumericMoneyCents) {
+        return { error: "El precio es demasiado alto para calcular el cobro por jugador y el bote.", status: 400 };
       }
       charge = {
         participants,
         pitchCents,
         feeCents,
         collectedCents,
-        potAddedCents: collectedCents - pitchCents,
+        potAddedCents,
       };
     }
-    await db.prepare("UPDATE matches SET status = 'played', result = ? WHERE id = ?").run(result, matchId);
+    if (charge) {
+      await db.prepare(`
+        UPDATE matches
+        SET status = 'played', result = ?, pot_contribution = ?
+        WHERE id = ?
+      `).run(result, charge.potAddedCents / 100, matchId);
+    } else {
+      await db.prepare("UPDATE matches SET status = 'played', result = ? WHERE id = ?")
+        .run(result, matchId);
+    }
     if (charge) {
       const insertTransaction = db.prepare(`
         INSERT INTO transactions (user_id, amount, concept, match_id, transaction_type)
@@ -2390,7 +2429,8 @@ app.post("/api/admin/matches/:id/result", requireAdmin, async (req, res) => {
       }
       const currentPotCents = await lockCurrentPotCents();
       const updatedPotCents = currentPotCents + charge.potAddedCents;
-      if (!Number.isSafeInteger(updatedPotCents)) {
+      if (!Number.isSafeInteger(updatedPotCents) ||
+          Math.abs(updatedPotCents) > maxNumericMoneyCents) {
         throw new Error("El saldo del bote excede el rango permitido.");
       }
       await db.prepare(`
@@ -3009,7 +3049,16 @@ app.get("/api/admin/finance/overview", requireAdmin, async (_req, res) => {
     LEFT JOIN users creator ON creator.id = bt.created_by
     ORDER BY bt.created_at DESC, bt.id DESC
   `).all();
-  res.json({ players, transactions, pot: await currentPot(), potTransactions });
+  const matchCharges = await db.prepare(`
+    SELECT m.id AS match_id, m.match_date, m.match_time, m.result,
+      m.total_match_price, m.player_price, m.pot_contribution,
+      mf.pitch_cost, mf.fee_per_player, mf.participants,
+      mf.total_collected, mf.pot_added, mf.created_at
+    FROM matches m
+    JOIN match_finances mf ON mf.match_id = m.id
+    ORDER BY mf.created_at DESC, m.id DESC
+  `).all();
+  res.json({ players, transactions, pot: await currentPot(), potTransactions, matchCharges });
 });
 
 app.post("/api/admin/finance/pot-transactions", requireAdmin, async (req, res) => {

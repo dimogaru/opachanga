@@ -34,6 +34,9 @@ CREATE TABLE IF NOT EXISTS matches (
   team_a TEXT NOT NULL DEFAULT '[]',
   team_b TEXT NOT NULL DEFAULT '[]',
   pitch_price NUMERIC(12, 2),
+  total_match_price NUMERIC(12, 2),
+  player_price NUMERIC(12, 2),
+  pot_contribution NUMERIC(12, 2),
   result TEXT CHECK (result IN ('A', 'B', 'draw') OR result IS NULL)
 );
 

@@ -736,24 +736,45 @@ function renderMatchPanel(matchesData, isAdmin = false, showFinance = isAdmin) {
     ? selected.status === "cancelled"
       ? `<p class="mt-4 rounded-xl bg-red-50 p-4 text-sm text-red-800">Evento cancelado: no se permite configurar precio ni aplicar cobros.</p>`
       : finance
-      ? `<div class="mt-4 grid gap-2 rounded-xl bg-white p-4 text-xs text-ink/60 sm:grid-cols-4"><span>Precio total: <b class="text-ink">${formatMoney(finance.pitch_cost)}</b></span><span>Cuota inicial: <b class="text-ink">${formatMoney(finance.fee_per_player)}</b></span><span>Cobrado (${finance.participants}): <b class="text-ink">${formatMoney(finance.total_collected)}</b></span><span>Al bote: <b class="text-pitch-800">${formatMoney(finance.pot_added)}</b></span></div>`
-      : `<p class="mt-4 rounded-xl bg-paper p-4 text-sm text-ink/55">${selected.pitch_price == null ? "Configura el Precio por Partido desde la pestaña Finanzas." : `Precio configurado: ${formatMoney(selected.pitch_price)}.`} El descuento se aplicará automáticamente al guardar el resultado.</p>`
+      ? `<div class="mt-4 grid gap-2 rounded-xl bg-white p-4 text-xs text-ink/60 sm:grid-cols-4"><span>Coste del partido: <b class="text-ink">${formatMoney(finance.pitch_cost)}</b></span><span>Precio por jugador: <b class="text-ink">${formatMoney(finance.fee_per_player)}</b></span><span>Recaudado (${finance.participants}): <b class="text-ink">${formatMoney(finance.total_collected)}</b></span><span>Saldo neto al bote: <b class="text-pitch-800">${formatMoney(finance.pot_added)}</b></span></div>`
+      : `<p class="mt-4 rounded-xl bg-paper p-4 text-sm text-ink/55">${selected.total_match_price == null && selected.pitch_price == null || selected.player_price == null ? "Configura el coste total y el precio por jugador desde la pestaña Finanzas." : `Precio por jugador: ${formatMoney(selected.player_price)} · coste total: ${formatMoney(selected.total_match_price ?? selected.pitch_price)}.`} El descuento se aplicará automáticamente al guardar el resultado.</p>`
     : "";
-  const canSaveResult = selected.status === "played" || Boolean(finance) || selected.pitch_price != null;
+  const canSaveResult = selected.status === "played" || Boolean(finance) ||
+    (selected.player_price != null && (selected.total_match_price != null || selected.pitch_price != null));
   const resultControl = isAdmin && completed && selected.status !== "cancelled" && !selected.draftValidationError
     ? canSaveResult
       ? `<form id="match-result-form" data-match-id="${selected.id}" data-existing="${selected.status === "played"}" class="mt-4 grid gap-3 rounded-xl bg-white p-4 sm:grid-cols-[1fr_auto] sm:items-end">
           <div class="sm:col-span-2"><h3 class="font-bold">Registrar Resultado del Partido</h3><p class="mt-1 text-xs text-ink/50">${selected.status === "played" ? "Si corriges el resultado, se sustituyen los puntos anteriores de este partido." : "La clasificación se actualizará al guardar el resultado."}</p></div>
           <label class="block"><span class="mb-1.5 block text-xs font-semibold text-ink/55">Resultado final</span><select name="result" required class="w-full rounded-xl border border-ink/10 bg-white px-3 py-2.5 text-sm"><option value="A" ${selected.result === "A" ? "selected" : ""}>Ganó BLANCOS</option><option value="B" ${selected.result === "B" ? "selected" : ""}>Ganó COLOR</option><option value="draw" ${selected.result === "draw" ? "selected" : ""}>Empate</option></select></label>
           <button class="rounded-xl bg-lime px-4 py-2.5 text-sm font-extrabold text-pitch-950">${selected.status === "played" ? "Actualizar resultado y puntos" : finance ? "Guardar resultado y puntos" : "Guardar resultado y cobrar"}</button>
-          ${selected.status !== "played" && !finance ? `<p class="text-xs text-ink/45 sm:col-span-2">Se cobrará ${formatMoney(selected.pitch_price)} entre quienes jugaron; cualquier redondeo se suma al bote.</p>` : ""}
+          ${selected.status !== "played" && !finance ? `<p class="text-xs text-ink/45 sm:col-span-2">Se descontará ${formatMoney(selected.player_price)} a cada participante. El sobrante positivo se sumará al Bote; un déficit no lo modifica automáticamente.</p>` : ""}
         </form>`
       : `<p class="mt-4 rounded-xl bg-amber-50 p-4 text-sm text-amber-800">Antes de guardar el resultado, define el Precio por Partido en Finanzas.</p>`
     : selected.status === "played" ? `<p class="mt-4 rounded-xl bg-lime/20 p-4 text-sm font-bold text-pitch-900">Resultado: ${scoreText}. Puntuación guardada: asistencia +1, victoria +3 extra, empate +1 extra.</p>` : "";
   return `<section id="match-teams" class="mb-7 scroll-mt-4 rounded-3xl border border-ink/[.07] bg-white p-5 shadow-sm sm:p-6"><div class="mb-4 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between"><div><p class="text-xs font-bold uppercase tracking-[.12em] text-pitch-700">Partidos</p><h2 class="display mt-1 text-2xl font-extrabold">${escapeHtml(matchLabel(selected))}</h2><p class="mt-1 text-xs text-ink/50">${selected.status === "cancelled" ? "Convocatoria cancelada" : selected.status === "played" ? "Partido jugado" : selected.status === "closed" ? "Convocatoria cerrada" : "Convocatoria abierta"}</p></div><div class="w-full sm:max-w-xs">${selection}</div></div><div class="grid gap-3 sm:grid-cols-2">${renderTeamCard("BLANCOS", selected.teamA || [], "bg-pitch-100 text-pitch-900")}${renderTeamCard("COLOR", selected.teamB || [], "bg-amber-50 text-amber-900")}</div>${isAdmin ? adminControls : renderCaptainDraft(selected)}${teamNotificationBanner}${financeControl}${resultControl}</section>`;
 }
 
-function renderMatchFinanceControl(matchesData) {
+function matchPricePreviewText(totalRaw, playerRaw, playerCount) {
+  const count = Math.max(0, Number(playerCount) || 0);
+  const total = Number(totalRaw);
+  const perPlayer = Number(playerRaw);
+  if (totalRaw === "" || playerRaw === "" || !Number.isFinite(total) || !Number.isFinite(perPlayer) ||
+      total < 0 || perPlayer < 0) {
+    return "Introduce ambos precios para ver el cálculo.";
+  }
+  const totalCents = Math.round(total * 100);
+  const playerCents = Math.round(perPlayer * 100);
+  const collectedCents = playerCents * count;
+  const differenceCents = collectedCents - totalCents;
+  const differenceText = differenceCents > 0
+    ? `Aportación al Bote: +${formatMoney(differenceCents / 100)}`
+    : differenceCents < 0
+      ? `Déficit frente al coste: ${formatMoney(Math.abs(differenceCents) / 100)} (no se descontará automáticamente del Bote)`
+      : "Aportación al Bote: 0,00 €";
+  return `${count} ${count === 1 ? "jugador" : "jugadores"} × ${formatMoney(playerCents / 100)} = ${formatMoney(collectedCents / 100)} recaudados. Coste del partido: ${formatMoney(totalCents / 100)}. ${differenceText}.`;
+}
+
+function renderMatchFinanceControl(matchesData, matchCharges = []) {
   const matches = matchesData.matches || [];
   if (!matches.length) return "";
   let selected = matches.find((match) => match.id === Number(selectedMatchId));
@@ -763,13 +784,22 @@ function renderMatchFinanceControl(matchesData) {
     `<option value="${match.id}" ${match.id === selected.id ? "selected" : ""}>${escapeHtml(matchLabel(match))} · ${matchStatusLabel(match.status)}</option>`,
   ).join("");
   const action = selected.finance
-    ? `<div class="grid gap-2 rounded-xl bg-paper p-4 text-xs text-ink/60 sm:grid-cols-4"><span>Precio total: <b class="text-ink">${formatMoney(selected.finance.pitch_cost)}</b></span><span>Cuota inicial: <b class="text-ink">${formatMoney(selected.finance.fee_per_player)}</b></span><span>Cobrado (${selected.finance.participants}): <b class="text-ink">${formatMoney(selected.finance.total_collected)}</b></span><span>Al bote: <b class="text-pitch-800">${formatMoney(selected.finance.pot_added)}</b></span></div>`
+    ? `<div class="grid gap-2 rounded-xl bg-paper p-4 text-xs text-ink/60 sm:grid-cols-4"><span>Coste del partido: <b class="text-ink">${formatMoney(selected.finance.pitch_cost)}</b></span><span>Precio por jugador: <b class="text-ink">${formatMoney(selected.finance.fee_per_player)}</b></span><span>Recaudado (${selected.finance.participants}): <b class="text-ink">${formatMoney(selected.finance.total_collected)}</b></span><span>Saldo neto al bote: <b class="text-pitch-800">${formatMoney(selected.finance.pot_added)}</b></span></div>`
     : selected.status === "cancelled"
       ? `<div class="rounded-xl bg-red-50 p-4 text-sm text-red-800">Evento cancelado. No se pueden aplicar cobros.</div>`
     : selected.status === "played"
       ? `<div class="rounded-xl bg-paper p-4 text-sm text-ink/55">Este partido ya tiene resultado, pero no conserva un cobro automático histórico.</div>`
-      : `<form id="match-price-form" data-match-id="${selected.id}" class="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end"><label><span class="mb-1.5 block text-xs font-semibold text-ink/55">Precio por Partido · coste total de pista/reserva (€)</span><input name="price_total" type="number" min="0" step="0.01" required value="${selected.pitch_price ?? ""}" placeholder="Ej. 60,00" class="w-full rounded-xl border border-ink/10 px-3 py-2.5 text-sm"/></label><button class="rounded-xl bg-pitch-900 px-4 py-2.5 text-sm font-bold text-white">${selected.pitch_price == null ? "Guardar precio" : "Actualizar precio"}</button><p class="text-xs text-ink/45 sm:col-span-2">Al guardar el resultado, se dividirá entre los jugadores de los equipos, redondeando la cuota al céntimo superior; el sobrante irá al bote.</p></form>`;
-  return `<section class="mb-5 rounded-2xl border border-ink/[.07] bg-white p-5 shadow-sm"><div class="mb-4 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between"><div><h3 class="font-bold">Precio del partido y cobro automático</h3><p class="mt-1 text-xs text-ink/50">La cuota se descuenta una vez al guardar el primer resultado.</p></div><label class="text-xs font-semibold text-ink/55 sm:w-64">Partido<select id="finance-match-picker" class="mt-1 block w-full rounded-xl border border-ink/10 bg-white px-3 py-2.5 text-sm">${options}</select></label></div>${action}</section>`;
+      : `<form id="match-price-form" data-match-id="${selected.id}" data-principal-count="${selected.principalCount || 0}" class="grid gap-3 sm:grid-cols-2"><label><span class="mb-1.5 block text-xs font-semibold text-ink/55">Precio total del partido · pista/reserva (€)</span><input name="price_total" type="number" min="0" step="0.01" required value="${selected.total_match_price ?? selected.pitch_price ?? ""}" placeholder="Ej. 40,00" class="w-full rounded-xl border border-ink/10 px-3 py-2.5 text-sm"/></label><label><span class="mb-1.5 block text-xs font-semibold text-ink/55">Precio del partido por jugador (€)</span><input name="price_per_player" type="number" min="0" step="0.01" required value="${selected.player_price ?? ""}" placeholder="Ej. 3,00" class="w-full rounded-xl border border-ink/10 px-3 py-2.5 text-sm"/></label><p data-match-price-preview class="rounded-xl bg-lime/20 p-3 text-xs font-semibold leading-5 text-pitch-900 sm:col-span-2">${matchPricePreviewText(selected.total_match_price ?? selected.pitch_price ?? "", selected.player_price ?? "", selected.principalCount || 0)}</p><button class="rounded-xl bg-pitch-900 px-4 py-2.5 text-sm font-bold text-white sm:col-span-2 sm:justify-self-start">${selected.total_match_price == null && selected.pitch_price == null ? "Guardar precios" : "Actualizar precios"}</button><p class="text-xs text-ink/45 sm:col-span-2">El cobro descuenta el precio fijo configurado a cada jugador de los equipos. El sobrante positivo se suma al Bote; un déficit se muestra, pero no lo modifica automáticamente.</p></form>`;
+  const historyCards = matchCharges.map((charge) => {
+    const amountToPot = Number(charge.pot_contribution ?? charge.pot_added ?? 0);
+    return `<article class="grid gap-2 py-3 first:pt-0 last:pb-0"><div class="flex items-start justify-between gap-3"><div><p class="text-sm font-bold">${escapeHtml(matchLabel({ match_date: charge.match_date, match_time: charge.match_time }))}</p><p class="mt-1 text-[11px] text-ink/45">${charge.participants} participantes · ${escapeHtml(String(charge.created_at || ""))}</p></div><span class="shrink-0 text-sm font-extrabold text-pitch-800">${formatMoney(charge.total_collected)}</span></div><p class="text-xs leading-5 text-ink/60">Precio por jugador: ${formatMoney(charge.player_price ?? charge.fee_per_player)} · coste: ${formatMoney(charge.total_match_price ?? charge.pitch_cost)} · saldo neto del Bote: ${formatMoney(amountToPot)}</p></article>`;
+  }).join("");
+  const historyRows = matchCharges.map((charge) => {
+    const amountToPot = Number(charge.pot_contribution ?? charge.pot_added ?? 0);
+    return `<tr><td class="px-4 py-3 text-sm font-semibold">${escapeHtml(matchLabel({ match_date: charge.match_date, match_time: charge.match_time }))}</td><td class="px-4 py-3 text-right text-sm">${formatMoney(charge.player_price ?? charge.fee_per_player)}</td><td class="px-4 py-3 text-right text-sm">${formatMoney(charge.total_match_price ?? charge.pitch_cost)}</td><td class="px-4 py-3 text-right text-sm">${charge.participants}</td><td class="px-4 py-3 text-right text-sm font-semibold">${formatMoney(charge.total_collected)}</td><td class="px-4 py-3 text-right text-sm font-bold ${amountToPot < 0 ? "text-red-700" : "text-pitch-800"}">${formatMoney(amountToPot)}</td></tr>`;
+  }).join("");
+  const history = `<div class="mt-5 overflow-hidden rounded-xl border border-ink/[.07]"><div class="border-b border-ink/[.07] px-4 py-3"><h4 class="text-sm font-bold">Historial de partidos cobrados</h4><p class="mt-1 text-xs text-ink/45">Desglose de cuota, recaudación, coste y movimiento neto del Bote.</p></div>${matchCharges.length ? `<div class="divide-y divide-ink/[.06] px-4 sm:hidden">${historyCards}</div><div class="hidden overflow-x-auto sm:block"><table class="w-full min-w-[820px] text-left"><thead class="bg-paper/70 text-[10px] font-bold uppercase tracking-[.12em] text-ink/45"><tr><th class="px-4 py-3">Partido</th><th class="px-4 py-3 text-right">€/jugador</th><th class="px-4 py-3 text-right">Coste</th><th class="px-4 py-3 text-right">Jugadores</th><th class="px-4 py-3 text-right">Recaudado</th><th class="px-4 py-3 text-right">Bote neto</th></tr></thead><tbody class="divide-y divide-ink/[.06]">${historyRows}</tbody></table></div>` : `<p class="px-4 py-6 text-center text-xs text-ink/45">Aún no hay partidos cobrados.</p>`}</div>`;
+  return `<section class="mb-5 rounded-2xl border border-ink/[.07] bg-white p-5 shadow-sm"><div class="mb-4 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between"><div><h3 class="font-bold">Precio del partido y cobro automático</h3><p class="mt-1 text-xs text-ink/50">La cuota fija se descuenta una sola vez al guardar el primer resultado.</p></div><label class="text-xs font-semibold text-ink/55 sm:w-64">Partido<select id="finance-match-picker" class="mt-1 block w-full rounded-xl border border-ink/10 bg-white px-3 py-2.5 text-sm">${options}</select></label></div>${action}${history}</section>`;
 }
 
 function renderStandingsBoard(data) {
@@ -875,7 +905,7 @@ function renderFinancePanel(data, matchesData) {
   const potMovementCards = potTransactions.map((movement) => `<article class="grid gap-2 py-3 first:pt-0 last:pb-0"><div class="flex items-start justify-between gap-3"><div><p class="text-xs text-ink/45">${escapeHtml(String(movement.created_at))}</p><p class="mt-1 text-sm font-bold">${escapeHtml(potMovementLabel(movement.movement_type))}</p></div><span class="shrink-0 text-sm font-extrabold ${Number(movement.amount) < 0 ? "text-red-700" : "text-pitch-800"}">${formatMoney(movement.amount)}</span></div><p class="text-xs leading-5 text-ink/60">${escapeHtml(movement.concept)}</p><div class="flex flex-wrap justify-between gap-2 text-[11px] text-ink/45"><span>Saldo del bote: <b class="text-ink/70">${formatMoney(movement.balance_after)}</b></span><span>${movement.match_id ? `Partido #${movement.match_id}` : movement.created_by_alias ? `Admin @${escapeHtml(movement.created_by_alias)}` : ""}</span></div></article>`).join("");
   const potMovementRows = potTransactions.map((movement) => `<tr><td class="px-4 py-3 text-xs text-ink/50">${escapeHtml(String(movement.created_at))}</td><td class="px-4 py-3 text-xs font-semibold">${escapeHtml(potMovementLabel(movement.movement_type))}</td><td class="px-4 py-3 text-sm text-ink/65">${escapeHtml(movement.concept)}${movement.match_id ? `<span class="mt-1 block text-[10px] text-ink/40">Partido #${movement.match_id}</span>` : ""}</td><td class="px-4 py-3 text-right text-sm font-bold ${Number(movement.amount) < 0 ? "text-red-700" : "text-pitch-800"}">${formatMoney(movement.amount)}</td><td class="px-4 py-3 text-right text-sm font-semibold">${formatMoney(movement.balance_after)}</td></tr>`).join("");
   return `<div class="mb-5 grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end"><div><p class="text-xs font-bold uppercase tracking-[.12em] text-pitch-700">Gestión financiera</p><h2 class="display mt-1 text-2xl font-extrabold">Saldos y movimientos</h2><p class="mt-1 text-sm text-ink/50">Los ajustes quedan anotados en el historial de cada jugador.</p></div><div class="rounded-2xl bg-lime/35 px-5 py-3"><p class="text-[10px] font-bold uppercase tracking-[.12em] text-pitch-900/60">Bote acumulado</p><p data-pot-balance class="display text-xl font-extrabold text-pitch-900">${formatMoney(data.pot)}</p></div></div>
-    ${renderMatchFinanceControl(matchesData)}
+    ${renderMatchFinanceControl(matchesData, data.matchCharges || [])}
     <section class="mb-5 rounded-2xl border border-pitch-700/15 bg-pitch-50/60 p-4 shadow-sm sm:p-5">
       <div class="mb-4"><p class="text-xs font-bold uppercase tracking-[.12em] text-pitch-700">Bote del grupo</p><h3 class="mt-1 font-bold">Ajustes Manuales del Bote General</h3><p class="mt-1 text-xs leading-5 text-ink/55">Registra ingresos o gastos directamente en el fondo común. Estos movimientos no modifican el saldo de ningún jugador.</p></div>
       <form id="pot-adjustment-form" class="grid gap-3 sm:grid-cols-[1.5fr_1fr_1fr_auto] sm:items-end">
@@ -1753,7 +1783,7 @@ function bindMatchActions(isAdmin = false) {
         body: JSON.stringify(payload),
       });
       selectedMatchId = match.id;
-      showToast("Precio del partido guardado; el cobro se aplicará al registrar el resultado.");
+      showToast("Precio total y cuota por jugador guardados; el cobro se aplicará al registrar el resultado.");
       activeAdminTab = "finanzas";
       await renderAdmin();
     } catch (error) {
@@ -1761,6 +1791,19 @@ function bindMatchActions(isAdmin = false) {
       form.querySelector("button").disabled = false;
     }
   });
+  const matchPriceForm = document.querySelector("#match-price-form");
+  const updatePricePreview = () => {
+    if (!matchPriceForm) return;
+    const preview = matchPriceForm.querySelector("[data-match-price-preview]");
+    if (!preview) return;
+    preview.textContent = matchPricePreviewText(
+      matchPriceForm.elements.price_total.value,
+      matchPriceForm.elements.price_per_player.value,
+      matchPriceForm.dataset.principalCount,
+    );
+  };
+  matchPriceForm?.addEventListener("input", updatePricePreview);
+  matchPriceForm?.addEventListener("change", updatePricePreview);
   document.querySelector("#match-result-form")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = event.currentTarget;

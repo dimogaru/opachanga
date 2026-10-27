@@ -100,6 +100,9 @@ const db = {
       ["match_date", "TEXT"],
       ["match_time", "TEXT NOT NULL DEFAULT '20:00'"],
       ["pitch_price", "NUMERIC(12, 2)"],
+      ["total_match_price", "NUMERIC(12, 2)"],
+      ["player_price", "NUMERIC(12, 2)"],
+      ["pot_contribution", "NUMERIC(12, 2)"],
     ];
     for (const [column, definition] of matchColumns) {
       await pool.query(`ALTER TABLE matches ADD COLUMN IF NOT EXISTS ${column} ${definition}`);
@@ -139,6 +142,19 @@ const db = {
         ELSE '20:00'
       END
       WHERE match_time IS NULL OR trim(match_time) = ''
+    `);
+    await pool.query(`
+      UPDATE matches
+      SET total_match_price = pitch_price
+      WHERE total_match_price IS NULL AND pitch_price IS NOT NULL
+    `);
+    await pool.query(`
+      UPDATE matches m
+      SET player_price = COALESCE(m.player_price, mf.fee_per_player),
+          pot_contribution = COALESCE(m.pot_contribution, mf.pot_added)
+      FROM match_finances mf
+      WHERE mf.match_id = m.id
+        AND (m.player_price IS NULL OR m.pot_contribution IS NULL)
     `);
     await pool.query(`
       UPDATE transactions
