@@ -32,8 +32,12 @@ async function api(url, options = {}) {
   return payload;
 }
 
-function showToast(message) {
+function showToast(message, { success = false } = {}) {
   toast.textContent = message;
+  toast.classList.toggle("bg-lime", success);
+  toast.classList.toggle("text-pitch-950", success);
+  toast.classList.toggle("bg-pitch-950", !success);
+  toast.classList.toggle("text-white", !success);
   toast.classList.remove("translate-y-3", "opacity-0");
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => toast.classList.add("translate-y-3", "opacity-0"), 2800);
@@ -929,9 +933,24 @@ function renderFinancePanel(data, matchesData) {
     <section class="overflow-hidden rounded-2xl border border-ink/[.07] bg-white shadow-sm"><header class="border-b border-ink/[.07] px-4 py-3.5"><h3 class="font-bold">Historial financiero</h3><p class="mt-0.5 text-xs text-ink/45">Hasta 100 movimientos. Los cargos ajustables conservan su asiento original.</p></header>
       ${transactions.length ? `<div class="divide-y divide-ink/[.06] p-4 sm:hidden">${transactionCards}</div><div class="hidden overflow-x-auto sm:block"><table class="w-full min-w-[920px] text-left"><thead class="bg-paper/70 text-[10px] font-bold uppercase tracking-[.12em] text-ink/45"><tr><th class="px-4 py-3">Fecha</th><th class="px-4 py-3">Jugador</th><th class="px-4 py-3">Concepto / estado</th><th class="px-4 py-3 text-right">Importe</th><th class="px-4 py-3">Acción</th></tr></thead><tbody class="divide-y divide-ink/[.06]">${transactionRows}</tbody></table></div>` : `<p class="px-4 py-8 text-center text-sm text-ink/45">Aún no hay movimientos financieros.</p>`}
     </section>
-    <section class="mt-5 overflow-hidden rounded-2xl border border-ink/[.07] bg-white shadow-sm"><header class="border-b border-ink/[.07] px-4 py-3.5"><h3 class="font-bold">Movimientos del Bote General</h3><p class="mt-0.5 text-xs text-ink/45">Historial de remanentes de partidos, correcciones e ingresos y gastos manuales, con el saldo resultante.</p></header>
+    <section id="pot-movement-history" class="mt-5 overflow-hidden rounded-2xl border border-ink/[.07] bg-white shadow-sm"><header class="border-b border-ink/[.07] px-4 py-3.5"><h3 class="font-bold">Movimientos del Bote General</h3><p class="mt-0.5 text-xs text-ink/45">Historial de remanentes de partidos, correcciones e ingresos y gastos manuales, con el saldo resultante.</p></header>
       ${potTransactions.length ? `<div class="divide-y divide-ink/[.06] p-4 sm:hidden">${potMovementCards}</div><div class="hidden overflow-x-auto sm:block"><table class="w-full min-w-[760px] text-left"><thead class="bg-paper/70 text-[10px] font-bold uppercase tracking-[.12em] text-ink/45"><tr><th class="px-4 py-3">Fecha</th><th class="px-4 py-3">Tipo</th><th class="px-4 py-3">Concepto</th><th class="px-4 py-3 text-right">Importe</th><th class="px-4 py-3 text-right">Saldo resultante</th></tr></thead><tbody class="divide-y divide-ink/[.06]">${potMovementRows}</tbody></table></div>` : `<p class="px-4 py-8 text-center text-sm text-ink/45">Todavía no hay movimientos del bote.</p>`}
     </section>`;
+}
+
+function renderPotMovementHistory(potTransactions) {
+  const label = (type) => ({
+    match_remainder: "Remanente automático de partido",
+    match_adjustment: "Corrección de partido",
+    manual_income: "Ingreso manual",
+    manual_expense: "Gasto manual",
+    opening_balance: "Saldo previo del bote",
+  }[type] || "Movimiento del bote");
+  const cards = potTransactions.map((movement) => `<article class="grid gap-2 py-3 first:pt-0 last:pb-0"><div class="flex items-start justify-between gap-3"><div><p class="text-xs text-ink/45">${escapeHtml(String(movement.created_at))}</p><p class="mt-1 text-sm font-bold">${escapeHtml(label(movement.movement_type))}</p></div><span class="shrink-0 text-sm font-extrabold ${Number(movement.amount) < 0 ? "text-red-700" : "text-pitch-800"}">${formatMoney(movement.amount)}</span></div><p class="text-xs leading-5 text-ink/60">${escapeHtml(movement.concept)}</p><div class="flex flex-wrap justify-between gap-2 text-[11px] text-ink/45"><span>Saldo del bote: <b class="text-ink/70">${formatMoney(movement.balance_after)}</b></span><span>${movement.match_id ? `Partido #${movement.match_id}` : movement.created_by_alias ? `Admin @${escapeHtml(movement.created_by_alias)}` : ""}</span></div></article>`).join("");
+  const rows = potTransactions.map((movement) => `<tr><td class="px-4 py-3 text-xs text-ink/50">${escapeHtml(String(movement.created_at))}</td><td class="px-4 py-3 text-xs font-semibold">${escapeHtml(label(movement.movement_type))}</td><td class="px-4 py-3 text-sm text-ink/65">${escapeHtml(movement.concept)}${movement.match_id ? `<span class="mt-1 block text-[10px] text-ink/40">Partido #${movement.match_id}</span>` : ""}</td><td class="px-4 py-3 text-right text-sm font-bold ${Number(movement.amount) < 0 ? "text-red-700" : "text-pitch-800"}">${formatMoney(movement.amount)}</td><td class="px-4 py-3 text-right text-sm font-semibold">${formatMoney(movement.balance_after)}</td></tr>`).join("");
+  return `<section id="pot-movement-history" class="mt-5 overflow-hidden rounded-2xl border border-ink/[.07] bg-white shadow-sm"><header class="border-b border-ink/[.07] px-4 py-3.5"><h3 class="font-bold">Movimientos del Bote General</h3><p class="mt-0.5 text-xs text-ink/45">Historial de remanentes de partidos, correcciones e ingresos y gastos manuales, con el saldo resultante.</p></header>
+    ${potTransactions.length ? `<div class="divide-y divide-ink/[.06] p-4 sm:hidden">${cards}</div><div class="hidden overflow-x-auto sm:block"><table class="w-full min-w-[760px] text-left"><thead class="bg-paper/70 text-[10px] font-bold uppercase tracking-[.12em] text-ink/45"><tr><th class="px-4 py-3">Fecha</th><th class="px-4 py-3">Tipo</th><th class="px-4 py-3">Concepto</th><th class="px-4 py-3 text-right">Importe</th><th class="px-4 py-3 text-right">Saldo resultante</th></tr></thead><tbody class="divide-y divide-ink/[.06]">${rows}</tbody></table></div>` : `<p class="px-4 py-8 text-center text-sm text-ink/45">Todavía no hay movimientos del bote.</p>`}
+  </section>`;
 }
 
 function renderNotificationPanel(data, players, config, status) {
@@ -1428,9 +1447,36 @@ async function renderAdmin() {
           operation: form.elements.operation.value,
         }),
       });
-      showToast(`Movimiento registrado. Bote acumulado: ${formatMoney(result.pot)}.`);
-      activeAdminTab = "finanzas";
-      await renderAdmin();
+      const financePanel = document.querySelector('[data-admin-panel="finanzas"]');
+      const potBalance = financePanel?.querySelector("[data-pot-balance]");
+      const potHistory = financePanel?.querySelector("#pot-movement-history");
+      form.reset();
+      financeData = {
+        ...financeData,
+        pot: result.pot,
+        potTransactions: result.movement
+          ? [result.movement, ...(financeData.potTransactions || [])]
+          : financeData.potTransactions || [],
+      };
+      if (potBalance) potBalance.textContent = formatMoney(result.pot);
+      if (potHistory) {
+        potHistory.outerHTML = renderPotMovementHistory(financeData.potTransactions || []);
+      }
+      try {
+        const refreshedFinance = await api("/api/admin/finance/overview");
+        financeData = refreshedFinance;
+        const currentPanel = document.querySelector('[data-admin-panel="finanzas"]');
+        const currentPotBalance = currentPanel?.querySelector("[data-pot-balance]");
+        const currentPotHistory = currentPanel?.querySelector("#pot-movement-history");
+        if (currentPotBalance) currentPotBalance.textContent = formatMoney(refreshedFinance.pot);
+        if (currentPotHistory) {
+          currentPotHistory.outerHTML = renderPotMovementHistory(refreshedFinance.potTransactions || []);
+        }
+      } catch (refreshError) {
+        console.warn("No se pudo refrescar el historial del Bote tras registrar el ajuste:", refreshError);
+      }
+      button.disabled = false;
+      showToast("Ajuste registrado correctamente en el Bote", { success: true });
     } catch (error) {
       showToast(error.message);
       button.disabled = false;
