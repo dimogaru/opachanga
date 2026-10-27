@@ -858,11 +858,11 @@ function renderApprovalPanel(pending) {
 }
 
 function renderPlayerManagementPanel(players, pending) {
-  const rows = players.map((user) => `<tr class="hover:bg-paper/50" data-player-search="${escapeHtml(`${user.name} ${user.alias}`.toLocaleLowerCase("es"))}">
+  const rows = players.map((user) => `<tr class="hover:bg-paper/50" data-player-id="${user.id}" data-player-search="${escapeHtml(`${user.name} ${user.alias}`.toLocaleLowerCase("es"))}">
     <td class="px-4 py-3 sm:px-5"><div class="font-semibold">${escapeHtml(user.name)}</div><div class="mt-0.5 flex items-center gap-1 text-xs text-ink/45"><span>@${escapeHtml(user.alias)}</span>${profileButton(user.id, user.alias)}</div></td>
     <td class="px-4 py-3 text-sm">${user.base_role === "principal" ? "Principal" : "Suplente"}</td>
     <td class="px-4 py-3 text-sm">${user.ranking_position ? `#${user.ranking_position}` : "—"}</td>
-    <td class="px-4 py-3 text-sm font-semibold">${formatMoney(user.balance)}</td>
+    <td data-player-management-balance class="px-4 py-3 text-sm font-semibold">${formatMoney(user.balance)}</td>
     <td class="px-4 py-3"><div class="flex flex-wrap justify-end gap-1.5"><button class="edit-player rounded-lg border border-ink/10 px-2.5 py-1.5 text-[11px] font-bold hover:border-pitch-700 hover:text-pitch-700" data-id="${user.id}">Editar</button><button class="reset-player-password rounded-lg border border-ink/10 px-2.5 py-1.5 text-[11px] font-bold hover:bg-paper" data-id="${user.id}">Resetear contraseña</button><button class="delete-player rounded-lg border border-red-700/15 px-2.5 py-1.5 text-[11px] font-bold text-red-700 hover:bg-red-50" data-id="${user.id}">Retirar</button></div></td>
   </tr>`).join("");
   return `${renderApprovalPanel(pending)}
@@ -928,7 +928,7 @@ function renderFinancePanel(data, matchesData) {
       <p class="text-[11px] text-ink/45 sm:col-span-4">Un importe positivo suma saldo; uno negativo lo descuenta. El cobro de pista de cada partido se gestiona arriba.</p>
     </form>
     <section class="mb-5 overflow-hidden rounded-2xl border border-ink/[.07] bg-white shadow-sm"><header class="flex items-center justify-between border-b border-ink/[.07] px-4 py-3.5"><div><h3 class="font-bold">Saldos de jugadores</h3><p class="mt-0.5 text-xs text-ink/45">${players.length} cuentas activas; Admin no tiene saldo de jugador.</p></div></header>
-      ${players.length ? `<div class="border-b border-ink/[.06] p-4"><label class="block"><span class="sr-only">Buscar en saldos por nombre o alias</span><input id="balance-player-search" type="search" placeholder="Buscar por nombre, apellidos o alias…" class="w-full rounded-xl border border-ink/10 px-4 py-2.5 text-sm outline-none focus:border-pitch-700 sm:max-w-sm"/></label></div><div class="overflow-x-auto"><table class="w-full min-w-[420px] text-left"><thead class="bg-paper/70 text-[10px] font-bold uppercase tracking-[.12em] text-ink/45"><tr><th class="px-4 py-3">Jugador</th><th class="px-4 py-3">Rol</th><th class="px-4 py-3 text-right">Saldo</th></tr></thead><tbody class="divide-y divide-ink/[.06]">${players.map((player) => `<tr data-balance-player-search="${escapeHtml(`${player.name} ${player.alias || ""}`.toLocaleLowerCase("es"))}"><td class="px-4 py-3 text-sm font-semibold">${escapeHtml(player.name)} (${escapeHtml(player.alias || "—")})</td><td class="px-4 py-3 text-xs text-ink/50">${player.base_role === "principal" ? "Principal" : "Suplente"}</td><td class="px-4 py-3 text-right text-sm font-bold ${player.balance < 0 ? "text-red-700" : ""}">${formatMoney(player.balance)}</td></tr>`).join("")}</tbody></table></div>` : `<p class="px-4 py-8 text-center text-sm text-ink/45">No hay jugadores activos.</p>`}
+      ${players.length ? `<div class="border-b border-ink/[.06] p-4"><label class="block"><span class="sr-only">Buscar en saldos por nombre o alias</span><input id="balance-player-search" type="search" placeholder="Buscar por nombre, apellidos o alias…" class="w-full rounded-xl border border-ink/10 px-4 py-2.5 text-sm outline-none focus:border-pitch-700 sm:max-w-sm"/></label></div><div class="overflow-x-auto"><table class="w-full min-w-[420px] text-left"><thead class="bg-paper/70 text-[10px] font-bold uppercase tracking-[.12em] text-ink/45"><tr><th class="px-4 py-3">Jugador</th><th class="px-4 py-3">Rol</th><th class="px-4 py-3 text-right">Saldo</th></tr></thead><tbody class="divide-y divide-ink/[.06]">${players.map((player) => `<tr data-balance-player-id="${player.id}" data-balance-player-search="${escapeHtml(`${player.name} ${player.alias || ""}`.toLocaleLowerCase("es"))}"><td class="px-4 py-3 text-sm font-semibold">${escapeHtml(player.name)} (${escapeHtml(player.alias || "—")})</td><td class="px-4 py-3 text-xs text-ink/50">${player.base_role === "principal" ? "Principal" : "Suplente"}</td><td data-balance-amount class="px-4 py-3 text-right text-sm font-bold ${player.balance < 0 ? "text-red-700" : ""}">${formatMoney(player.balance)}</td></tr>`).join("")}</tbody></table></div>` : `<p class="px-4 py-8 text-center text-sm text-ink/45">No hay jugadores activos.</p>`}
     </section>
     <section class="overflow-hidden rounded-2xl border border-ink/[.07] bg-white shadow-sm"><header class="border-b border-ink/[.07] px-4 py-3.5"><h3 class="font-bold">Historial financiero</h3><p class="mt-0.5 text-xs text-ink/45">Hasta 100 movimientos. Los cargos ajustables conservan su asiento original.</p></header>
       ${transactions.length ? `<div class="divide-y divide-ink/[.06] p-4 sm:hidden">${transactionCards}</div><div class="hidden overflow-x-auto sm:block"><table class="w-full min-w-[920px] text-left"><thead class="bg-paper/70 text-[10px] font-bold uppercase tracking-[.12em] text-ink/45"><tr><th class="px-4 py-3">Fecha</th><th class="px-4 py-3">Jugador</th><th class="px-4 py-3">Concepto / estado</th><th class="px-4 py-3 text-right">Importe</th><th class="px-4 py-3">Acción</th></tr></thead><tbody class="divide-y divide-ink/[.06]">${transactionRows}</tbody></table></div>` : `<p class="px-4 py-8 text-center text-sm text-ink/45">Aún no hay movimientos financieros.</p>`}
@@ -1422,18 +1422,25 @@ async function renderAdmin() {
     const form = event.currentTarget;
     const playerId = form.elements.user_id.value;
     const button = form.querySelector("button");
+    const selectedPlayer = financeData.players?.find((player) => player.id === Number(playerId));
     button.disabled = true;
     try {
-      await api(`/api/admin/users/${playerId}/balance`, {
+      const response = await api(`/api/admin/users/${playerId}/balance`, {
         method: "POST",
         body: JSON.stringify({
           amount: form.elements.amount.value,
           concept: form.elements.concept.value,
         }),
       });
-      showToast("Ajuste registrado en el historial financiero.");
-       activeAdminTab = "partidos";
-      await renderAdmin();
+      syncPlayerBalance({
+        ...selectedPlayer,
+        ...response.user,
+        id: Number(playerId),
+      });
+      form.elements.amount.value = "";
+      form.elements.concept.value = "";
+      button.disabled = false;
+      showToast(`Saldo actualizado correctamente para ${response.user.name} (${selectedPlayer?.alias || "—"})`);
     } catch (error) {
       showToast(error.message);
       button.disabled = false;
@@ -2030,6 +2037,30 @@ function formatMoney(amount) {
   return new Intl.NumberFormat("es-ES", { style: "currency", currency: "EUR" }).format(Number(amount) || 0);
 }
 
+function syncPlayerBalance(player) {
+  const balance = Number(player.balance) || 0;
+  financeData = {
+    ...financeData,
+    players: (financeData.players || []).map((item) =>
+      item.id === Number(player.id) ? { ...item, balance } : item,
+    ),
+  };
+  users = users.map((item) =>
+    item.id === Number(player.id) ? { ...item, balance } : item,
+  );
+
+  const rows = [
+    document.querySelector(`[data-balance-player-id="${Number(player.id)}"]`),
+    document.querySelector(`[data-player-id="${Number(player.id)}"]`),
+  ].filter(Boolean);
+  for (const row of rows) {
+    const cell = row.querySelector("[data-balance-amount], [data-player-management-balance]");
+    if (!cell) continue;
+    cell.textContent = formatMoney(balance);
+    cell.classList.toggle("text-red-700", balance < 0);
+  }
+}
+
 async function compressProfilePhoto(file) {
   if (!file.type.startsWith("image/")) throw new Error("Selecciona una imagen válida.");
   if (file.size > 12 * 1024 * 1024) throw new Error("La imagen original debe pesar menos de 12 MB.");
@@ -2208,23 +2239,46 @@ function openPlayerModal(player = null) {
   overlay.addEventListener("click", (event) => { if (event.target === overlay) overlay.remove(); });
   overlay.querySelector("#player-form").addEventListener("submit", async (event) => {
     event.preventDefault();
+    const formElement = event.currentTarget;
     const form = new FormData(event.currentTarget);
     const payload = Object.fromEntries(form.entries());
     payload.ranking_position = payload.ranking_position || null;
+    const balanceChanged = editing
+      && Math.round(Number(payload.balance) * 100) !== Math.round(Number(player.balance) * 100);
+    const balanceOnlyEdit = editing
+      && balanceChanged
+      && payload.name === player.name
+      && payload.alias.toLocaleLowerCase("es") === String(player.alias).toLocaleLowerCase("es")
+      && payload.role === player.role
+      && String(payload.ranking_position || "") === String(player.ranking_position || "")
+      && !payload.password;
+    const submitButton = formElement.querySelector('button[type="submit"], button:last-child');
+    submitButton.disabled = true;
     try {
-      await api(editing ? `/api/admin/users/${player.id}` : "/api/admin/users", {
+      const response = await api(editing ? `/api/admin/users/${player.id}` : "/api/admin/users", {
         method: editing ? "PATCH" : "POST",
         body: JSON.stringify(payload),
       });
       overlay.remove();
+      if (balanceOnlyEdit) {
+        syncPlayerBalance(response);
+        showToast(`Saldo actualizado correctamente para ${response.name} (${response.alias})`);
+        return;
+      }
       await loadUsers();
-      activeAdminTab = "jugadores";
-      renderAdmin();
-      showToast(editing ? "Cambios guardados." : "Jugador añadido al equipo.");
+      await renderAdmin();
+      showToast(balanceChanged
+        ? `Saldo actualizado correctamente para ${response.name} (${response.alias})`
+        : editing ? "Cambios guardados." : "Jugador añadido al equipo.");
     } catch (error) {
       const errorBox = overlay.querySelector("#form-error");
-      errorBox.textContent = error.message;
-      errorBox.classList.remove("hidden");
+      if (errorBox) {
+        errorBox.textContent = error.message;
+        errorBox.classList.remove("hidden");
+      } else {
+        showToast(error.message);
+      }
+      submitButton.disabled = false;
     }
   });
   overlay.querySelector('input[name="name"]').focus();
