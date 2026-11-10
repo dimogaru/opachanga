@@ -91,7 +91,6 @@ const db = {
       ["preferred_position", "TEXT NOT NULL DEFAULT ''"],
       ["other_details", "TEXT NOT NULL DEFAULT ''"],
       ["base_role", "TEXT NOT NULL DEFAULT 'principal'"],
-      ["payer_user_id", "BIGINT REFERENCES users(id) ON DELETE SET NULL"],
     ];
     for (const [column, definition] of userColumns) {
       await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS ${column} ${definition}`);
@@ -130,8 +129,6 @@ const db = {
       UPDATE users SET base_role = role
       WHERE role IN ('principal', 'suplente') AND base_role NOT IN ('principal', 'suplente')
     `);
-    await pool.query("UPDATE users SET payer_user_id = id WHERE payer_user_id IS NULL");
-    await pool.query("CREATE INDEX IF NOT EXISTS idx_users_payer_user_id ON users(payer_user_id)");
     await pool.query(`
       UPDATE matches
       SET match_date = ((start_date::date + INTERVAL '7 days')::date)::text

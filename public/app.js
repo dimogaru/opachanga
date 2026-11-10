@@ -928,15 +928,7 @@ function renderFinancePanel(data, matchesData) {
       <p class="text-[11px] text-ink/45 sm:col-span-4">Un importe positivo suma saldo; uno negativo lo descuenta. El cobro de pista de cada partido se gestiona arriba.</p>
     </form>
     <section class="mb-5 overflow-hidden rounded-2xl border border-ink/[.07] bg-white shadow-sm"><header class="flex items-center justify-between border-b border-ink/[.07] px-4 py-3.5"><div><h3 class="font-bold">Saldos de jugadores</h3><p class="mt-0.5 text-xs text-ink/45">${players.length} cuentas activas; Admin no tiene saldo de jugador.</p></div></header>
-      ${players.length ? `<div class="border-b border-ink/[.06] p-4"><label class="block"><span class="sr-only">Buscar en saldos por nombre o alias</span><input id="balance-player-search" type="search" placeholder="Buscar por nombre, apellidos o alias…" class="w-full rounded-xl border border-ink/10 px-4 py-2.5 text-sm outline-none focus:border-pitch-700 sm:max-w-sm"/></label></div><div class="overflow-x-auto"><table class="w-full min-w-[420px] text-left"><thead class="bg-paper/70 text-[10px] font-bold uppercase tracking-[.12em] text-ink/45"><tr><th class="px-4 py-3">Jugador</th><th class="px-4 py-3">Rol</th><th class="px-4 py-3 text-right">Saldo</th></tr></thead><tbody class="divide-y divide-ink/[.06]">${players.map((player) => {
-        const payerBadge = Number(player.payer_user_id) !== Number(player.id)
-          ? `<span class="rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-bold text-amber-800">Paga: ${escapeHtml(player.payer_alias || "Pagador no disponible")}</span>`
-          : "";
-        const payeesBadge = player.payees_aliases
-          ? `<span class="rounded-full bg-pitch-50 px-2 py-0.5 text-[10px] font-bold text-pitch-800">Paga a: ${escapeHtml(player.payees_aliases)}</span>`
-          : "";
-        return `<tr data-balance-player-id="${player.id}" data-balance-player-search="${escapeHtml(`${player.name} ${player.alias || ""}`.toLocaleLowerCase("es"))}"><td class="px-4 py-3 text-sm"><div class="font-semibold">${escapeHtml(player.name)} (${escapeHtml(player.alias || "—")})</div>${payerBadge || payeesBadge ? `<div class="mt-1 flex flex-wrap gap-1">${payerBadge}${payeesBadge}</div>` : ""}</td><td class="px-4 py-3 text-xs text-ink/50">${player.base_role === "principal" ? "Principal" : "Suplente"}</td><td data-balance-amount class="px-4 py-3 text-right text-sm font-bold ${player.balance < 0 ? "text-red-700" : ""}">${formatMoney(player.balance)}</td></tr>`;
-      }).join("")}</tbody></table></div>` : `<p class="px-4 py-8 text-center text-sm text-ink/45">No hay jugadores activos.</p>`}
+      ${players.length ? `<div class="border-b border-ink/[.06] p-4"><label class="block"><span class="sr-only">Buscar en saldos por nombre o alias</span><input id="balance-player-search" type="search" placeholder="Buscar por nombre, apellidos o alias…" class="w-full rounded-xl border border-ink/10 px-4 py-2.5 text-sm outline-none focus:border-pitch-700 sm:max-w-sm"/></label></div><div class="overflow-x-auto"><table class="w-full min-w-[420px] text-left"><thead class="bg-paper/70 text-[10px] font-bold uppercase tracking-[.12em] text-ink/45"><tr><th class="px-4 py-3">Jugador</th><th class="px-4 py-3">Rol</th><th class="px-4 py-3 text-right">Saldo</th></tr></thead><tbody class="divide-y divide-ink/[.06]">${players.map((player) => `<tr data-balance-player-id="${player.id}" data-balance-player-search="${escapeHtml(`${player.name} ${player.alias || ""}`.toLocaleLowerCase("es"))}"><td class="px-4 py-3 text-sm font-semibold">${escapeHtml(player.name)} (${escapeHtml(player.alias || "—")})</td><td class="px-4 py-3 text-xs text-ink/50">${player.base_role === "principal" ? "Principal" : "Suplente"}</td><td data-balance-amount class="px-4 py-3 text-right text-sm font-bold ${player.balance < 0 ? "text-red-700" : ""}">${formatMoney(player.balance)}</td></tr>`).join("")}</tbody></table></div>` : `<p class="px-4 py-8 text-center text-sm text-ink/45">No hay jugadores activos.</p>`}
     </section>
     <section class="overflow-hidden rounded-2xl border border-ink/[.07] bg-white shadow-sm"><header class="border-b border-ink/[.07] px-4 py-3.5"><h3 class="font-bold">Historial financiero</h3><p class="mt-0.5 text-xs text-ink/45">Hasta 100 movimientos. Los cargos ajustables conservan su asiento original.</p></header>
       ${transactions.length ? `<div class="divide-y divide-ink/[.06] p-4 sm:hidden">${transactionCards}</div><div class="hidden overflow-x-auto sm:block"><table class="w-full min-w-[920px] text-left"><thead class="bg-paper/70 text-[10px] font-bold uppercase tracking-[.12em] text-ink/45"><tr><th class="px-4 py-3">Fecha</th><th class="px-4 py-3">Jugador</th><th class="px-4 py-3">Concepto / estado</th><th class="px-4 py-3 text-right">Importe</th><th class="px-4 py-3">Acción</th></tr></thead><tbody class="divide-y divide-ink/[.06]">${transactionRows}</tbody></table></div>` : `<p class="px-4 py-8 text-center text-sm text-ink/45">Aún no hay movimientos financieros.</p>`}
@@ -2224,15 +2216,6 @@ async function openPlayerProfile(userId) {
 
 function openPlayerModal(player = null) {
   const editing = Boolean(player);
-  const activePayers = users.filter((user) => user.role !== "admin");
-  const payerId = Number(player?.payer_user_id ?? player?.id);
-  const payerIsListed = activePayers.some((user) => Number(user.id) === payerId);
-  const stalePayerOption = editing && payerId && !payerIsListed
-    ? `<option value="${payerId}" selected>${escapeHtml(player.payer_alias || `Pagador actual (#${payerId})`)} · no activo</option>`
-    : "";
-  const payerOptions = editing
-    ? `${stalePayerOption}${activePayers.map((user) => `<option value="${user.id}" ${Number(user.id) === payerId ? "selected" : ""}>${escapeHtml(user.alias)} · ${escapeHtml(user.name)}</option>`).join("")}`
-    : `<option value="" selected>Este jugador (por defecto)</option>${activePayers.map((user) => `<option value="${user.id}">${escapeHtml(user.alias)} · ${escapeHtml(user.name)}</option>`).join("")}`;
   const overlay = document.createElement("div");
   overlay.className = "fixed inset-0 z-40 grid place-items-center bg-pitch-950/50 p-4 backdrop-blur-[2px]";
   overlay.innerHTML = `
@@ -2247,7 +2230,6 @@ function openPlayerModal(player = null) {
           <label class="block"><span class="mb-1.5 block text-sm font-semibold">Posición en ranking</span><input name="ranking_position" type="number" min="1" step="1" value="${player?.ranking_position ?? ""}" placeholder="Ej. 1" class="w-full rounded-xl border border-ink/15 bg-white px-4 py-3 text-sm outline-none focus:border-pitch-700"/></label>
         </div>
         <label class="block"><span class="mb-1.5 block text-sm font-semibold">Saldo (€)</span><input name="balance" type="number" step="0.01" value="${player?.balance ?? "0.00"}" class="w-full rounded-xl border border-ink/15 bg-white px-4 py-3 text-sm outline-none focus:border-pitch-700"/></label>
-        <label class="block"><span class="mb-1.5 block text-sm font-semibold">Asignar Pagador / Cobrar a</span><select name="payer_user_id" class="w-full rounded-xl border border-ink/15 bg-white px-4 py-3 text-sm outline-none focus:border-pitch-700">${payerOptions}</select><span class="mt-1 block text-xs text-ink/45">Por defecto, cada jugador se cobra a sí mismo. Un mismo pagador puede asumir varios jugadores.</span></label>
         <div id="form-error" class="hidden rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700"></div>
         <div class="flex gap-3 pt-2"><button type="button" class="close-modal flex-1 rounded-xl border border-ink/15 px-4 py-3 text-sm font-bold hover:bg-paper">Cancelar</button><button class="flex-1 rounded-xl bg-pitch-900 px-4 py-3 text-sm font-bold text-white hover:bg-pitch-800">${editing ? "Guardar cambios" : "Crear jugador"}</button></div>
       </form>
@@ -2269,7 +2251,6 @@ function openPlayerModal(player = null) {
       && payload.alias.toLocaleLowerCase("es") === String(player.alias).toLocaleLowerCase("es")
       && payload.role === player.role
       && String(payload.ranking_position || "") === String(player.ranking_position || "")
-      && Number(payload.payer_user_id || player.payer_user_id || player.id) === Number(player.payer_user_id || player.id)
       && !payload.password;
     const submitButton = formElement.querySelector('button[type="submit"], button:last-child');
     submitButton.disabled = true;
