@@ -2247,7 +2247,7 @@ function openPlayerModal(player = null) {
           <label class="block"><span class="mb-1.5 block text-sm font-semibold">Posición en ranking</span><input name="ranking_position" type="number" min="1" step="1" value="${player?.ranking_position ?? ""}" placeholder="Ej. 1" class="w-full rounded-xl border border-ink/15 bg-white px-4 py-3 text-sm outline-none focus:border-pitch-700"/></label>
         </div>
         <label class="block"><span class="mb-1.5 block text-sm font-semibold">Saldo (€)</span><input name="balance" type="number" step="0.01" value="${player?.balance ?? "0.00"}" class="w-full rounded-xl border border-ink/15 bg-white px-4 py-3 text-sm outline-none focus:border-pitch-700"/></label>
-        <label class="block"><span class="mb-1.5 block text-sm font-semibold">Asignar Pagador / Cobrar a</span><select name="payer_user_id" class="w-full rounded-xl border border-ink/15 bg-white px-4 py-3 text-sm outline-none focus:border-pitch-700">${payerOptions}</select><span class="mt-1 block text-xs text-ink/45">Por defecto, cada jugador se cobra a sí mismo. Un mismo pagador puede asumir varios jugadores.</span></label>
+        <label class="block"><span class="mb-1.5 block text-sm font-semibold">Asignar Pagador / Cobrar a</span><select id="payer_user_id" name="payer_user_id" class="w-full rounded-xl border border-ink/15 bg-white px-4 py-3 text-sm outline-none focus:border-pitch-700">${payerOptions}</select><span class="mt-1 block text-xs text-ink/45">Por defecto, cada jugador se cobra a sí mismo. Un mismo pagador puede asumir varios jugadores.</span></label>
         <div id="form-error" class="hidden rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700"></div>
         <div class="flex gap-3 pt-2"><button type="button" class="close-modal flex-1 rounded-xl border border-ink/15 px-4 py-3 text-sm font-bold hover:bg-paper">Cancelar</button><button class="flex-1 rounded-xl bg-pitch-900 px-4 py-3 text-sm font-bold text-white hover:bg-pitch-800">${editing ? "Guardar cambios" : "Crear jugador"}</button></div>
       </form>
@@ -2255,12 +2255,17 @@ function openPlayerModal(player = null) {
   document.body.append(overlay);
   overlay.querySelectorAll(".close-modal").forEach((button) => button.addEventListener("click", () => overlay.remove()));
   overlay.addEventListener("click", (event) => { if (event.target === overlay) overlay.remove(); });
+  const payerSelect = overlay.querySelector("#payer_user_id");
+  if (editing) payerSelect.value = String(payerId || player.id);
   overlay.querySelector("#player-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     const formElement = event.currentTarget;
     const form = new FormData(event.currentTarget);
     const payload = Object.fromEntries(form.entries());
     payload.ranking_position = payload.ranking_position || null;
+    payload.payer_user_id = editing
+      ? Number(payload.payer_user_id) || Number(player.id)
+      : payload.payer_user_id || "";
     const balanceChanged = editing
       && Math.round(Number(payload.balance) * 100) !== Math.round(Number(player.balance) * 100);
     const balanceOnlyEdit = editing
@@ -2274,10 +2279,15 @@ function openPlayerModal(player = null) {
     const submitButton = formElement.querySelector('button[type="submit"], button:last-child');
     submitButton.disabled = true;
     try {
-      const response = await api(editing ? `/api/admin/users/${player.id}` : "/api/admin/users", {
-        method: editing ? "PATCH" : "POST",
+      const response = await api(editing ? `/api/users/${player.id}` : "/api/admin/users", {
+        method: editing ? "PUT" : "POST",
         body: JSON.stringify(payload),
       });
+      if (editing) {
+        users = users.map((user) => Number(user.id) === Number(response.id)
+          ? { ...user, ...response }
+          : user);
+      }
       overlay.remove();
       if (balanceOnlyEdit) {
         syncPlayerBalance(response);
@@ -2390,7 +2400,7 @@ function initializeAdminTeamNotificationKey() {
 }
 
 async function loadUsers() {
-  users = await api("/api/users");
+  users = await api(currentUser?.role === "admin" ? "/api/admin/users" : "/api/users");
 }
 
 let pollingConvocation = false;

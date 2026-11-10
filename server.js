@@ -3380,7 +3380,7 @@ app.post("/api/admin/users", requireAdmin, async (req, res) => {
   }
 });
 
-app.patch("/api/admin/users/:id", requireAdmin, async (req, res) => {
+const updateAdminUser = async (req, res) => {
   const id = Number(req.params.id);
   const current = await db.prepare("SELECT * FROM users WHERE id = ? AND role != 'admin' AND account_status = 'active' AND deleted_at IS NULL").get(id);
   if (!current) return res.status(404).json({ error: "No se encontró ese jugador." });
@@ -3453,8 +3453,22 @@ app.patch("/api/admin/users/:id", requireAdmin, async (req, res) => {
         .run(id, balanceDelta / 100, "Ajuste manual de saldo desde la ficha del jugador");
     }
   })();
-  res.json(publicUser(await db.prepare("SELECT * FROM users WHERE id = ?").get(id)));
-});
+  const updated = await db.prepare(`
+    SELECT u.*, COALESCE(u.payer_user_id, u.id) AS payer_user_id, payer.alias AS payer_alias
+    FROM users u
+    LEFT JOIN users payer ON payer.id = COALESCE(u.payer_user_id, u.id)
+    WHERE u.id = ?
+  `).get(id);
+  res.json({
+    ...publicUser(updated),
+    payer_user_id: Number(updated.payer_user_id),
+    payer_alias: updated.payer_alias,
+  });
+};
+
+app.patch("/api/admin/users/:id", requireAdmin, updateAdminUser);
+app.put("/api/admin/users/:id", requireAdmin, updateAdminUser);
+app.put("/api/users/:id", requireAdmin, updateAdminUser);
 
 app.post("/api/admin/users/:id/reset-password", requireAdmin, async (req, res) => {
   const id = Number(req.params.id);
