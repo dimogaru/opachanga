@@ -3292,24 +3292,79 @@ app.post("/api/admin/finance/transactions/:id/adjust", requireAdmin, async (req,
 
 app.post("/api/admin/users/:id/balance", requireAdmin, async (req, res) => {
   const id = Number(req.params.id);
-  const player = await db.prepare(`
-    SELECT id, balance FROM users
-    WHERE id = ? AND role != 'admin' AND account_status = 'active' AND deleted_at IS NULL
-  `).get(id);
-  if (!player) return res.status(404).json({ error: "No se encontró ese jugador activo." });
+  if (!Number.isSafeInteger(id) || id < 1) {
+    return res.status(400).json({ error: "Selecciona un jugador válido." });
+  }
   const amount = Number(req.body?.amount);
   const concept = String(req.body?.concept || "").trim();
   if (!Number.isFinite(amount) || !Number.isSafeInteger(moneyCents(amount)) || moneyCents(amount) === 0) {
     return res.status(400).json({ error: "El ajuste debe ser un importe válido distinto de cero." });
   }
   if (!concept || concept.length > 120) return res.status(400).json({ error: "Indica un concepto de hasta 120 caracteres." });
-  await db.transaction(async () => {
-    await db.prepare("UPDATE users SET balance = ROUND((balance + ?) * 100) / 100 WHERE id = ?")
-      .run(moneyCents(amount) / 100, id);
-    await db.prepare("INSERT INTO transactions (user_id, amount, concept) VALUES (?, ?, ?)")
-      .run(id, moneyCents(amount) / 100, concept);
-  })();
-  res.json({ user: await db.prepare("SELECT id, name, balance FROM users WHERE id = ?").get(id) });
+  try {
+    const result = await db.transaction(async () => {
+      const coveredPlayer = await db.prepare(`
+        SELECT id, name, alias, balance, COALESCE(payer_user_id, id) AS payer_user_id
+        FROM users
+        WHERE id = ? AND role != 'admin' AND account_status = 'active' AND deleted_at IS NULL
+        FOR UPDATE
+      `).get(id);
+      if (!coveredPlayer) {
+        return { error: "No se encontró ese jugador activo.", status: 404 };
+      }
+
+      const payerId = Number(coveredPlayer.payer_user_id);
+      const amountCents = moneyCents(amount);
+      if (!Number.isSafeInteger(payerId) || payerId < 1) {
+        return { error: "La cuenta del pagador asignado no es válida.", status: 409 };
+      }
+
+      if (payerId !== id) {
+        const payer = await db.prepare(`
+          SELECT id, name, alias, balance
+          FROM users WHERE id = ? AND role != 'admin' FOR UPDATE
+        `).get(payerId);
+        if (!payer) {
+          return { error: "No se encontró la cuenta del pagador asignado.", status: 409 };
+        }
+
+        await db.prepare("UPDATE users SET balance = ROUND((balance + ?) * 100) / 100 WHERE id = ?")
+          .run(amountCents / 100, payerId);
+        await db.prepare("INSERT INTO transactions (user_id, amount, concept) VALUES (?, ?, ?)")
+          .run(
+            payerId,
+            amountCents / 100,
+            `Ajuste manual de ${coveredPlayer.alias} / Concepto: ${concept}`,
+          );
+        await db.prepare("INSERT INTO transactions (user_id, amount, concept) VALUES (?, 0, ?)")
+          .run(id, `Ajuste registrado -> Imputado a pagador: ${payer.alias}`);
+
+        const updatedPayer = await db.prepare("SELECT id, name, alias, balance FROM users WHERE id = ?")
+          .get(payerId);
+        return {
+          user: updatedPayer,
+          delegated: true,
+          payerAlias: payer.alias,
+          coveredAlias: coveredPlayer.alias,
+        };
+      }
+
+      await db.prepare("UPDATE users SET balance = ROUND((balance + ?) * 100) / 100 WHERE id = ?")
+        .run(amountCents / 100, id);
+      await db.prepare("INSERT INTO transactions (user_id, amount, concept) VALUES (?, ?, ?)")
+        .run(id, amountCents / 100, concept);
+      return {
+        user: await db.prepare("SELECT id, name, alias, balance FROM users WHERE id = ?").get(id),
+        delegated: false,
+        coveredAlias: coveredPlayer.alias,
+      };
+    })();
+    if (result.error) return res.status(result.status).json({ error: result.error });
+    res.json(result);
+  } catch (error) {
+    console.error("No se pudo registrar el ajuste de saldo:", error.message);
+    res.status(500).json({ error: "No se pudo registrar el ajuste de saldo." });
+  }
 });
 
 app.post("/api/admin/users", requireAdmin, async (req, res) => {

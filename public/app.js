@@ -948,7 +948,7 @@ function renderFinancePanel(data, matchesData) {
       </form>
     </section>
     <form id="balance-adjust-form" class="mb-5 grid gap-3 rounded-2xl border border-ink/[.07] bg-white p-4 shadow-sm sm:grid-cols-[1fr_1fr_1.5fr_auto] sm:items-end">
-      <label class="text-xs font-semibold text-ink/60">Jugador<select name="user_id" required class="mt-1.5 block w-full rounded-xl border border-ink/10 bg-white px-3 py-2.5 text-sm">${playerOptions}</select></label>
+      <label class="text-xs font-semibold text-ink/60">Jugador<select id="balance-adjust-player" name="user_id" required class="mt-1.5 block w-full rounded-xl border border-ink/10 bg-white px-3 py-2.5 text-sm">${playerOptions}</select><span id="balance-adjust-payer-note" class="mt-1.5 hidden text-[11px] font-semibold leading-4 text-amber-800" role="status"></span></label>
       <label class="text-xs font-semibold text-ink/60">Ajuste (€)<input name="amount" type="number" step="0.01" required placeholder="+10 o -5" class="mt-1.5 block w-full rounded-xl border border-ink/10 bg-white px-3 py-2.5 text-sm"/></label>
       <label class="text-xs font-semibold text-ink/60">Concepto<input name="concept" required maxlength="120" placeholder="Pago, devolución, corrección…" class="mt-1.5 block w-full rounded-xl border border-ink/10 bg-white px-3 py-2.5 text-sm"/></label>
       <button ${players.length ? "" : "disabled"} class="rounded-xl bg-pitch-900 px-4 py-2.5 text-sm font-bold text-white disabled:opacity-40">Registrar ajuste</button>
@@ -1452,10 +1452,30 @@ async function renderAdmin() {
       button.disabled = false;
     }
   });
-  document.querySelector("#balance-adjust-form")?.addEventListener("submit", async (event) => {
+  const balanceAdjustForm = document.querySelector("#balance-adjust-form");
+  const updateBalancePayerNotice = () => {
+    const note = balanceAdjustForm?.querySelector("#balance-adjust-payer-note");
+    if (!note) return;
+    const selectedPlayer = financeData.players?.find(
+      (player) => Number(player.id) === Number(balanceAdjustForm.elements.user_id.value),
+    );
+    const payerIsDelegated = selectedPlayer &&
+      Number(selectedPlayer.payer_user_id || selectedPlayer.id) !== Number(selectedPlayer.id);
+    if (!payerIsDelegated) {
+      note.textContent = "";
+      note.classList.add("hidden");
+      return;
+    }
+    note.textContent = `⚠️ Los cobros y ajustes de ${selectedPlayer.alias} se imputarán automáticamente al saldo de ${selectedPlayer.payer_alias || "su pagador"}.`;
+    note.classList.remove("hidden");
+  };
+  balanceAdjustForm?.elements.user_id.addEventListener("change", updateBalancePayerNotice);
+  updateBalancePayerNotice();
+  balanceAdjustForm?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = event.currentTarget;
     const playerId = form.elements.user_id.value;
+    const amount = Number(form.elements.amount.value);
     const button = form.querySelector("button");
     const selectedPlayer = financeData.players?.find((player) => player.id === Number(playerId));
     button.disabled = true;
@@ -1475,7 +1495,9 @@ async function renderAdmin() {
       form.elements.amount.value = "";
       form.elements.concept.value = "";
       button.disabled = false;
-      showToast(`Saldo actualizado correctamente para ${response.user.name} (${selectedPlayer?.alias || "—"})`);
+      showToast(response.delegated
+        ? `Ajuste de ${formatMoney(amount)} imputado a ${response.payerAlias} (Pagador de ${response.coveredAlias})`
+        : `Saldo actualizado correctamente para ${response.user.name} (${selectedPlayer?.alias || "—"})`);
     } catch (error) {
       showToast(error.message);
       button.disabled = false;
