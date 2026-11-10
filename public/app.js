@@ -49,6 +49,30 @@ function escapeHtml(value) {
   })[character]);
 }
 
+function playerFullName(player) {
+  const name = String(player?.name || "").trim();
+  const parts = [player?.first_name, player?.last_name].filter(Boolean).join(" ").trim();
+  return name || parts || String(player?.alias || "").trim();
+}
+
+function sortPlayersByName(players) {
+  return [...(players || [])].sort((a, b) =>
+    playerFullName(a).localeCompare(playerFullName(b), "es", { sensitivity: "base" }) ||
+    String(a?.alias || "").localeCompare(String(b?.alias || ""), "es", { sensitivity: "base" }),
+  );
+}
+
+function playerOptionLabel(player) {
+  const name = playerFullName(player);
+  return `${name || "Jugador"} (${player?.alias || "—"})`;
+}
+
+function renderPlayerOptions(players, selectedId = null) {
+  return sortPlayersByName(players).map((player) =>
+    `<option value="${player.id}" ${Number(player.id) === Number(selectedId) ? "selected" : ""}>${escapeHtml(playerOptionLabel(player))}${player.inactive ? " · no activo" : ""}</option>`,
+  ).join("");
+}
+
 function profileButton(userId, alias) {
   return `<button type="button" class="open-player-profile inline-flex shrink-0 items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-bold text-pitch-700 transition hover:bg-pitch-100 focus:outline-none focus:ring-2 focus:ring-pitch-700/30" data-profile-user-id="${Number(userId)}" aria-label="Abrir perfil de ${escapeHtml(alias)}" title="Ver perfil">
     <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="8" r="3.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 20c.6-3.4 3.2-5.5 7-5.5s6.4 2.1 7 5.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
@@ -465,11 +489,11 @@ function renderConvocationBoard(data, isAdmin = false, history = []) {
         ? "Ajusta la lista a 14 o 16 para repartir los equipos por igual"
         : "Hay más de 16 principales";
   const principalList = data.lists.principal || [];
-  const captainOptionsA = principalList.map((player, index) =>
-    `<option value="${player.id}" ${index === 0 ? "selected" : ""}>${escapeHtml(player.alias)}</option>`,
+  const captainOptionsA = sortPlayersByName(principalList).map((player) =>
+    `<option value="${player.id}" ${Number(player.id) === Number(principalList[0]?.id) ? "selected" : ""}>${escapeHtml(playerOptionLabel(player))}</option>`,
   ).join("");
-  const captainOptionsB = principalList.map((player, index) =>
-    `<option value="${player.id}" ${index === 1 ? "selected" : ""}>${escapeHtml(player.alias)}</option>`,
+  const captainOptionsB = sortPlayersByName(principalList).map((player) =>
+    `<option value="${player.id}" ${Number(player.id) === Number(principalList[1]?.id) ? "selected" : ""}>${escapeHtml(playerOptionLabel(player))}</option>`,
   ).join("");
   const canReopen = !readOnly && data.match.canReopen && data.match.status !== "played" &&
     data.match.draft?.status !== "in_progress" && !isTeamsPublished(data.match.draft?.status);
@@ -594,7 +618,7 @@ function renderManualAssignmentPanel(match, principalPlayers, isSaved = false) {
     for (const player of match.teamB || []) manualTeamAssignments.set(Number(player.id), "B");
   }
 
-  const players = principalPlayers || [];
+  const players = sortPlayersByName(principalPlayers || []);
   const rosterIds = new Set(players.map((player) => Number(player.id)));
   for (const id of manualTeamAssignments.keys()) {
     if (!rosterIds.has(Number(id))) manualTeamAssignments.delete(id);
@@ -608,7 +632,7 @@ function renderManualAssignmentPanel(match, principalPlayers, isSaved = false) {
   const rows = players.map((player) => {
     const assigned = manualTeamAssignments.get(Number(player.id));
     return `<li class="flex min-w-0 items-center gap-2 border-b border-ink/[.06] px-3 py-2.5 last:border-0 sm:gap-3">
-      <span class="min-w-0 flex-1 truncate text-sm font-bold">@${escapeHtml(player.alias)}</span>
+      <span class="min-w-0 flex-1 truncate text-sm font-bold">${escapeHtml(playerOptionLabel(player))}</span>
       <div class="flex shrink-0 gap-1">
         <button type="button" class="manual-team-choice rounded-lg border px-2 py-2 text-[8px] font-extrabold leading-none transition sm:px-2.5 sm:text-[10px] ${assigned === "A" ? "border-pitch-900 bg-pitch-900 text-white" : "border-pitch-900/15 bg-white text-pitch-900"}" data-player-id="${player.id}" data-team="A" aria-label="+ BLANCOS" aria-pressed="${assigned === "A"}">+ BLANCOS</button>
         <button type="button" class="manual-team-choice rounded-lg border px-2 py-2 text-[8px] font-extrabold leading-none transition sm:px-2.5 sm:text-[10px] ${assigned === "B" ? "border-amber-800 bg-amber-800 text-white" : "border-amber-800/15 bg-white text-amber-900"}" data-player-id="${player.id}" data-team="B" aria-label="+ COLOR" aria-pressed="${assigned === "B"}">+ COLOR</button>
@@ -666,11 +690,11 @@ function renderMatchPanel(matchesData, isAdmin = false, showFinance = isAdmin) {
   const completed = isTeamsPublished(draft.status);
   const available = selected.available || [];
   const principalPlayers = selected.principalPlayers || [];
-  const captainOptionsA = principalPlayers.map((player, index) =>
-    `<option value="${player.id}" ${player.id === draft.captainA || (!draft.captainA && index === 0) ? "selected" : ""}>${escapeHtml(player.alias)}</option>`,
+  const captainOptionsA = sortPlayersByName(principalPlayers).map((player) =>
+    `<option value="${player.id}" ${Number(player.id) === Number(draft.captainA || principalPlayers[0]?.id) ? "selected" : ""}>${escapeHtml(playerOptionLabel(player))}</option>`,
   ).join("");
-  const captainOptionsB = principalPlayers.map((player, index) =>
-    `<option value="${player.id}" ${player.id === draft.captainB || (!draft.captainB && index === 1) ? "selected" : ""}>${escapeHtml(player.alias)}</option>`,
+  const captainOptionsB = sortPlayersByName(principalPlayers).map((player) =>
+    `<option value="${player.id}" ${Number(player.id) === Number(draft.captainB || principalPlayers[1]?.id) ? "selected" : ""}>${escapeHtml(playerOptionLabel(player))}</option>`,
   ).join("");
   const turnName = draft.currentTurn === "A"
     ? users.find((player) => player.id === draft.captainA)?.alias || "Capitán de BLANCOS"
@@ -811,9 +835,14 @@ function renderStandingsBoard(data) {
   return `<section class="mb-7 overflow-hidden rounded-3xl border border-ink/[.07] bg-white shadow-sm"><div class="flex flex-col gap-3 border-b border-ink/[.07] p-5 sm:flex-row sm:items-center sm:justify-between sm:px-6"><div><p class="text-xs font-bold uppercase tracking-[.12em] text-pitch-700">Temporada</p><h2 class="display mt-1 text-2xl font-extrabold">Clasificación</h2><p class="mt-1 text-xs text-ink/50">Puntos globales por asistencia y resultado.</p></div><div class="rounded-2xl bg-lime/35 px-4 py-3"><p class="text-[10px] font-bold uppercase tracking-[.12em] text-pitch-900/60">Bote acumulado</p><p data-pot-balance class="display text-xl font-extrabold text-pitch-900">${formatMoney(data.pot)}</p></div></div><div class="overflow-x-auto"><table class="w-full min-w-[600px] text-left"><thead class="bg-paper/70 text-[10px] font-bold uppercase tracking-[.12em] text-ink/45"><tr><th class="px-5 py-3">#</th><th class="px-4 py-3">Jugador</th><th class="px-4 py-3">Puntos</th><th class="px-4 py-3">PJ</th><th class="px-4 py-3">V-E-D</th></tr></thead><tbody class="divide-y divide-ink/[.06]">${rows.length ? rows.map((player, index) => `<tr><td class="px-5 py-3 text-sm font-bold text-pitch-700">${index + 1}</td><td class="px-4 py-2"><div class="flex items-center gap-1"><span class="text-sm font-semibold">${escapeHtml(player.alias)}</span>${profileButton(player.id, player.alias)}</div></td><td class="px-4 py-3"><span class="rounded-full bg-pitch-100 px-2.5 py-1 text-xs font-extrabold text-pitch-900">${player.points}</span></td><td class="px-4 py-3 text-sm text-ink/55">${player.matches_played}</td><td class="px-4 py-3 text-sm text-ink/55">${player.wins}-${player.draws}-${player.losses}</td></tr>`).join("") : `<tr><td colspan="5" class="px-5 py-8 text-center text-sm text-ink/45">La clasificación empieza con el primer resultado.</td></tr>`}</tbody></table></div></section>`;
 }
 
-function renderStandingsAdjustmentPanel(data, adjustments = []) {
+function renderStandingsAdjustmentPanel(data, adjustments = [], playersWithNames = []) {
   const players = data.standings || [];
   const selected = players[0];
+  const namedPlayers = new Map(playersWithNames.map((player) => [Number(player.id), player]));
+  const optionPlayers = players.map((player) => ({
+    ...(namedPlayers.get(Number(player.id)) || {}),
+    ...player,
+  }));
   const fields = [
     ["points", "Puntos totales"],
     ["matches_played", "Partidos jugados"],
@@ -821,9 +850,7 @@ function renderStandingsAdjustmentPanel(data, adjustments = []) {
     ["draws", "Empatados"],
     ["losses", "Perdidos"],
   ];
-  const options = players.map((player) =>
-    `<option value="${player.id}" ${player.id === selected?.id ? "selected" : ""}>${escapeHtml(player.alias)}</option>`,
-  ).join("");
+  const options = renderPlayerOptions(optionPlayers, selected?.id);
   const inputs = fields.map(([name, label]) => {
     const value = selected?.[name] ?? 0;
     const min = name === "points" ? "" : 'min="0"';
@@ -880,7 +907,7 @@ function renderFinancePanel(data, matchesData) {
   const players = data.players || [];
   const transactions = data.transactions || [];
   const potTransactions = data.potTransactions || [];
-  const playerOptions = players.map((player) => `<option value="${player.id}">${escapeHtml(player.name)}</option>`).join("");
+  const playerOptions = renderPlayerOptions(players);
   const potMovementLabel = (movementType) => ({
     match_remainder: "Remanente automático de partido",
     match_adjustment: "Corrección de partido",
@@ -975,7 +1002,7 @@ function renderNotificationPanel(data, players, config, status) {
         ["unanswered", "Aún no te has apuntado", "Solo a jugadores que todavía no respondieron.", campaigns.friday_reminder],
         ["negative_balance", "Aviso de saldo negativo", "A jugadores convocados con saldo negativo.", null],
       ].map(([type, title, description, campaign]) => `<article class="rounded-2xl border border-ink/[.07] bg-white p-5 shadow-sm"><div class="flex items-start justify-between gap-3"><div><h3 class="font-bold">${title}</h3><p class="mt-1 text-xs leading-5 text-ink/50">${description}</p></div><span class="rounded-full ${campaign?.status === "sent" ? "bg-pitch-100 text-pitch-800" : "bg-paper text-ink/50"} px-2.5 py-1 text-[10px] font-bold">${campaign?.status === "sent" ? `${campaign.delivered_count} enviadas` : "Manual"}</span></div><button data-notification-type="${type}" ${!config.enabled || (type !== "opening" && (!matchStatus || (type === "unanswered" && matchStatus !== "open"))) ? "disabled" : ""} class="admin-notification-button mt-4 w-full rounded-xl bg-pitch-900 px-4 py-2.5 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-40">${title}</button></article>`).join("")}
-      <article class="rounded-2xl border border-ink/[.07] bg-white p-5 shadow-sm"><h3 class="font-bold">Aviso individual de Lista Principal</h3><p class="mt-1 text-xs leading-5 text-ink/50">Envía un aviso directo a un jugador que aparece en la lista principal actual.</p><div class="mt-4 flex gap-2"><select id="notify-player-select" class="min-w-0 flex-1 rounded-xl border border-ink/10 bg-white px-3 py-2.5 text-sm">${principalPlayers.map((player) => `<option value="${player.id}">${escapeHtml(player.alias)}</option>`).join("")}</select><button id="notify-player" ${!config.enabled || !principalPlayers.length ? "disabled" : ""} class="shrink-0 rounded-xl bg-pitch-900 px-3 py-2.5 text-xs font-bold text-white disabled:opacity-40">Enviar</button></div></article>
+      <article class="rounded-2xl border border-ink/[.07] bg-white p-5 shadow-sm"><h3 class="font-bold">Aviso individual de Lista Principal</h3><p class="mt-1 text-xs leading-5 text-ink/50">Envía un aviso directo a un jugador que aparece en la lista principal actual.</p><div class="mt-4 flex gap-2"><select id="notify-player-select" class="min-w-0 flex-1 rounded-xl border border-ink/10 bg-white px-3 py-2.5 text-sm">${renderPlayerOptions(principalPlayers)}</select><button id="notify-player" ${!config.enabled || !principalPlayers.length ? "disabled" : ""} class="shrink-0 rounded-xl bg-pitch-900 px-3 py-2.5 text-xs font-bold text-white disabled:opacity-40">Enviar</button></div></article>
     </div>
     <section class="rounded-2xl border border-ink/[.07] bg-white p-5 text-xs text-ink/55 shadow-sm"><h3 class="font-bold text-ink">Estado de envíos</h3><p class="mt-2">Apertura: ${campaigns.opening?.status === "sent" ? `${campaigns.opening.delivered_count} entregadas` : "sin enviar"} · Recordatorio: ${campaigns.friday_reminder?.status === "sent" ? `${campaigns.friday_reminder.delivered_count} entregadas` : "sin enviar"}</p><p class="mt-1">Próximo partido: ${data.match ? escapeHtml(matchLabel(data.match)) : "Sin convocatoria activa"}</p></section>`;
 }
@@ -1219,7 +1246,7 @@ async function renderAdmin() {
     <section class="admin-tab-panel ${activeAdminTab === "partidos" ? "" : "hidden"}" data-admin-panel="partidos">
       ${renderMatchPanel(matchData, true, false)}
       ${renderStandingsBoard(standingsData)}
-      ${renderStandingsAdjustmentPanel(standingsData, standingAdjustmentsData)}
+      ${renderStandingsAdjustmentPanel(standingsData, standingAdjustmentsData, users)}
     </section>
     <section class="admin-tab-panel ${activeAdminTab === "jugadores" ? "" : "hidden"}" data-admin-panel="jugadores">
       ${renderPlayerManagementPanel(players, pendingUsers)}
@@ -2227,12 +2254,17 @@ function openPlayerModal(player = null) {
   const activePayers = users.filter((user) => user.role !== "admin");
   const payerId = Number(player?.payer_user_id ?? player?.id);
   const payerIsListed = activePayers.some((user) => Number(user.id) === payerId);
-  const stalePayerOption = editing && payerId && !payerIsListed
-    ? `<option value="${payerId}" selected>${escapeHtml(player.payer_alias || `Pagador actual (#${payerId})`)} · no activo</option>`
-    : "";
+  const stalePayer = editing && payerId && !payerIsListed
+    ? {
+      id: payerId,
+      name: player.payer_name || "Pagador no activo",
+      alias: player.payer_alias || `#${payerId}`,
+      inactive: true,
+    }
+    : null;
   const payerOptions = editing
-    ? `${stalePayerOption}${activePayers.map((user) => `<option value="${user.id}" ${Number(user.id) === payerId ? "selected" : ""}>${escapeHtml(user.alias)} · ${escapeHtml(user.name)}</option>`).join("")}`
-    : `<option value="" selected>Este jugador (por defecto)</option>${activePayers.map((user) => `<option value="${user.id}">${escapeHtml(user.alias)} · ${escapeHtml(user.name)}</option>`).join("")}`;
+    ? renderPlayerOptions(stalePayer ? [...activePayers, stalePayer] : activePayers, payerId)
+    : `<option value="" selected>Este jugador (por defecto)</option>${renderPlayerOptions(activePayers)}`;
   const overlay = document.createElement("div");
   overlay.className = "fixed inset-0 z-40 grid place-items-center bg-pitch-950/50 p-4 backdrop-blur-[2px]";
   overlay.innerHTML = `

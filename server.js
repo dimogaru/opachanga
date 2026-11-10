@@ -3071,7 +3071,7 @@ app.get("/api/admin/users", requireAdmin, async (_req, res) => {
     .prepare(
       `SELECT u.id, u.name, u.first_name, u.last_name, u.alias, u.role, u.base_role,
         u.ranking_position, u.balance, COALESCE(u.payer_user_id, u.id) AS payer_user_id,
-        payer.alias AS payer_alias, payer.account_status AS payer_account_status,
+        payer.name AS payer_name, payer.alias AS payer_alias, payer.account_status AS payer_account_status,
         payer.deleted_at AS payer_deleted_at
        FROM users u
        LEFT JOIN users payer ON payer.id = COALESCE(u.payer_user_id, u.id)
