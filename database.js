@@ -95,6 +95,16 @@ const db = {
     for (const [column, definition] of userColumns) {
       await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS ${column} ${definition}`);
     }
+    // Production schema changes for Replit-managed PostgreSQL are applied by
+    // Publish. Keep this additive migration and backfill in development only.
+    if (process.env.NODE_ENV !== "production") {
+      await pool.query(`
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS payer_user_id
+        BIGINT REFERENCES users(id) ON DELETE SET NULL
+      `);
+      await pool.query("UPDATE users SET payer_user_id = id WHERE payer_user_id IS NULL");
+      await pool.query("CREATE INDEX IF NOT EXISTS idx_users_payer_user_id ON users(payer_user_id)");
+    }
 
     const matchColumns = [
       ["match_date", "TEXT"],

@@ -19,7 +19,8 @@ CREATE TABLE IF NOT EXISTS users (
   strong_points TEXT NOT NULL DEFAULT '',
   weak_points TEXT NOT NULL DEFAULT '',
   preferred_position TEXT NOT NULL DEFAULT '',
-  other_details TEXT NOT NULL DEFAULT ''
+  other_details TEXT NOT NULL DEFAULT '',
+  payer_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL
 );
 
 CREATE TABLE IF NOT EXISTS matches (

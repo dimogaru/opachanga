@@ -70,15 +70,18 @@ async function main() {
         await client.query(`
           UPDATE users SET name = $1, first_name = $2, last_name = $3, alias = $4, password_hash = $5,
             account_status = 'active', must_change_password = 0, deleted_at = NULL,
-            role = $6, base_role = $7, ranking_position = $8, balance = 10
+            role = $6, base_role = $7, ranking_position = $8, balance = 10,
+            payer_user_id = COALESCE(payer_user_id, id)
           WHERE id = $9
         `, [...values, existing.id]);
       } else {
-        await client.query(`
+        const created = await client.query(`
           INSERT INTO users (name, first_name, last_name, alias, password_hash, account_status,
-            must_change_password, role, base_role, ranking_position, balance)
-          VALUES ($1, $2, $3, $4, $5, 'active', 0, $6, $7, $8, 10)
+            must_change_password, role, base_role, ranking_position, balance, payer_user_id)
+          VALUES ($1, $2, $3, $4, $5, 'active', 0, $6, $7, $8, 10, NULL)
+          RETURNING id
         `, values);
+        await client.query("UPDATE users SET payer_user_id = id WHERE id = $1", [created.rows[0].id]);
       }
     }
     await client.query("COMMIT");

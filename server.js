@@ -1255,7 +1255,8 @@ app.post("/api/register", async (req, res) => {
       await db.prepare(`
         UPDATE users
         SET name = ?, first_name = ?, last_name = ?, alias = ?, password_hash = ?,
-            account_status = 'pending', must_change_password = 0, created_at = CURRENT_TIMESTAMP
+            account_status = 'pending', must_change_password = 0, created_at = CURRENT_TIMESTAMP,
+            payer_user_id = COALESCE(payer_user_id, id)
         WHERE id = ?
       `).run(fullName, firstName, lastName, alias, passwordHash, userId);
     } else {
@@ -1265,6 +1266,7 @@ app.post("/api/register", async (req, res) => {
         VALUES (?, ?, ?, ?, ?, 'pending', 'principal', 'principal', NULL, 0) RETURNING id
       `).run(fullName, firstName, lastName, alias, passwordHash);
       userId = Number(created.lastInsertRowid);
+      await db.prepare("UPDATE users SET payer_user_id = id WHERE id = ? AND payer_user_id IS NULL").run(userId);
     }
     res.status(202).json({ registered: true, status: "pending", name: fullName });
   } catch (error) {
@@ -2385,6 +2387,36 @@ app.post("/api/admin/matches/:id/result", requireAdmin, async (req, res) => {
       if (!participants.length) {
         return { error: "No hay jugadores en los equipos para aplicar el cobro.", status: 409 };
       }
+      const participantAccounts = await db.prepare(`
+        SELECT id, name, alias, COALESCE(payer_user_id, id) AS payer_user_id
+        FROM users
+        WHERE id = ANY(?) AND role != 'admin'
+          AND account_status = 'active' AND deleted_at IS NULL
+        ORDER BY id
+        FOR UPDATE
+      `).all(participants);
+      if (participantAccounts.length !== participants.length) {
+        return { error: "Hay jugadores del equipo que ya no están activos; revisa la alineación antes de cobrar.", status: 409 };
+      }
+      const payerIds = [...new Set(participantAccounts.map((account) => Number(account.payer_user_id)))];
+      const payerAccounts = await db.prepare(`
+        SELECT id, name, alias, role, account_status, deleted_at
+        FROM users WHERE id = ANY(?)
+        ORDER BY id
+        FOR UPDATE
+      `).all(payerIds);
+      const payersById = new Map(payerAccounts.map((payer) => [Number(payer.id), payer]));
+      const payerAssignments = [];
+      for (const participant of participantAccounts) {
+        const payer = payersById.get(Number(participant.payer_user_id));
+        if (!payer || payer.role === "admin" || payer.account_status !== "active" || payer.deleted_at) {
+          return {
+            error: `El pagador asignado a @${participant.alias} no está activo. Asigna un pagador activo antes de cobrar.`,
+            status: 409,
+          };
+        }
+        payerAssignments.push({ participant, payer });
+      }
       const pitchCents = moneyCents(match.total_match_price);
       const feeCents = moneyCents(match.player_price);
       const collectedCents = feeCents * participants.length;
@@ -2399,6 +2431,7 @@ app.post("/api/admin/matches/:id/result", requireAdmin, async (req, res) => {
       }
       charge = {
         participants,
+        payerAssignments,
         pitchCents,
         feeCents,
         collectedCents,
@@ -2416,15 +2449,34 @@ app.post("/api/admin/matches/:id/result", requireAdmin, async (req, res) => {
         .run(result, matchId);
     }
     if (charge) {
-      const insertTransaction = db.prepare(`
+      const insertChargeTransaction = db.prepare(`
         INSERT INTO transactions (user_id, amount, concept, match_id, transaction_type)
         VALUES (?, ?, ?, ?, 'match_charge')
       `);
+      const insertPaidByTransaction = db.prepare(`
+        INSERT INTO transactions (user_id, amount, concept, match_id, transaction_type)
+        VALUES (?, 0, ?, ?, 'manual')
+      `);
       const debitPlayer = db.prepare("UPDATE users SET balance = ROUND((balance - ?) * 100) / 100 WHERE id = ?");
-      if (charge.feeCents > 0) {
-        for (const userId of charge.participants) {
-          await debitPlayer.run(charge.feeCents / 100, userId);
-          await insertTransaction.run(userId, -(charge.feeCents / 100), `Partido #${matchId}: cuota automática`, matchId);
+      const matchDate = String(match.match_date || match.start_date || "").slice(0, 10);
+      const dateParts = /^(\d{4})-(\d{2})-(\d{2})$/.exec(matchDate);
+      const dateLabel = dateParts ? `${dateParts[3]}/${dateParts[2]}` : `#${matchId}`;
+      for (const assignment of charge.payerAssignments) {
+        const { participant, payer } = assignment;
+        const isDelegated = Number(participant.id) !== Number(payer.id);
+        if (charge.feeCents > 0) {
+          await debitPlayer.run(charge.feeCents / 100, payer.id);
+          const concept = isDelegated
+            ? `Cobro partido ${dateLabel} - Por: ${participant.name} (${participant.alias})`
+            : `Partido #${matchId}: cuota automática`;
+          await insertChargeTransaction.run(payer.id, -(charge.feeCents / 100), concept, matchId);
+        }
+        if (isDelegated) {
+          await insertPaidByTransaction.run(
+            participant.id,
+            `Cobro partido ${dateLabel} - Pagado por: ${payer.name} (${payer.alias})`,
+            matchId,
+          );
         }
       }
       const currentPotCents = await lockCurrentPotCents();
@@ -2614,6 +2666,7 @@ app.post("/api/convocations/current/add-new-suplente", requirePlayer, async (req
         VALUES (?, ?, ?, ?, ?, 'pending', 1, 'suplente', 'suplente', ?, 0, CURRENT_TIMESTAMP) RETURNING id
       `).run(name, firstName, lastName, alias, passwordHash, rankingPosition);
       const userId = Number(created.lastInsertRowid);
+      await db.prepare("UPDATE users SET payer_user_id = id WHERE id = ? AND payer_user_id IS NULL").run(userId);
       await db.prepare(`
         INSERT INTO substitute_approval_requests (user_id, match_id, invited_by_user_id)
         VALUES (?, ?, ?)
@@ -3016,7 +3069,14 @@ app.post("/api/admin/players/:id/notify-promoted", requireAdmin, async (req, res
 app.get("/api/admin/users", requireAdmin, async (_req, res) => {
   const users = await db
     .prepare(
-      "SELECT id, name, first_name, last_name, alias, role, base_role, ranking_position, balance FROM users WHERE role != 'admin' AND account_status = 'active' AND deleted_at IS NULL ORDER BY ranking_position IS NULL, ranking_position, name",
+      `SELECT u.id, u.name, u.first_name, u.last_name, u.alias, u.role, u.base_role,
+        u.ranking_position, u.balance, COALESCE(u.payer_user_id, u.id) AS payer_user_id,
+        payer.alias AS payer_alias, payer.account_status AS payer_account_status,
+        payer.deleted_at AS payer_deleted_at
+       FROM users u
+       LEFT JOIN users payer ON payer.id = COALESCE(u.payer_user_id, u.id)
+       WHERE u.role != 'admin' AND u.account_status = 'active' AND u.deleted_at IS NULL
+       ORDER BY u.ranking_position IS NULL, u.ranking_position, u.name`,
     )
     .all();
   res.json(users);
@@ -3024,10 +3084,20 @@ app.get("/api/admin/users", requireAdmin, async (_req, res) => {
 
 app.get("/api/admin/finance/overview", requireAdmin, async (_req, res) => {
   const players = await db.prepare(`
-    SELECT id, name, alias, base_role, balance
-    FROM users
-    WHERE role != 'admin' AND account_status = 'active' AND deleted_at IS NULL
-    ORDER BY balance ASC, LOWER(name)
+    SELECT u.id, u.name, u.alias, u.base_role, u.balance,
+      COALESCE(u.payer_user_id, u.id) AS payer_user_id,
+      payer.alias AS payer_alias,
+      COALESCE((
+        SELECT string_agg(payee.alias, ', ' ORDER BY LOWER(payee.alias))
+        FROM users payee
+        WHERE payee.payer_user_id = u.id AND payee.id <> u.id
+          AND payee.role != 'admin' AND payee.account_status = 'active'
+          AND payee.deleted_at IS NULL AND payee.alias IS NOT NULL
+      ), '') AS payees_aliases
+    FROM users u
+    LEFT JOIN users payer ON payer.id = COALESCE(u.payer_user_id, u.id)
+    WHERE u.role != 'admin' AND u.account_status = 'active' AND u.deleted_at IS NULL
+    ORDER BY u.balance ASC, LOWER(u.name)
   `).all();
   const transactions = await db.prepare(`
     SELECT t.id, t.user_id, u.name, t.amount, t.concept, t.date,
@@ -3248,6 +3318,8 @@ app.post("/api/admin/users", requireAdmin, async (req, res) => {
   const alias = String(rawAlias || "").trim().normalize("NFKC").toLowerCase();
   const rank = rankingPosition === "" || rankingPosition == null ? null : Number(rankingPosition);
   const amount = balance === "" || balance == null ? 0 : Number(balance);
+  const rawPayerId = req.body?.payer_user_id;
+  const payerUserId = rawPayerId === "" || rawPayerId == null ? null : Number(rawPayerId);
   if (!cleanName || cleanName.length > 80) {
     return res.status(400).json({ error: "El nombre es obligatorio y debe tener 80 caracteres o menos." });
   }
@@ -3269,6 +3341,15 @@ app.post("/api/admin/users", requireAdmin, async (req, res) => {
   if (!Number.isFinite(amount) || !Number.isSafeInteger(moneyCents(amount))) {
     return res.status(400).json({ error: "El saldo debe ser un importe válido." });
   }
+  if (payerUserId !== null && (!Number.isSafeInteger(payerUserId) || payerUserId < 1)) {
+    return res.status(400).json({ error: "Selecciona un pagador válido." });
+  }
+  if (payerUserId !== null && !await db.prepare(`
+    SELECT id FROM users
+    WHERE id = ? AND role != 'admin' AND account_status = 'active' AND deleted_at IS NULL
+  `).get(payerUserId)) {
+    return res.status(400).json({ error: "El pagador debe ser un jugador activo." });
+  }
   if (rank !== null && await db.prepare("SELECT id FROM users WHERE account_status = 'active' AND role != 'admin' AND ranking_position = ?").get(rank)) {
     return res.status(409).json({ error: "Esa posición ya está asignada a otro jugador activo." });
   }
@@ -3279,9 +3360,11 @@ app.post("/api/admin/users", requireAdmin, async (req, res) => {
     const result = await db.transaction(async () => {
       const created = await db.prepare(`
         INSERT INTO users (name, first_name, last_name, alias, password_hash, account_status,
-          role, base_role, ranking_position, balance)
-        VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?) RETURNING id
-      `).run(cleanName, firstName, lastName, alias, passwordHash, role, role, rank, moneyCents(amount) / 100);
+          role, base_role, ranking_position, balance, payer_user_id)
+        VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?) RETURNING id
+      `).run(cleanName, firstName, lastName, alias, passwordHash, role, role, rank, moneyCents(amount) / 100, payerUserId);
+      await db.prepare("UPDATE users SET payer_user_id = COALESCE(payer_user_id, id) WHERE id = ?")
+        .run(created.lastInsertRowid);
       if (moneyCents(amount)) {
         await db.prepare("INSERT INTO transactions (user_id, amount, concept) VALUES (?, ?, ?)")
           .run(created.lastInsertRowid, moneyCents(amount) / 100, "Saldo inicial al crear la cuenta");
@@ -3308,6 +3391,12 @@ app.patch("/api/admin/users/:id", requireAdmin, async (req, res) => {
   const rank = rawRank === "" || rawRank == null ? null : Number(rawRank);
   const amount = body.balance === undefined ? current.balance : Number(body.balance);
   const alias = body.alias === undefined ? current.alias : String(body.alias).trim().normalize("NFKC").toLowerCase();
+  const rawPayerId = body.payer_user_id;
+  const payerUserId = rawPayerId === undefined
+    ? Number(current.payer_user_id || id)
+    : rawPayerId === "" || rawPayerId == null
+      ? id
+      : Number(rawPayerId);
   const password = typeof body.password === "string" ? body.password : "";
   if (!name || name.length > 80) {
     return res.status(400).json({ error: "El nombre es obligatorio y debe tener 80 caracteres o menos." });
@@ -3321,6 +3410,9 @@ app.patch("/api/admin/users/:id", requireAdmin, async (req, res) => {
   if (!Number.isFinite(amount) || !Number.isSafeInteger(moneyCents(amount))) {
     return res.status(400).json({ error: "El saldo debe ser un importe válido." });
   }
+  if (!Number.isSafeInteger(payerUserId) || payerUserId < 1) {
+    return res.status(400).json({ error: "Selecciona un pagador válido." });
+  }
   if (!/^[\p{L}\p{N}._-]{3,24}$/u.test(alias || "")) {
     return res.status(400).json({ error: "El alias debe tener entre 3 y 24 caracteres." });
   }
@@ -3333,16 +3425,28 @@ app.patch("/api/admin/users/:id", requireAdmin, async (req, res) => {
   if (rank !== null && await db.prepare("SELECT id FROM users WHERE account_status = 'active' AND role != 'admin' AND ranking_position = ? AND id != ?").get(rank, id)) {
     return res.status(409).json({ error: "Esa posición ya está asignada a otro jugador activo." });
   }
+  if (payerUserId !== Number(current.payer_user_id) && payerUserId !== id &&
+      !await db.prepare(`
+        SELECT id FROM users
+        WHERE id = ? AND role != 'admin' AND account_status = 'active' AND deleted_at IS NULL
+      `).get(payerUserId)) {
+    return res.status(400).json({ error: "El pagador debe ser un jugador activo." });
+  }
+  if (payerUserId === id && !await db.prepare(`
+    SELECT id FROM users WHERE id = ? AND role != 'admin' AND account_status = 'active' AND deleted_at IS NULL
+  `).get(id)) {
+    return res.status(400).json({ error: "El jugador debe estar activo para cobrarse a sí mismo." });
+  }
   const [firstName, ...lastParts] = name.split(/\s+/);
   const lastName = lastParts.join(" ");
   const passwordHash = password ? await bcrypt.hash(password, 12) : current.password_hash;
   await db.transaction(async () => {
     await db.prepare(`
       UPDATE users SET name = ?, first_name = ?, last_name = ?, alias = ?, password_hash = ?,
-        role = ?, base_role = ?, ranking_position = ?, balance = ?,
+        role = ?, base_role = ?, ranking_position = ?, balance = ?, payer_user_id = ?,
         must_change_password = CASE WHEN ? != '' THEN 1 ELSE must_change_password END
       WHERE id = ?
-    `).run(name, firstName, lastName, alias, passwordHash, role, role, rank, amount, password, id);
+    `).run(name, firstName, lastName, alias, passwordHash, role, role, rank, amount, payerUserId, password, id);
     const balanceDelta = moneyCents(amount) - moneyCents(current.balance);
     if (balanceDelta) {
       await db.prepare("INSERT INTO transactions (user_id, amount, concept) VALUES (?, ?, ?)")
