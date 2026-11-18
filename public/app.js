@@ -2073,16 +2073,20 @@ async function renderPlayer() {
   standingsData = await api("/api/standings");
   pushConfig = await api("/api/push/config").catch(() => ({ enabled: false, publicKey: null }));
   const player = users.find((user) => user.id === currentUser?.id);
+  const currentBalance = Number(player?.balance) || 0;
+  const balanceColor = currentBalance < 0 ? "text-red-600" : "text-black";
   const content = `
-    <div class="mb-7"><div class="mb-3 flex items-center gap-2 text-xs font-bold uppercase tracking-[.14em] text-pitch-700"><span class="h-2 w-2 rounded-full bg-pitch-700"></span>VESTUARIO</div><h1 class="display text-3xl font-extrabold tracking-tight sm:text-4xl">¡Hola, ${escapeHtml(currentUser?.name?.split(" ")[0] || "jugador")}!</h1><p class="mt-2 text-sm text-ink/55">Responde a la convocatoria y consulta las listas del equipo.</p></div>
+    <div class="mb-7 flex flex-wrap items-end justify-between gap-x-4 gap-y-3">
+      <div class="min-w-0"><div class="mb-3 flex items-center gap-2 text-xs font-bold uppercase tracking-[.14em] text-pitch-700"><span class="h-2 w-2 rounded-full bg-pitch-700"></span>VESTUARIO</div><h1 class="display text-3xl font-extrabold tracking-tight sm:text-4xl">¡Hola, ${escapeHtml(currentUser?.name?.split(" ")[0] || "jugador")}!</h1><p class="mt-2 text-sm text-ink/55">Responde a la convocatoria y consulta las listas del equipo.</p></div>
+      <div class="inline-flex max-w-full flex-wrap items-center gap-x-1.5 rounded-full border border-ink/[.08] bg-white px-4 py-2.5 shadow-sm"><span class="shrink-0 text-xs font-semibold text-ink/55">Saldo:</span><strong id="player-current-balance" data-player-balance class="break-words text-sm font-extrabold ${balanceColor}">${formatMoney(currentBalance)}</strong></div>
+    </div>
     ${renderPushBanner()}
     ${renderConvocationBoard(convocationData, false)}
     ${renderMatchPanel(matchData, false)}
     ${renderStandingsBoard(standingsData)}
-    <div class="mt-5 grid gap-4 sm:grid-cols-3">
+    <div class="mt-5 grid gap-4 sm:grid-cols-2">
       <section class="rounded-2xl border border-ink/[.07] bg-white p-6 shadow-sm"><p class="text-xs font-bold uppercase tracking-[.12em] text-ink/45">Tu ficha técnica</p><p class="mt-2 text-sm leading-5 text-ink/55">Añade tu posición, tus puntos fuertes y una foto.</p><div class="mt-3">${profileButton(currentUser.id, currentUser.alias)}</div></section>
       <section class="rounded-2xl border border-ink/[.07] bg-white p-6 shadow-sm"><p class="text-xs font-bold uppercase tracking-[.12em] text-ink/45">Tu rol base</p><p class="display mt-3 text-2xl font-extrabold">${player?.base_role === "principal" ? "Principal" : "Suplente"}</p></section>
-      <section class="rounded-2xl border border-ink/[.07] bg-white p-6 shadow-sm"><p class="text-xs font-bold uppercase tracking-[.12em] text-ink/45">Saldo</p><p class="display mt-3 text-2xl font-extrabold">${formatMoney(player?.balance)}</p></section>
     </div>`;
   shell(content);
   bindPlayerProfileButtons();
@@ -2502,6 +2506,30 @@ async function refreshPotBalance() {
   }
 }
 
+let pollingPlayerBalance = false;
+async function refreshPlayerBalance() {
+  if (currentUser?.role === "admin" || !currentUser ||
+      document.visibilityState !== "visible" || pollingPlayerBalance ||
+      !document.querySelector("[data-player-balance]")) return;
+  pollingPlayerBalance = true;
+  try {
+    const latestUsers = await api("/api/users");
+    const player = latestUsers.find((user) => Number(user.id) === Number(currentUser.id));
+    if (!player) return;
+    users = latestUsers;
+    const balance = Number(player.balance) || 0;
+    const indicator = document.querySelector("[data-player-balance]");
+    if (!indicator) return;
+    indicator.textContent = formatMoney(balance);
+    indicator.classList.toggle("text-red-600", balance < 0);
+    indicator.classList.toggle("text-black", balance >= 0);
+  } catch {
+    // Keep the last visible balance while temporarily offline.
+  } finally {
+    pollingPlayerBalance = false;
+  }
+}
+
 let pollingDraft = false;
 async function refreshLiveDraftIfChanged() {
   if (!currentUser || document.visibilityState !== "visible" || pollingDraft ||
@@ -2547,6 +2575,7 @@ async function refreshLiveDraftIfChanged() {
 
 setInterval(refreshConvocationIfChanged, 15000);
 setInterval(refreshPotBalance, 5000);
+setInterval(refreshPlayerBalance, 15000);
 setInterval(refreshLiveDraftIfChanged, 4000);
 
 async function registerServiceWorkerWithUpdates() {
